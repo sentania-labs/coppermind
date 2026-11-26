@@ -6,20 +6,36 @@ Existing notes, type choices and schema roles are preserved. Conflicting propert
 The common drop folder (called Dropbox here) defaults to `Dropbox` in the vault on an existing
 install and **To Coppermind** on a new one. Old per-calendar folders are ordinary vault folders after automatic migration.
 
-## Review once
+## Notes arrive filled in
 
-New valid unreviewed notes receive one initial enrichment pass when enrichment
-is enabled. The existing backlog is opt-in. Ordinary edits do not run the model
-again. Related calendar
-changes can generate a calendar-only pass, without repeating filename or general
-property proposals. An unrelated calendar change does not regenerate suggestions. A new recording's finished Markdown body is written before ingest and remains intact during
-frontmatter review. Legacy recordings keep their cached summary proposals.
+Nothing about a note's properties is proposed. When a recording's note is made, the write-up
+writes the answers straight into it: `type` (`work` or `personal`), `account` (a company it
+heard, known or new; an account means a customer meeting, so the type is `work` unless the
+write-up said otherwise), `tags` (listed ones by their own spelling, new ones accepted unless
+tags are closed), `attendees` (the people whose voices were recognised and the people on the
+invitation of the meeting it matched) and the meeting itself. Each answer goes in only where
+you have not put something of your own: a blank, a value every note starts with (the default
+`type`), or a value Coppermind itself filled that you have not changed since. Coppermind keeps
+that last record in its own state, and nothing in the note or the companion shows it.
 
-A waiting note's review page in Admin (Notes, Waiting for review) shows the note and proposals together. Select changes
-and complete review once, or leave everything unchecked to retain only your edits.
-A filename change requires acknowledgement that existing filename links can need
-repair. The authored heading and body stay unchanged. Stale suggestions cannot
-be applied; reload the page.
+**Resummarize** writes the note up again and fills the properties again on the same terms:
+what you typed or changed stays, what Coppermind filled and you left is refreshed. Editing
+the body does not stop the properties being filled. Naming a voice in another note rewrites
+this note's body only, never its properties.
+
+When the second step (the suggestion step, which reads the calendar and the people, and writes a
+summary for older recordings) finishes, it fills blanks the same way, at any confidence. There
+is no accept step, no switch per suggestion, no "stale" suggestion and no separate request to
+run it again.
+
+The first time Coppermind starts after this arrived, the notes already waiting in Review get
+what was waiting for you to accept (the write-up's answers and any pending suggestion for a
+property) filled into their blanks, once. A value you had already put in is not touched, and
+one you clear afterwards is not put back.
+
+New valid unreviewed notes still receive one initial pass of the second step when suggestions
+are enabled. Ordinary edits do not run the model again. A related calendar change can run a
+calendar-only pass.
 
 Coppermind places the companion in the vault at
 `.obsidian/plugins/coppermind-review/` (from the Companion line on Admin's Coppermind page) and Obsidian Sync
@@ -54,8 +70,8 @@ when Coppermind does not answer, shows what it last said. It needs `notes:read` 
 and Dismiss needs `sources:write`.
 
 Run **Coppermind Review: Notes in Review** for the one place where notes waiting in the
-Review folder are written up again or enriched. It lists every note there with its title, its
-date and, in plain words, where its write-up and its suggestions stand: written (and when it
+Review folder are written up again. It lists every note there with its title, its
+date and, in plain words, where its write-up stands: written (and when it
 finished), missing, failed (with the reason) or being written now. A note that came from a
 recording has **Resummarize**, which writes it up again from the transcript already saved,
 with the current directions, without sending the recording for transcription again, and
@@ -64,12 +80,11 @@ what Coppermind wrote, the new write-up replaces it and Coppermind keeps the ear
 Getting it back from the companion is not available yet; it arrives with restore from Git
 history. If you edited the body, nothing is overwritten: the row says so and **Compare with my note** shows
 your lines against the new write-up, and the note changes only if you choose **Replace my
-note with the new write-up**. Every note has **Enrich**, which runs the suggestions step
-again (attendees, account, tags, type and the like). **Resummarize all missing** at the top
+note with the new write-up**. **Resummarize all missing** at the top
 writes up every note that has no write-up or whose write-up failed. A box above the list finds a note by title as you type. Rows keep their place while the
 screen is open and are put in order again (notes needing you first) when it is opened or
-Refresh is pressed. When write-ups or suggestions are switched off the screen says so once
-and offers no button that cannot work. Clicking a title opens the note. Both buttons show that they started, and the row says when each finished or why it
+Refresh is pressed. When write-ups are switched off the screen says so once
+and offers no button that cannot work. Clicking a title opens the note. The buttons show that they started, and the row says when each finished or why it
 failed; a failed rewrite leaves the note as it was. The screen needs `notes:read` and
 `sources:read`, and the buttons need `notes:write` as well; no permission beyond the
 companion's own is added.
@@ -77,7 +92,7 @@ companion's own is added.
 The calls are in [the API reference](api.md#recordings-audio-on-its-own).
 
 In the review panel, a note written from a recording points to Notes in Review for writing it
-up again or running its suggestions again; there is no separate button in the panel. If a
+up again; there is no separate button in the panel. If a
 rewrite is being made when you mark the note reviewed, the panel warns that it will be
 discarded.
 
@@ -87,7 +102,7 @@ for Obsidian Sync after editing. `date` is the one field for a note's date and
 start time: `YYYY-MM-DD`, or `YYYY-MM-DDTHH:MM:SS` as a local date-and-time with no
 UTC offset, matching Obsidian's Date and Date & time properties. Times are in the
 configured timezone (`America/Chicago` by default), a setting rather than a note
-property. New notes, ingest, enrichment and the review form write the start time
+property. New notes, ingest and enrichment write the start time
 into `date`, and never write `time` or `timezone`. A `date` carrying a UTC offset
 is rejected at review with a Problems message. Filing needs only a day, for every
 type of note, so a work note with a date-only `date` files like any other, and a note
@@ -96,9 +111,8 @@ written again. Midnight is an actual time, never a sentinel for unknown.
 Legacy notes with a `date` and an `HH:MM` `time` keep validating and filing, a
 legacy `timezone` is ignored, and when a legacy `time` carries its own date and
 disagrees with `date`, `date` wins and Problems reports a `date_mismatch` entry
-naming both dates. Saving `date` from the review form or the Obsidian plugin, or
-approving an enrichment date, removes the legacy `time` and `timezone`. An
-enrichment `account` suggestion is added to the note's list and never replaces it.
+naming both dates. Saving `date` from the Obsidian plugin removes the legacy `time` and
+`timezone`.
 
 `account` is a list of customer names. A plain string is read as a one-item list.
 Neither `context` nor `account` holds a note back: a reviewed note with no context, or
@@ -119,7 +133,7 @@ itself, so the note waits in Review like any other and ticking Reviewed files it
 material; a note that is already filed is left where it is.
 
 For a recording, the review panel also shows each diarized speaker with a proposed
-person, confidence and reason. Candidates are the linked calendar attendees, or people
+person, confidence and reason; naming voices is the one choice still offered. Candidates are the linked calendar attendees, or people
 from possible meetings when several timed events overlap (up to 40 across them; a
 single linked meeting lists all its invitees), then People named in the note
 or transcript, then a few recently met People;
@@ -128,8 +142,7 @@ the full transcript. If that cannot fit the input limit, speaker suggestions are
 with a notice and the other suggestions still arrive. A person renamed after suggestions
 were made is written under the current name; one retired is refused for that speaker
 only. When enrichment links an event automatically, it asks the model again with that
-event's attendees. If you link an event yourself after the first pass, request fresh
-suggestions. Confident names start selected, and the panel previews each change.
+event's attendees. Confident names start selected.
 For people with saved signatures, a close voice match also appears as a `Voice` or `Maybe`
 candidate for that speaker, returned as `voice_matches` in the review response
 (see [voice recognition](dossiers.md#voice-recognition)). A single `Voice` match that the
@@ -138,9 +151,7 @@ disagreement with a confident model name are left for you to choose.
 Choose another candidate or leave a speaker unnamed. Search existing People from the
 panel, even if the model is unavailable or speaker suggestions were omitted. Completing
 review replaces selected speaker labels throughout the transcript, adds confirmed attendees
-and links known dossiers. Without an attendees property in Model
-connections, speakers are still renamed, the panel says attendees will not be updated, and
-attendees and contacts are left alone. Unselected speakers keep their labels. Setting reviewed
+and links known dossiers. Unselected speakers keep their labels. Setting reviewed
 directly without the panel does not apply speaker suggestions. The review API accepts
 `speaker_choices`, an object mapping selected suggestion indexes to candidate IDs;
 an empty value leaves that speaker unnamed. For manual names, pass `manual_speakers`
@@ -205,10 +216,9 @@ invitation. Unchanged re-exports do not reopen the decision.
 New recordings produce their finished Markdown note before ordinary ingest: the Speakers
 section, a one or two sentence top line, the summary sections written from the owner's side
 of the table, and one references block at the bottom (source transcript, recording, calendar
-match), with no title heading. Suggestions may be off; when they are on, the write-up also
-suggests account, context, type, tags and attendees (see
-[calendar and enrichment](calendar-enrichment.md)). Review handles frontmatter separately
-and never asks to accept the body. A number, amount, date or name in the note that the
+match), with no title heading. The write-up also answers account, type and tags, and the note
+is made with them (see [Notes arrive filled in](#notes-arrive-filled-in)). Review never asks
+to accept the body. A number, amount, date or name in the note that the
 recording never says is followed by "(not in the recording)", so you can keep or delete it.
 A failed write-up retains the recording and transcript without creating a note; Retry on
 Recordings and imports resumes from the last saved stage. Configure the document prompt
@@ -282,13 +292,12 @@ Markdown intake flow. Those jobs and review receipts finish under their original
 After transcription, the existing enrichment job reads the whole transcript and
 proposes a summary, decisions and action items with owners. Enrichment must be
 enabled with a tested model connection. The companion displays the three sections
-beside speaker suggestions. Edit the text or use **Drop** to clear a section;
-**Apply kept suggestions & mark reviewed** appends the nonempty sections to the
+beside the speaker choices. Edit the text or use **Drop** to clear a section;
+**Mark reviewed** appends the nonempty sections to the
 note. There is no separate accept step for each section. Existing note prose is
 preserved. Action items are recorded only, never carried out.
 
-**Mark reviewed without changes** discards the summary. Directly setting
-`reviewed: true` also adds no proposed prose. Failed jobs expose their reason and
+Directly setting `reviewed: true` adds no proposed prose. Failed jobs expose their reason and
 a retry action in review, with durable failure details in Problems. Stale or
 unsynced proposals cannot be applied. Completing review is recorded before the
 append, so retrying an interrupted completion does not append a second copy.
@@ -346,18 +355,18 @@ Do not restore old note files over newer reviewed content.
   `speakers_unavailable` explains that and the rest of the review is unchanged.
   The calendar's part (the staleness check, the recording's candidate meetings, the
   calendar update) gets 8 seconds; if the calendar is still being read, the review
-  comes back without it (`recording_meeting` and `calendar_update` null, `stale` true
-  because the suggestions could not be checked) instead of failing, and a reload a moment
-  later has them.
-- `POST /v1/notes/{id}/review`: explicit completion with `if_match`, selected
-  proposal indexes and optional filename-risk acknowledgement. Also requires
+  comes back without it (`recording_meeting` and `calendar_update` null, and no speaker
+  suggestions, because they could not be checked) instead of failing, and a reload a moment
+  later has them. `suggestions` holds only speaker choices; every other answer is already in
+  the note's properties.
+- `POST /v1/notes/{id}/review`: explicit completion with `if_match` and the selected
+  speaker indexes (`accept_link_risk` is still accepted and ignored). Also requires
   `notes:write`. Confirming a speaker also requires `sources:write` and `entities:read`.
   For legacy recording summaries, GET includes `meeting_summary` with string fields
   `summary`, `decisions` and `action_items`. POST includes that object, with the
   owner's edits and the matching `job_id`, to keep it; empty strings drop sections.
   Omit it or send `null` to discard it. Each field is limited to 12,000 characters.
   Repeating the recorded request is safe.
-- `POST /v1/notes/{id}/suggestions`: explicit refresh, with the same three scopes.
 - `POST /v1/notes/{id}/calendar-update`: confirm a candidate or dismiss the update,
   conditional on both note version and calendar evidence version.
 - `POST /v1/notes/{id}/recording-meeting`: select a current overlapping event using

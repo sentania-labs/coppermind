@@ -1,4 +1,4 @@
-/* Coppermind companion: proposals stay separate until explicit review completion. */
+/* Coppermind companion: Coppermind fills in a waiting note; the owner checks it, names its speakers and marks it reviewed. */
 const {Plugin, ItemView, PluginSettingTab, Setting, SecretComponent, Notice, requestUrl, MarkdownView, Modal} = require('obsidian');
 const SUMMARY_LABELS = {summary:['Summary','Summary'],decisions:['Decisions','Decisions'],action_items:['Action items and owners','Action items']};
 const summaryLabel = (key, long) => (SUMMARY_LABELS[key] || [])[long ? 0 : 1] || key.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase());
@@ -88,9 +88,8 @@ class ReviewView extends ItemView {
           try{await this.plugin.call('/v1/notes/'+encodeURIComponent(id)+'/recording-meeting','POST',{if_match:data.note.content_hash,calendar_hash:meeting.calendar_hash,event_id:choice});new Notice('Meeting selected. Refresh after sync.');await this.refresh();}catch(e){new Notice(e.message);}
         }));
       }
-      const selected=new Set();
       const speakerChoices={}, manualSpeakers={}, cards=[];
-      const ready=data.state==='suggested'&&!data.stale&&synced;
+      const ready=data.state==='suggested'&&synced;
       const summary=data.meeting_summary?{...data.meeting_summary}:null;
       const merge=data.recording_merge;
       if(['applying','attention'].includes(merge?.state)){
@@ -134,14 +133,8 @@ class ReviewView extends ItemView {
         const dismiss=box.createEl('button',{text:'Keep separate'});dismiss.disabled=!synced;
         dismiss.onclick=async()=>{try{await this.plugin.call('/v1/notes/'+encodeURIComponent(id)+'/recording-merge/dismiss','POST',{if_match:data.note.content_hash});await this.refresh();}catch(e){new Notice(e.message);}};
       }
-      if(!data.suggestions_enabled)el.createEl('p',{text:'Suggestions are off. You can name speakers below, or turn on enrichment in Model connections.',cls:'coppermind-notice'});
-      else if(data.suggestion_error){
-        el.createEl('p',{text:'Suggestions could not be completed: '+data.suggestion_error,cls:'coppermind-notice'});
-        const again=el.createEl('button',{text:'Open Notes in Review'});again.onclick=()=>this.plugin.openNotesInReview();
-      } else if(['queued','running'].includes(data.state))el.createEl('p',{text:'Suggestions are in progress. Refresh this panel when ready.',cls:'coppermind-notice'});
       if(data.speakers_unavailable)el.createEl('p',{text:data.speakers_unavailable,cls:'coppermind-notice'});
       if(data.speaker_notice)el.createEl('p',{text:data.speaker_notice,cls:'coppermind-notice'});
-      if(data.stale)el.createEl('p',{text:'Suggestions are from an earlier version. Keep your edits and finish without them, or run Enrich from Notes in Review.',cls:'coppermind-notice'});
       const preview=el.createDiv({cls:'coppermind-card'});
       const updatePreview=()=>{
         preview.empty();preview.createEl('h3',{text:'What will change'});
@@ -150,11 +143,11 @@ class ReviewView extends ItemView {
         const typed=Object.entries(typedNames);
         if(!changes.length&&!typed.length)preview.createEl('p',{text:data.speakers_in_note?'No voice has been named in the note.':'No speaker names selected.'});
         for(const [label,name] of typed)preview.createEl('p',{text:label+' → '+name+' (typed in the note)'});
-        if(typed.length)preview.createEl('p',{text:'Marking the note reviewed, with or without the other changes here, names these voices in this note, in other notes that used them, and in recordings to come.'});
+        if(typed.length)preview.createEl('p',{text:'Marking the note reviewed names these voices in this note, in other notes that used them, and in recordings to come.'});
         for(const c of changes){const person=c.people.find(p=>p.id===c.chooser.value);if(person){preview.createEl('p',{text:c.label+' → '+person.name});const count=manual?.voice_appearances?.[c.label];if(count!==undefined)preview.createEl('p',{text:'Also name this voice in '+Math.max(0,count-1)+' earlier recordings. Transcripts and unchanged generated labels will change; your own writing in reviewed notes stays intact.'});}}
         const attendeesNotice=cards.length&&data.speaker_attendees_notice;
         if(attendeesNotice)preview.createEl('p',{text:data.speaker_attendees_notice});
-        if(!data.speakers_in_note||changes.length||typed.length)preview.createEl('p',{text:attendeesNotice?'Completing review updates transcript labels for selected people. Unnamed speakers stay as they are.':'Completing review updates transcript labels, note attendees and links to selected people. Unnamed speakers stay as they are.'});
+        if(!data.speakers_in_note||changes.length||typed.length)preview.createEl('p',{text:attendeesNotice?'Marking reviewed updates transcript labels for the people chosen. Unnamed speakers stay as they are.':'Marking reviewed updates transcript labels, note attendees and links to the people chosen. Unnamed speakers stay as they are.'});
       };
       const makeChooser=(card,label,people,initial,onSelect,disabled,voice=[])=>{
         const chooser=card.createEl('select');
@@ -186,7 +179,7 @@ class ReviewView extends ItemView {
       };
       if(summary){
         const box=el.createDiv({cls:'coppermind-card'});box.createEl('h3',{text:'Meeting summary'});
-        box.createEl('p',{text:'Edit these suggestions, or clear a section to drop it. Marking reviewed adds what you keep to the note. Action items are recorded only; nothing is carried out.'});
+        box.createEl('p',{text:'Edit these sections, or clear one to drop it. Marking reviewed adds what you keep to the note. Action items are recorded only; nothing is carried out.'});
         for(const key of Object.keys(summary)){const label=summaryLabel(key,true);
           const field=box.createEl('label',{text:label});
           const input=field.createEl('textarea');input.value=summary[key];input.rows=6;input.maxLength=12000;input.style.width='100%';input.disabled=!ready;
@@ -195,86 +188,84 @@ class ReviewView extends ItemView {
           drop.onclick=()=>{summary[key]='';input.value='';updatePreview();};
         }
         this.writeUpElsewhere(box);
-      } else if(data.recording_meeting&&!data.suggestion_error)this.writeUpElsewhere(el.createDiv({cls:'coppermind-card'}));
+      } else if(data.recording_meeting)this.writeUpElsewhere(el.createDiv({cls:'coppermind-card'}));
       const manual=data.manual_speaker_review;
       // Contact candidates can refer to the same People entry as a voice match.
       const personKey=(id,candidates)=>{
         const person=candidates.find(c=>c.id===id);
         return person?.person_id?'person:'+person.person_id:id;
       };
-      const voicePlan=(label,suggestion)=>{
+      const voicePlan=(label,proposed)=>{
         const matches=manual?.voice_matches?.[label]||[];
         const strong=matches.filter(m=>m.strength==='strong');
-        const candidates=suggestion?.candidates||[];
-        const confident=!!suggestion?.value&&suggestion.confidence>=0.8;
-        const modelKey=suggestion?.value?personKey(suggestion.value,candidates):'';
+        const candidates=proposed?.candidates||[];
+        const confident=!!proposed?.value&&proposed.confidence>=0.8;
+        const modelKey=proposed?.value?personKey(proposed.value,candidates):'';
         const voiceKey=strong.length===1?personKey(strong[0].id,candidates):'';
         const conflict=strong.length>1||(voiceKey&&confident&&voiceKey!==modelKey);
         const agreed=!!voiceKey&&voiceKey===modelKey;
-        return {matches,strong,conflict,agreed,initial:conflict?'':voiceKey?(agreed?suggestion.value:strong[0].id):suggestion?.value||''};
+        return {matches,strong,conflict,agreed,initial:conflict?'':voiceKey?(agreed?proposed.value:strong[0].id):proposed?.value||''};
       };
       // Names typed in the note's Speakers section are applied when review finishes; do not ask twice.
       const typedNames=Object.fromEntries((data.named_in_note||[]).map(t=>[t.label,t.name]));
       if(data.speakers_in_note)el.createEl('p',{text:'Name a voice in the Speakers section at the top of the note: type the name after "Name this voice:", then mark the note reviewed here.',cls:'coppermind-notice'});
-      for(const s of data.suggestions){
-        if(s.kind==='event'&&meeting?.candidates?.length>1)continue;
-        if(s.kind==='speaker'&&(!ready||typedNames[s.field]||data.speakers_in_note))continue;
-        const card=el.createDiv({cls:'coppermind-card'});let toggle;
-        const voice=s.kind==='speaker'?voicePlan(s.field,s):null;
-        const initial=s.kind==='speaker'&&ready&&!voice.conflict&&!!voice.initial&&(voice.strong.length===1||s.confidence>=0.8);
-        const noModelCandidate=s.kind==='speaker'&&!s.value&&voice.matches.length>0;
-        if(initial)selected.add(s.index);
-        new Setting(card).setName(s.kind==='filename'?'Note title':s.kind==='speaker'?s.field:s.field||s.kind).addToggle(t=>{toggle=t;t.setDisabled(!ready).setValue(initial).onChange(v=>{v?selected.add(s.index):selected.delete(s.index);updatePreview();});});
-        const shown=s.display_value||(Array.isArray(s.value)?s.value.join(', '):String(s.value??''));
-        card.createEl('p',{text:voice?.conflict&&s.value?'Model: '+shown:voice&&voice.strong.length===1&&!voice.conflict&&!voice.agreed?voice.strong[0].name:shown});
-        if(s.kind==='speaker'){
-          if(s.field.startsWith('Unknown voice '))card.createEl('p',{text:'This voice will be remembered across recordings.'});
-          if(voice.strong.length===1&&!voice.conflict)card.createEl('p',{text:'Check this suggestion before you finish.'});
-          if(manual?.voice_unavailable?.includes(s.field))card.createEl('p',{text:'There was too little speech to recognise this voice in later recordings. A name chosen here applies only to this recording.'});
-          if(!noModelCandidate)card.createEl('p',{text:'Model confidence: '+Math.round(s.confidence*100)+'%'});
-          if(voice.agreed)card.createEl('p',{text:'Sources: Model and Voice'});
-          else if(voice.strong.length===1&&!voice.conflict)card.createEl('p',{text:'Source: Voice'});
-          if(voice.conflict)card.createEl('p',{text:'Suggestions disagree. Choose a person.'});
-          if(!s.candidates.length&&!voice.matches.length)card.createEl('p',{text:'No people suggested. Enter a name below, then choose Find a person.'});
-          const people=[...s.candidates];
-          if(voice.strong.length===1&&!voice.conflict&&!voice.agreed)people.push(voice.strong[0]);
-          const choices=voice.strong.length===1&&!voice.conflict?voice.matches.filter(m=>m!==voice.strong[0]):voice.matches;
-          const chooser=makeChooser(card,s.field,people,voice.initial,value=>{speakerChoices[s.index]=value;value?selected.add(s.index):selected.delete(s.index);toggle.setValue(!!value);},!ready,choices);
-          speakerChoices[s.index]=chooser.value;cards.push({label:s.field,chooser,people,active:()=>selected.has(s.index),select:()=>{if(chooser.value){selected.add(s.index);toggle.setValue(true);}}});
-        }
-        if(s.reason&&(!noModelCandidate||!/^No (confident )?(match|person|speaker).*suggest/i.test(s.reason)))card.createEl('p',{text:s.kind==='speaker'?'Model: '+s.reason:s.reason});
-        if(s.quote){if(s.kind==='speaker')card.createEl('small',{text:'Model evidence'});card.createEl('blockquote',{text:s.quote});}
-        if(s.contact_ids.length)card.createEl('small',{text:'Linked contact evidence is recorded with this suggestion.'});
+      // Only speakers are still put to the owner; every other property arrives filled in the note.
+      // A person chosen in a speaker's dropdown is what gets applied; a likely name starts chosen only when it is sure.
+      const speakers=(data.suggestions||[]).filter(s=>s.kind==='speaker');
+      for(const s of speakers){
+        if(!ready||typedNames[s.field]||data.speakers_in_note)continue;
+        const card=el.createDiv({cls:'coppermind-card'});card.createEl('h3',{text:s.field});
+        const voice=voicePlan(s.field,s);
+        const sure=!voice.conflict&&!!voice.initial&&(voice.strong.length===1||s.confidence>=0.8);
+        const noModelCandidate=!s.value&&voice.matches.length>0;
+        const shown=s.display_value||String(s.value??'');
+        card.createEl('p',{text:voice.conflict&&s.value?'Model: '+shown:voice.strong.length===1&&!voice.conflict&&!voice.agreed?voice.strong[0].name:shown});
+        if(s.field.startsWith('Unknown voice '))card.createEl('p',{text:'This voice will be remembered across recordings.'});
+        if(voice.strong.length===1&&!voice.conflict)card.createEl('p',{text:'Check this name before you finish.'});
+        if(manual?.voice_unavailable?.includes(s.field))card.createEl('p',{text:'There was too little speech to recognise this voice in later recordings. A name chosen here applies only to this recording.'});
+        if(!noModelCandidate)card.createEl('p',{text:'Model confidence: '+Math.round(s.confidence*100)+'%'});
+        if(voice.agreed)card.createEl('p',{text:'Sources: Model and Voice'});
+        else if(voice.strong.length===1&&!voice.conflict)card.createEl('p',{text:'Source: Voice'});
+        if(voice.conflict)card.createEl('p',{text:'The voice and the conversation point to different people. Choose a person.'});
+        const candidates=s.candidates||[];
+        if(!candidates.length&&!voice.matches.length)card.createEl('p',{text:'No likely people found. Enter a name below, then choose Find a person.'});
+        const people=[...candidates];
+        if(voice.strong.length===1&&!voice.conflict&&!voice.agreed)people.push(voice.strong[0]);
+        const choices=voice.strong.length===1&&!voice.conflict?voice.matches.filter(m=>m!==voice.strong[0]):voice.matches;
+        const chooser=makeChooser(card,s.field,people,sure?voice.initial:'',value=>{speakerChoices[s.index]=value;},false,choices);
+        speakerChoices[s.index]=chooser.value;cards.push({label:s.field,chooser,people,active:()=>!!speakerChoices[s.index]});
+        if(s.reason&&(!noModelCandidate||!/^No (confident )?(match|person|speaker).*suggest/i.test(s.reason)))card.createEl('p',{text:'Model: '+s.reason});
+        if(s.quote){card.createEl('small',{text:'Model evidence'});card.createEl('blockquote',{text:s.quote});}
+        if(s.contact_ids?.length)card.createEl('small',{text:'Linked contact evidence is recorded with this name.'});
       }
-      const proposed=new Set(data.suggestions.filter(s=>s.kind==='speaker'&&ready).map(s=>s.field));
+      const proposed=new Set(speakers.filter(()=>ready).map(s=>s.field));
       for(const label of manual?.speakers||[]){
         if(proposed.has(label)||typedNames[label]||data.speakers_in_note)continue;
         const card=el.createDiv({cls:'coppermind-card'});card.createEl('h3',{text:label});
         if(label.startsWith('Unknown voice '))card.createEl('p',{text:'This voice will be remembered across recordings.'});
         if(manual?.voice_unavailable?.includes(label))card.createEl('p',{text:'There was too little speech to recognise this voice in later recordings. A name chosen here applies only to this recording.'});
         card.createEl('p',{text:'Choose a person, or leave this speaker unnamed.'});
-        const people=[...manual.candidates];const voice=voicePlan(label,null);
-        if(!people.length&&!voice.matches.length)card.createEl('p',{text:'No people suggested. Enter a name below, then choose Find a person.'});
-        if(voice.conflict)card.createEl('p',{text:'Suggestions disagree. Choose a person.'});
-        else if(voice.initial){card.createEl('p',{text:'Source: Voice'});card.createEl('p',{text:'Check this suggestion before you finish.'});}
+        const people=[...(manual.candidates||[])];const voice=voicePlan(label,null);
+        if(!people.length&&!voice.matches.length)card.createEl('p',{text:'No likely people found. Enter a name below, then choose Find a person.'});
+        if(voice.conflict)card.createEl('p',{text:'More than one saved voice matches. Choose a person.'});
+        else if(voice.initial){card.createEl('p',{text:'Source: Voice'});card.createEl('p',{text:'Check this name before you finish.'});}
         if(voice.initial)people.push(voice.strong[0]);
         const choices=voice.initial?voice.matches.filter(m=>m!==voice.strong[0]):voice.matches;
         const chooser=makeChooser(card,label,people,voice.initial,value=>{manualSpeakers[label]=value;},!synced,choices);
         if(voice.initial&&synced)manualSpeakers[label]=voice.initial;
-        cards.push({label,chooser,people,active:()=>!!manualSpeakers[label],select:()=>{}});
+        cards.push({label,chooser,people,active:()=>!!manualSpeakers[label]});
       }
-      if(cards.length){const all=el.createEl('button',{text:'Select all suggested names'});all.disabled=!ready;all.onclick=()=>{for(const card of cards)card.select();updatePreview();};}
       updatePreview();
-      for(const unresolved of data.unresolved)el.createEl('p',{text:unresolved,cls:'coppermind-notice'});
-      let acceptLinks=false;
-      if(data.suggestions.some(s=>s.kind==='filename'))new Setting(el).setName('Allow selected filename change').setDesc('Existing filename links may require repair.').addToggle(t=>t.onChange(v=>acceptLinks=v));
-      const finish=async apply=>{
+      for(const unresolved of data.unresolved||[])el.createEl('p',{text:unresolved,cls:'coppermind-notice'});
+      const finish=async()=>{
         try{
           // Save any active editor, then compare exact bytes again before approval.
           const editor=this.app.workspace.getActiveViewOfType(MarkdownView);
           if(editor?.file?.path===file.path)await editor.save();
           if(await hash(await this.app.vault.read(file))!==data.note.content_hash)throw Error('The note changed. Refresh after sync before finishing.');
-          const payload={if_match:data.note.content_hash,job_id:data.job_id,selected:apply?[...selected]:[],meeting_summary:apply&&ready?summary:null,speaker_choices:apply?speakerChoices:{},manual_speakers:apply?manualSpeakers:{},manual_source_revision:manual?.revision??null,manual_source_id:manual?.source_id??null,accept_link_risk:acceptLinks,confirmation:'Complete review'};
+          const chosen=Object.fromEntries(Object.entries(speakerChoices).filter(([,v])=>v));
+          const named=Object.fromEntries(Object.entries(manualSpeakers).filter(([,v])=>v));
+          const payload={if_match:data.note.content_hash,job_id:data.job_id,selected:Object.keys(chosen).map(Number),meeting_summary:ready?summary:null,speaker_choices:chosen,manual_speakers:named,manual_source_revision:manual?.revision??null,manual_source_id:manual?.source_id??null,confirmation:'Complete review'};
           this.plugin.pending={id,payload};
           await this.plugin.call('/v1/notes/'+encodeURIComponent(id)+'/review','POST',payload);
           this.plugin.pending=null;
@@ -283,14 +274,13 @@ class ReviewView extends ItemView {
       };
       if(data.recording_generation_mode!=='markdown-v1'&&(manual||summary)&&['queued','running'].includes(data.state))el.createEl('p',{text:'The summary is still being written. Marking reviewed now files the note without it.',cls:'coppermind-notice'});
       if(data.rewrite_running)el.createEl('p',{text:'A new write-up is being made for this note.',cls:'coppermind-notice'});
-      const apply=el.createEl('button',{text:'Apply kept suggestions & mark reviewed',cls:'mod-cta'});apply.disabled=!synced;apply.onclick=()=>finish(true);
-      const without=el.createEl('button',{text:Object.keys(typedNames).length?'Mark reviewed, applying only the names typed in the note':'Mark reviewed without changes'});without.disabled=!synced;without.onclick=()=>finish(false);
+      const done=el.createEl('button',{text:'Mark reviewed',cls:'mod-cta'});done.disabled=!synced;done.onclick=()=>finish();
     }catch(e){el.createEl('p',{text:e.message,cls:'coppermind-notice'});const retry=el.createEl('button',{text:'Retry'});retry.onclick=()=>this.refresh();}
   }
 }
-// Writing a recording's note up again, or running its suggestions again, has one home.
+// Writing a recording's note up again has one home.
 ReviewView.prototype.writeUpElsewhere=function(box){
-  box.createEl('p',{text:'To write this note up again or run its suggestions again, use Notes in Review.'});
+  box.createEl('p',{text:'To write this note up again, use Resummarize in Notes in Review.'});
   const open=box.createEl('button',{text:'Open Notes in Review'});open.onclick=()=>this.plugin.openNotesInReview();
 };
 const KEY_MISSING='This key is missing something the companion needs. In Coppermind Admin, open Connected apps and either pair this device with a code, or make a key with: '+COMPANION_PERMISSIONS+', then select it in the companion settings.';
@@ -417,7 +407,7 @@ class HomeView extends ItemView {
   // Writing a note up again lives on one screen, so this one only points to it.
   pointToNotes(count){
     const el=this.contentEl;
-    el.createEl('p',{text:(count===1?'This note needs its summary written again.':'These notes need their summary written again.')+' Do it from Notes in Review, where every note waiting there has Resummarize and Enrich.'});
+    el.createEl('p',{text:(count===1?'This note needs its summary written again.':'These notes need their summary written again.')+' Do it from Notes in Review with Resummarize.'});
     const open=el.createEl('button',{text:'Open Notes in Review',cls:'mod-cta'});open.onclick=()=>this.plugin.openNotesInReview();
   }
   failedCard(recording){
@@ -483,7 +473,7 @@ const when=value=>{
   const today=date.toDateString()===new Date().toDateString();
   return date.toLocaleString([],today?{timeStyle:'short'}:{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
 };
-// How one step (the write-up, or the suggestions) stands, in plain words.
+// How the write-up stands, in plain words.
 function stepText(label,step,unavailable){
   const at=when(step.when);
   switch(step.state){
@@ -496,9 +486,8 @@ function stepText(label,step,unavailable){
   }
 }
 // What needs the owner comes first: a held rewrite, a failure or a gap, then work in progress, then the rest.
-const attention=n=>n.kept||n.filing?.problem?0:[n.writeup,n.suggestions].some(x=>x.state==='failed')||(n.can_resummarize&&n.writeup.state==='missing')?1:[n.writeup,n.suggestions].some(x=>x.state==='working')?2:3;
+const attention=n=>n.kept||n.filing?.problem?0:n.writeup.state==='failed'||(n.can_resummarize&&n.writeup.state==='missing')?1:n.writeup.state==='working'?2:3;
 const WRITEUP_OFF='Write-ups are off, so notes cannot be written up again. Turn them on in Coppermind Admin, under How recordings are written up.';
-const SUGGESTIONS_OFF='Suggestions are off. Turn them on in Coppermind Admin to use Enrich.';
 class NotesView extends ItemView {
   constructor(leaf,plugin){super(leaf);this.plugin=plugin;this.generation=0;this.local={};this.seen={};this.order=[];this.filter='';}
   getViewType(){return NOTES_VIEW;}
@@ -509,7 +498,7 @@ class NotesView extends ItemView {
   schedule(){
     // Look more often while something is being written, so a finish shows up without a click.
     clearTimeout(this.timer);
-    const busy=(this.data?.notes||[]).some(n=>n.writeup.state==='working'||n.suggestions.state==='working');
+    const busy=(this.data?.notes||[]).some(n=>n.writeup.state==='working');
     this.timer=setTimeout(async()=>{await this.refresh(true);this.schedule();},busy?(this.plugin.notesBusyPollMs||NOTES_BUSY_POLL_MS):(this.plugin.notesPollMs||NOTES_POLL_MS));
   }
   // Further per-note actions are added here: a label, when it is offered, its busy label, and what it does.
@@ -518,9 +507,6 @@ class NotesView extends ItemView {
       {label:'Resummarize',busy:'Resummarizing…',offered:n=>n.can_resummarize,working:n=>n.writeup.state==='working',
         help:'Writes the note up again from the saved transcript. The recording is not transcribed again, and anything you edited by hand is kept.',
         run:async n=>{const result=await this.plugin.call('/v1/notes/'+encodeURIComponent(n.id)+'/resummarize','POST',{});return result.already?'It is already being written up.':'Started. This can take a minute.';}},
-      {label:'Enrich',busy:'Enriching…',offered:n=>n.can_enrich,working:n=>n.suggestions.state==='working',
-        help:'Runs the suggestions again: attendees, account, tags, type and the like. Nothing changes until you review the note.',
-        run:async n=>{await this.plugin.call('/v1/notes/'+encodeURIComponent(n.id)+'/suggestions','POST',{});return 'Started. This can take a minute.';}},
     ];
   }
   fail(e,fallback){return e.status===403?KEY_MISSING:e.status===422||e.status===404?e.message:fallback;}
@@ -579,12 +565,12 @@ class NotesView extends ItemView {
     this.writing=this.writing||{};
     for(const n of data.notes||[]){
       if(n.writeup.state==='working')this.writing[n.id]=n.title;else delete this.writing[n.id];
-      for(const [key,step] of [['writeup',n.writeup],['suggestions',n.suggestions]]){
+      for(const [key,step] of [['writeup',n.writeup]]){
         const id=n.id+':'+key, before=this.seen[id];
         if(before==='working'&&step.state!=='working')(this.local[n.id]??={}).finished=Object.assign(this.local[n.id].finished||{},{[key]:true});
         this.seen[id]=step.state;
       }
-      if(this.local[n.id]?.message&&!this.local[n.id].problem&&!this.local[n.id].keep&&(n.writeup.state==='working'||n.suggestions.state==='working'))delete this.local[n.id].message;
+      if(this.local[n.id]?.message&&!this.local[n.id].problem&&!this.local[n.id].keep&&n.writeup.state==='working')delete this.local[n.id].message;
     }
   }
   showStamp(){
@@ -613,7 +599,7 @@ class NotesView extends ItemView {
     if(!this.shell)this.build();
     const shell=this.shell;
     const missing=notes.filter(n=>n.can_resummarize&&['missing','failed'].includes(n.writeup.state));
-    const working=notes.filter(n=>n.writeup.state==='working'||n.suggestions.state==='working');
+    const working=notes.filter(n=>n.writeup.state==='working');
     const parts=[plural(data.total??notes.length,'note')+' in Review'];
     if(missing.length)parts.push(missing.length+' without a write-up');
     if(working.length)parts.push(working.length+' in progress');
@@ -621,7 +607,6 @@ class NotesView extends ItemView {
     this.showStamp();
     shell.notices.empty();
     if(data.writeup_on===false)shell.notices.createEl('p',{text:WRITEUP_OFF,cls:'coppermind-notice'});
-    if(data.suggestions_on===false)shell.notices.createEl('p',{text:SUGGESTIONS_OFF,cls:'coppermind-notice'});
     for(const title of this.left||[])shell.notices.createEl('p',{text:'"'+title+'" left Review while it was being written up.',cls:'coppermind-notice'});
     shell.bulk.empty();
     if(missing.length){
@@ -678,10 +663,8 @@ class NotesView extends ItemView {
     // A rewrite held back for an edited note is one plain status, not "written" and "not changed" together.
     const writeup=note.kept?'Write-up: a new write-up is ready. Your note has not been changed yet.':stepText('Write-up',note.writeup,'this note is not from a recording');
     card.createEl('p',{text:writeup,cls:'coppermind-status'});
-    card.createEl('p',{text:stepText('Suggestions',note.suggestions),cls:'coppermind-status'});
     const done=this.local[note.id]?.finished||{};
     if(!note.kept&&done.writeup&&note.writeup.state==='written')card.createEl('p',{text:'The write-up has finished.',cls:'coppermind-notice'});
-    if(done.suggestions&&note.suggestions.state==='written')card.createEl('p',{text:'The suggestions have finished.',cls:'coppermind-notice'});
     const bar=card.createDiv({cls:'coppermind-actions'});
     if(note.kept){
       const compare=bar.createEl('button',{text:'Compare with my note',cls:'mod-cta'});

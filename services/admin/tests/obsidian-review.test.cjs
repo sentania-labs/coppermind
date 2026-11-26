@@ -37,7 +37,7 @@ async function fixture(local, overrides={}){
   class Plugin {registerView(type,fn){factory=fn;factories[type]=fn;}addSettingTab(tab){this.settingTab=tab;}addCommand(command){(this.commands??={})[command.id]=command;}async saveData(data){(this.saved??=[]).push(JSON.parse(JSON.stringify(data)));}addRibbonIcon(icon,title){(this.ribbons??=[]).push(title);}registerEvent(){}async loadData(){return {url:'https://coppermind.example',secret:'local-secret-name'};}}
   class ItemView {constructor(leaf){this.app=leaf.app;this.contentEl=new El();}}
   const app={metadataCache:{getFileCache:()=>({frontmatter:{id:'test-note'}})},secretStorage:{getSecret:()=> 'synthetic-credential'},vault:{read:async()=>local??raw,getAbstractFileByPath:path=>({path})},workspace:{getActiveFile:()=>file,on:()=>null,getActiveViewOfType:()=>null,openLinkText:()=>{}}};
-  const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,Modal:class{constructor(app){this.app=app;this.contentEl=new El();}open(){modals.push(this);this.onOpen();}close(){this.onClose();}},PluginSettingTab:class{constructor(){this.containerEl=new El();}},SecretComponent:class{setValue(){return this;}onChange(){return this;}},Notice:class{constructor(text){notices.push(text);}},MarkdownView:class{},requestUrl:async req=>{requests.push(req);if(req.url.endsWith('/v1/pair')&&overrides.pair)return overrides.pair(req);if(req.url.endsWith('/v1/anything')&&overrides.page)return overrides.page(req);if(req.url.endsWith('/v1/recordings/waiting'))return overrides.waitingFail?{status:overrides.waitingFail===true?500:overrides.waitingFail,json:{message:'down'}}:overrides.waitingHang?new Promise(()=>{}):{status:200,json:overrides.waiting};if(req.url.endsWith('/v1/dropbox'))return overrides.dropboxFail?{status:overrides.dropboxFail===true?500:overrides.dropboxFail,json:{message:'down'}}:{status:200,json:overrides.dropbox??{folder:'Dropbox',items:[]}};if(req.url.includes('/v1/dropbox/')&&req.url.endsWith('/dismiss'))return overrides.dismissDropFail?{status:500,json:{}}:{status:200,json:{dismissed:'x'}};if(req.url.endsWith('/v1/recordings/summaries-again'))return overrides.summariesAgain?overrides.summariesAgain(req):{status:200,json:{queued:2,already:0,skipped:0}};if(new URL(req.url).pathname==='/v1/review/notes')return overrides.reviewNotesFail?{status:overrides.reviewNotesFail===true?500:overrides.reviewNotesFail,json:{message:'down'}}:{status:200,json:typeof overrides.reviewNotes==='function'?overrides.reviewNotes(req):overrides.reviewNotes};if(req.url.endsWith('/file-again')&&req.method==='POST')return overrides.fileAgain?overrides.fileAgain(req):{status:200,json:{filed:true,problem:''}};if(req.url.endsWith('/resummarize')&&req.method==='POST')return overrides.resummarize?overrides.resummarize(req):{status:200,json:{started:true,already:false}};if(req.url.endsWith('/suggestions')&&req.method==='POST')return overrides.suggestionsRequest?overrides.suggestionsRequest(req):{status:200,json:{jobs:['j']}};if(req.url.endsWith('/summary-again'))return overrides.summaryAgain?overrides.summaryAgain(req):{status:200,json:{title:'Planning',already:false}};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/dismiss'))return overrides.dismissFail?{status:500,json:{}}:{status:200,json:{}};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/retry'))return overrides.retryFail?{status:overrides.retryFail===true?500:overrides.retryFail,json:{}}:(overrides.onRetry?.(),{status:200,json:{}});if(req.url.endsWith('/v1/schema'))return {status:200,json:{roles:{id_key:'id'}}};if(req.url.endsWith('/v1/entities/voice/recognition'))return {status:200,json:overrides.recognition||{enabled:true,attendees_field:'attendees'}};if(req.url.endsWith('/v1/entities/voice/unknowns'))return {status:200,json:overrides.unknownVoices||{}};if(req.url.endsWith('/v1/entities/voice/people'))return {status:200,json:overrides.savedPeople||{}};if(req.url.includes('/v1/entities?'))return overrides.rejectPeople?{status:overrides.rejectPeople===true?403:overrides.rejectPeople,json:{error:'forbidden'}}:{status:200,json:typeof overrides.peopleResults==='function'?await overrides.peopleResults(req):overrides.peopleResults||{items:[],next_cursor:null}};if(req.url.endsWith('/review')&&req.method==='POST'&&overrides.rejectReview)return {status:403,json:{error:'forbidden'}};return {status:200,json:{note:{content_hash:digest,frontmatter:{reviewed:false}},roles:{reviewed_key:'reviewed',type_key:'type'},suggestions:[],unresolved:[],stale:false,state:'suggested',suggestions_enabled:true,job_id:null,...overrides}};}}),crypto:webcrypto,TextEncoder,URL,setTimeout,clearTimeout,setInterval,clearInterval};
+  const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,Modal:class{constructor(app){this.app=app;this.contentEl=new El();}open(){modals.push(this);this.onOpen();}close(){this.onClose();}},PluginSettingTab:class{constructor(){this.containerEl=new El();}},SecretComponent:class{setValue(){return this;}onChange(){return this;}},Notice:class{constructor(text){notices.push(text);}},MarkdownView:class{},requestUrl:async req=>{requests.push(req);if(req.url.endsWith('/v1/pair')&&overrides.pair)return overrides.pair(req);if(req.url.endsWith('/v1/anything')&&overrides.page)return overrides.page(req);if(req.url.endsWith('/v1/recordings/waiting'))return overrides.waitingFail?{status:overrides.waitingFail===true?500:overrides.waitingFail,json:{message:'down'}}:overrides.waitingHang?new Promise(()=>{}):{status:200,json:overrides.waiting};if(req.url.endsWith('/v1/dropbox'))return overrides.dropboxFail?{status:overrides.dropboxFail===true?500:overrides.dropboxFail,json:{message:'down'}}:{status:200,json:overrides.dropbox??{folder:'Dropbox',items:[]}};if(req.url.includes('/v1/dropbox/')&&req.url.endsWith('/dismiss'))return overrides.dismissDropFail?{status:500,json:{}}:{status:200,json:{dismissed:'x'}};if(req.url.endsWith('/v1/recordings/summaries-again'))return overrides.summariesAgain?overrides.summariesAgain(req):{status:200,json:{queued:2,already:0,skipped:0}};if(new URL(req.url).pathname==='/v1/review/notes')return overrides.reviewNotesFail?{status:overrides.reviewNotesFail===true?500:overrides.reviewNotesFail,json:{message:'down'}}:{status:200,json:typeof overrides.reviewNotes==='function'?overrides.reviewNotes(req):overrides.reviewNotes};if(req.url.endsWith('/file-again')&&req.method==='POST')return overrides.fileAgain?overrides.fileAgain(req):{status:200,json:{filed:true,problem:''}};if(req.url.endsWith('/resummarize')&&req.method==='POST')return overrides.resummarize?overrides.resummarize(req):{status:200,json:{started:true,already:false}};if(req.url.endsWith('/summary-again'))return overrides.summaryAgain?overrides.summaryAgain(req):{status:200,json:{title:'Planning',already:false}};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/dismiss'))return overrides.dismissFail?{status:500,json:{}}:{status:200,json:{}};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/retry'))return overrides.retryFail?{status:overrides.retryFail===true?500:overrides.retryFail,json:{}}:(overrides.onRetry?.(),{status:200,json:{}});if(req.url.endsWith('/v1/schema'))return {status:200,json:{roles:{id_key:'id'}}};if(req.url.endsWith('/v1/entities/voice/recognition'))return {status:200,json:overrides.recognition||{enabled:true,attendees_field:'attendees'}};if(req.url.endsWith('/v1/entities/voice/unknowns'))return {status:200,json:overrides.unknownVoices||{}};if(req.url.endsWith('/v1/entities/voice/people'))return {status:200,json:overrides.savedPeople||{}};if(req.url.includes('/v1/entities?'))return overrides.rejectPeople?{status:overrides.rejectPeople===true?403:overrides.rejectPeople,json:{error:'forbidden'}}:{status:200,json:typeof overrides.peopleResults==='function'?await overrides.peopleResults(req):overrides.peopleResults||{items:[],next_cursor:null}};if(req.url.endsWith('/review')&&req.method==='POST'&&overrides.rejectReview)return {status:403,json:{error:'forbidden'}};return {status:200,json:{note:{content_hash:digest,frontmatter:{reviewed:false}},roles:{reviewed_key:'reviewed',type_key:'type'},suggestions:[],unresolved:[],state:'suggested',job_id:null,...overrides}};}}),crypto:webcrypto,TextEncoder,URL,setTimeout,clearTimeout,setInterval,clearInterval};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../coppermind_admin/obsidian_plugin/main.js'),'utf8'),context);
   const plugin=new context.module.exports();plugin.app=app;await plugin.onload();
   const view=factory({app});await view.refresh();
@@ -46,12 +46,12 @@ async function fixture(local, overrides={}){
 test('unsynced note cannot complete review',async()=>{
   const {view}=await fixture('A local edit that has not synced');
   const buttons=view.contentEl.all().filter(e=>e.tag==='button');
-  assert.equal(buttons.find(b=>b.text==='Mark reviewed without changes').disabled,true);
+  assert.equal(buttons.find(b=>b.text==='Mark reviewed').disabled,true);
   assert.ok(view.contentEl.all().some(e=>e.text?.includes('have not reached')));
 });
 test('edit after panel load is refused before any write request',async()=>{
   const f=await fixture();f.app.vault.read=async()=> 'Changed after opening';
-  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed without changes').onclick();
+  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed').onclick();
   assert.equal(f.requests.filter(r=>r.method==='POST').length,0);
   assert.ok(f.notices.some(n=>n.includes('note changed')));
 });
@@ -84,11 +84,10 @@ test('the only meeting that could match can be chosen on the note, and one alrea
   assert.ok(!chosen.view.contentEl.all().some(e=>e.text==='Which meeting was this?'));
 });
 
-test('a lone meeting from the day, not from an overlap, is neither claimed as on at the time nor preselected, and its suggestion stays',async()=>{
+test('a lone meeting from the day, not from an overlap, is neither claimed as on at the time nor preselected',async()=>{
   // A recording at 10:00 and a calendar whose only event that day is at 15:00.
   const afternoon={event_id:'a',title:'Dentist',start:'2026-11-26T15:00:00-06:00',people:[]};
-  const suggestion={kind:'event',field:'meeting',index:0,value:'a',display_value:'Dentist',confidence:.9,reason:'Calendar.',quote:'',contact_ids:[],candidates:[]};
-  const f=await fixture(undefined,{recording_meeting:{calendar_hash:'calendar',suggested_event_id:null,selected_event_id:null,matched_event_id:null,candidates:[afternoon]},suggestions:[suggestion],job_id:'job'});
+  const f=await fixture(undefined,{recording_meeting:{calendar_hash:'calendar',suggested_event_id:null,selected_event_id:null,matched_event_id:null,candidates:[afternoon]}});
   const texts=f.view.contentEl.all().map(e=>e.text).filter(Boolean);
   assert.ok(texts.includes('Which meeting was this?'));
   assert.ok(!texts.some(t=>t.includes('was on at the time')));
@@ -96,7 +95,6 @@ test('a lone meeting from the day, not from an overlap, is neither claimed as on
   await f.view.contentEl.all().find(e=>e.text==='Use selected meeting').onclick();
   assert.ok(f.notices.includes('Choose a meeting first.'));
   assert.equal(f.requests.filter(r=>r.url.endsWith('/recording-meeting')).length,0);
-  assert.ok(texts.includes('Dentist'));
 });
 
 test('the only meeting, when the recording named it, is shown as the meeting and not asked about',async()=>{
@@ -131,7 +129,7 @@ test('merge shows progress and prevents conflicting actions until it resolves',a
   const pending=f.modals[0].contentEl.all().find(e=>e.text==='Confirm merge').onclick();
   await new Promise(resolve=>setTimeout(resolve,20));
   assert.ok(f.view.contentEl.all().some(e=>e.text==='Adding the recording to your note…'));
-  for(const text of ['Review merge','Keep separate','Apply kept suggestions & mark reviewed','Mark reviewed without changes']){
+  for(const text of ['Review merge','Keep separate','Mark reviewed']){
     const button=f.view.contentEl.all().find(e=>e.text===text);assert.ok(button,text);assert.equal(button.disabled,true,text);
   }
   rejectMerge(Error('Connection lost'));await pending;
@@ -160,15 +158,15 @@ for(const type of ['work','personal','reference','journal'])test(type+' review a
   assert.ok(!texts.includes('Meeting time')&&!texts.includes('Time unknown')&&!texts.includes('Save time'));
 });
 
-test('speaker choice is sent with the selected proposal',async()=>{
+test('the person chosen for a speaker is sent when the note is marked reviewed',async()=>{
   const speaker={kind:'speaker',field:'Speaker 2',index:3,value:'contact:a',display_value:'Casey',confidence:.87,reason:'Addressed by name.',quote:'',contact_ids:[],candidates:[{id:'contact:a',name:'Casey',email:'casey@example.test'},{id:'person:b',name:'Alex',email:'alex@example.test'}]};
-  const f=await fixture(undefined,{suggestions:[speaker],job_id:'job',suggestions_enabled:true});
+  const f=await fixture(undefined,{suggestions:[speaker],job_id:'job'});
   const card=f.view.contentEl.all().find(e=>e.children.some(c=>c.text==='Casey'));
   const choice=card.children.find(c=>c.tag==='select');
   assert.equal(choice.value,'contact:a');
+  assert.ok(!card.children.some(c=>c.tag==='toggle'));
   choice.value='person:b';choice.onchange();
-  card.children.find(c=>c.tag==='toggle').onchange(true);
-  await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
+  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed').onclick();
   const body=JSON.parse(f.requests.find(r=>r.method==='POST').body);
   assert.deepEqual(body.selected,[3]);
   assert.equal(body.speaker_choices['3'],'person:b');
@@ -187,28 +185,22 @@ test('attendees notice stays out of the preview when the note has no speakers',a
   const text=f.view.contentEl.all().map(e=>e.text||'').join(' ');
   assert.doesNotMatch(text,/Attendees will not be updated/);
 });
-test('preview shows selected speaker changes and dropdown correction selects the card',async()=>{
+test('preview shows chosen speakers, a doubtful name starts unchosen, and choosing it applies it',async()=>{
   const f=await fixture(undefined,{suggestions:[proposal(0,.9),proposal(1,.4)],job_id:'job'});
   let text=()=>f.view.contentEl.all().map(e=>e.text||'').join(' ');
   assert.match(text(),/Speaker 1 → Alex/);assert.doesNotMatch(text(),/Speaker 2 → Alex/);
-  assert.match(text(),/transcript labels, note attendees and links to selected people/);assert.match(text(),/Unnamed speakers stay/);
+  assert.equal(f.view.contentEl.all().filter(e=>e.tag==='select')[1].value,'');
+  assert.match(text(),/transcript labels, note attendees and links to the people chosen/);assert.match(text(),/Unnamed speakers stay/);
   const selects=f.view.contentEl.all().filter(e=>e.tag==='select');selects[1].value='person:b';selects[1].onchange();
   assert.match(text(),/Speaker 2 → Blair/);
-  await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
+  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed').onclick();
   assert.deepEqual(JSON.parse(f.requests.find(r=>r.method==='POST').body).selected,[0,1]);
 });
-test('select all suggested names selects low confidence names explicitly',async()=>{
-  const f=await fixture(undefined,{suggestions:[proposal(0,.4),proposal(1,.3)],job_id:'job'});
-  f.view.contentEl.all().find(e=>e.text==='Select all suggested names').onclick();
-  await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
-  assert.deepEqual(JSON.parse(f.requests.find(r=>r.method==='POST').body).selected,[0,1]);
-});
-test('failed suggestions show the cause, point to Notes in Review, and still permit manual speaker selection',async()=>{
+test('a failed run still permits naming speakers by hand, and says nothing about proposals',async()=>{
   const f=await fixture(undefined,{state:'failed',suggestion_error:'The model timed out.',manual_speaker_review:{revision:2,speakers:['Speaker 1'],candidates:[{id:'person:a',name:'Alex'}]}});
-  assert.ok(f.view.contentEl.all().some(e=>e.text?.includes('The model timed out.')));
-  assert.ok(f.view.contentEl.all().some(e=>e.text==='Open Notes in Review')&&!f.view.contentEl.all().some(e=>e.text==='Retry suggestions'||e.text==='Request fresh suggestions'));
+  assert.ok(!f.view.contentEl.all().some(e=>e.text?.includes('could not be completed')));
   const select=f.view.contentEl.all().find(e=>e.tag==='select');select.value='person:a';select.onchange();
-  await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
+  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed').onclick();
   const body=JSON.parse(f.requests.find(r=>r.method==='POST').body);
   assert.equal(body.manual_speakers['Speaker 1'],'person:a');assert.equal(body.manual_source_revision,2);
 });
@@ -224,8 +216,8 @@ test('with names typed in the note the panel lists them and no longer promises n
   const all=f.view.contentEl.all();
   assert.ok(all.some(e=>e.text==='Unknown voice 7 → Tom Reed (typed in the note)'));
   assert.ok(!all.some(e=>e.text==='No speaker names selected.'));
-  assert.ok(!all.some(e=>e.tag==='button'&&e.text==='Mark reviewed without changes'));
-  assert.ok(all.some(e=>e.tag==='button'&&e.text==='Mark reviewed, applying only the names typed in the note'));
+  assert.equal(all.filter(e=>e.tag==='button'&&e.text?.startsWith('Mark reviewed')).length,1);
+  assert.ok(all.some(e=>e.tag==='button'&&e.text==='Mark reviewed'));
 });
 test('a note with a Speakers section is named in the note, not by a competing control here',async()=>{
   const f=await fixture(undefined,{state:'suggested',speakers_in_note:true,manual_speaker_review:{revision:2,speakers:['Unknown voice 7'],candidates:[{id:'person:a',name:'Alex'}]}});
@@ -244,7 +236,7 @@ test('after review the panel says what became of each name typed in the note',as
 });
 test('empty candidates permit searching People and choosing a result',async()=>{
   const f=await fixture(undefined,{state:'failed',manual_speaker_review:{revision:1,speakers:['Speaker 1'],candidates:[]},peopleResults:{items:[{id:'b',name:'Blair',emails:[]}],next_cursor:null}});
-  assert.ok(f.view.contentEl.all().some(e=>e.text?.includes('No people suggested. Enter a name')));
+  assert.ok(f.view.contentEl.all().some(e=>e.text?.includes('No likely people found. Enter a name')));
   const input=f.view.contentEl.all().find(e=>e.tag==='input');input.value='Blair';
   await f.view.contentEl.all().find(e=>e.text==='Find a person').onclick();
   const select=f.view.contentEl.all().find(e=>e.tag==='select');select.value='person:b';select.onchange();
@@ -354,19 +346,14 @@ test('summary edits and dropped sections are sent only on review completion',asy
   inputs[0].value='Owner corrected summary.';inputs[0].oninput();
   await f.view.contentEl.all().find(e=>e.text==='Drop decisions').onclick();
   assert.equal(f.requests.filter(r=>r.method==='POST').length,0);
-  await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
+  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed').onclick();
   const body=JSON.parse(f.requests.find(r=>r.method==='POST').body);
   assert.deepEqual(body.meeting_summary,{summary:'Owner corrected summary.',decisions:'',action_items:'- Casey: send the plan.'});
 });
-test('review without changes drops the summary',async()=>{
-  const f=await fixture(undefined,{meeting_summary:summaryProposal});
-  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed without changes').onclick();
-  assert.equal(JSON.parse(f.requests.find(r=>r.method==='POST').body).meeting_summary,null);
-});
-for(const state of ['failed','running','stale'])test(state+' summary cannot be applied',async()=>{
+for(const state of ['failed','running'])test(state+' summary cannot be applied',async()=>{
   const f=await fixture(undefined,{state,meeting_summary:summaryProposal});
   assert.ok(f.view.contentEl.all().filter(e=>e.tag==='textarea').every(e=>e.disabled));
-  await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
+  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed').onclick();
   assert.equal(JSON.parse(f.requests.find(r=>r.method==='POST').body).meeting_summary,null);
 });
 
@@ -374,7 +361,7 @@ const pendingSummaryNotice='The summary is still being written. Marking reviewed
 for(const state of ['queued','running'])test(state+' recording warns beside completion before filing without a summary',async()=>{
   const f=await fixture(undefined,{state,manual_speaker_review:{source_id:'source',revision:1,speakers:[],candidates:[]}});
   const children=f.view.contentEl.children;
-  const action=children.findIndex(e=>e.text==='Apply kept suggestions & mark reviewed');
+  const action=children.findIndex(e=>e.text==='Mark reviewed');
   assert.equal(children[action-1].text,pendingSummaryNotice);
   assert.equal(children[action].disabled,false);
   await children[action].onclick();
@@ -392,7 +379,7 @@ test('voice and maybe names require a deliberate choice',async()=>{
   assert.equal(select.value,'');
   const button=f.view.contentEl.all().find(e=>e.text==='Maybe: Alex');assert.ok(button);
   button.onclick();
-  await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
+  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed').onclick();
   assert.equal(JSON.parse(f.requests.find(r=>r.method==='POST').body).manual_speakers['Speaker 1'],'person:a');
 });
 
@@ -402,7 +389,7 @@ test('a single strong voice suggestion is included in one completion',async()=>{
   const f=await fixture(undefined,{manual_speaker_review:voiceManual([match('a','Alex')])});
   const text=f.view.contentEl.all().map(e=>e.text||'').join(' ');
   assert.match(text,/Speaker 1 → Alex/);assert.match(text,/Source: Voice/);assert.doesNotMatch(text,/No people suggested/);
-  await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
+  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed').onclick();
   assert.equal(JSON.parse(f.requests.find(r=>r.method==='POST').body).manual_speakers['Speaker 1'],'person:a');
 });
 test('agreeing model and voice show both sources with one selection',async()=>{
@@ -410,17 +397,17 @@ test('agreeing model and voice show both sources with one selection',async()=>{
   const f=await fixture(undefined,{suggestions:[s],job_id:'job',manual_speaker_review:voiceManual([match('a','Alex')])});
   assert.ok(f.view.contentEl.all().some(e=>e.text==='Sources: Model and Voice'));
   assert.ok(!f.view.contentEl.all().some(e=>e.text==='Voice: Alex'));
-  await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
+  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed').onclick();
   assert.equal(JSON.parse(f.requests.find(r=>r.method==='POST').body).speaker_choices['0'],'contact:a');
 });
-for(const [name,suggestions,matches] of [
-  ['two voices',[],[match('a','Alex'),match('b','Blair')]],
-  ['model and voice',[proposal(0,.9,'person:a')],[match('b','Blair')]],
+for(const [name,suggestions,matches,says] of [
+  ['two voices',[],[match('a','Alex'),match('b','Blair')],'More than one saved voice matches. Choose a person.'],
+  ['model and voice',[proposal(0,.9,'person:a')],[match('b','Blair')],'The voice and the conversation point to different people. Choose a person.'],
 ])test(name+' conflict selects no one',async()=>{
   const f=await fixture(undefined,{suggestions,job_id:'job',manual_speaker_review:voiceManual(matches)});
-  assert.ok(f.view.contentEl.all().some(e=>e.text==='Suggestions disagree. Choose a person.'));
+  assert.ok(f.view.contentEl.all().some(e=>e.text===says));
   assert.equal(f.view.contentEl.all().find(e=>e.tag==='select').value,'');
-  await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
+  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed').onclick();
   const body=JSON.parse(f.requests.find(r=>r.method==='POST').body);
   assert.deepEqual(body.selected,[]);assert.deepEqual(body.manual_speakers,{});
 });
@@ -428,7 +415,7 @@ test('correcting a selected voice match sends only the corrected person',async()
   const review=voiceManual([match('a','Alex')]);review.candidates=[{id:'person:b',name:'Blair'}];
   const f=await fixture(undefined,{manual_speaker_review:review});
   const select=f.view.contentEl.all().find(e=>e.tag==='select');select.value='person:b';select.onchange();
-  await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
+  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed').onclick();
   assert.equal(JSON.parse(f.requests.find(r=>r.method==='POST').body).manual_speakers['Speaker 1'],'person:b');
 });
 
@@ -470,7 +457,7 @@ test('summary edits and strong voice are submitted together',async()=>{
   const f=await fixture(undefined,{meeting_summary:summaryProposal,job_id:'job',manual_speaker_review:voiceManual([match('a','Alex')])});
   const input=f.view.contentEl.all().find(e=>e.tag==='textarea');input.value='Corrected summary.';input.oninput();
   assert.ok(f.view.contentEl.all().some(e=>e.text==='Speaker 1 → Alex'));
-  await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
+  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed').onclick();
   const body=JSON.parse(f.requests.find(r=>r.method==='POST').body);
   assert.equal(body.meeting_summary.summary,'Corrected summary.');
   assert.equal(body.manual_speakers['Speaker 1'],'person:a');
@@ -483,7 +470,7 @@ test('voice selection does not show an empty model suggestion as a 0% voice matc
   const text=f.view.contentEl.all().map(e=>e.text||'').join(' ');
   assert.match(text,/Source: Voice/);assert.match(text,/Speaker 1 → Alex/);
   assert.doesNotMatch(text,/Model confidence: 0%/);assert.doesNotMatch(text,/No confident match was suggested/);
-  await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
+  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed').onclick();
   assert.equal(JSON.parse(f.requests.find(r=>r.method==='POST').body).speaker_choices['0'],'person:a');
 });
 test('useful model evidence stays attributed when voice supplies the name',async()=>{
@@ -600,7 +587,7 @@ test('strong voice suggestion explains confirmation and earlier appearances',asy
   const manual={speakers:['Unknown voice 12'],candidates:[],voice_matches:{'Unknown voice 12':[match('a','Alex')]},voice_appearances:{'Unknown voice 12':3}};
   const f=await fixture(undefined,{manual_speaker_review:manual});
   const text=f.view.contentEl.all().map(e=>e.text||'').join(' ');
-  assert.match(text,/Check this suggestion before you finish/);
+  assert.match(text,/Check this name before you finish/);
   assert.match(text,/remembered across recordings/);
   assert.match(text,/2 earlier recordings/);
 });
@@ -912,22 +899,22 @@ test('finished recording has no summary editor or pending warning during frontma
     manual_speaker_review:{source_id:'source',revision:1,speakers:[],candidates:[]}});
   assert.ok(!f.view.contentEl.all().some(e=>e.text===pendingSummaryNotice));
   assert.equal(f.view.contentEl.all().filter(e=>e.tag==='textarea').length,0);
-  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed without changes').onclick();
+  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed').onclick();
   assert.equal(JSON.parse(f.requests.find(r=>r.method==='POST').body).meeting_summary,null);
 });
 
 test('a note without a summary that cannot be retried offers no Retry',async()=>{
-  const f=await fixture(undefined,{waiting:{meetings:[],failed:[],processing:[],missing_summaries:[{id:'n1',title:'Planning',path:'Review/Planning.md',date:'',message:'Turn suggestions on first.',can_retry:false}]}});
+  const f=await fixture(undefined,{waiting:{meetings:[],failed:[],processing:[],missing_summaries:[{id:'n1',title:'Planning',path:'Review/Planning.md',date:'',message:'Turn write-ups on first.',can_retry:false}]}});
   const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
-  assert.ok(view.contentEl.all().some(e=>e.text?.includes('Turn suggestions on first.')));
+  assert.ok(view.contentEl.all().some(e=>e.text?.includes('Turn write-ups on first.')));
   assert.ok(!view.contentEl.all().some(e=>e.text==='Retry'));
 });
 
-// Notes in Review: the one place a recording's note is written up again or its suggestions are run again.
+// Notes in Review: the one place a recording's note is written up again.
 const step=(state,reason='',when='')=>({state,reason,when});
-const reviewNote=(id,title,over={})=>({id,title,path:'Review/'+title+'.md',date:'2026-11-02T10:00:00+00:00',from_recording:true,can_resummarize:true,can_enrich:true,writeup:step('written','','2026-11-02T11:00:00+00:00'),suggestions:step('missing'),...over});
+const reviewNote=(id,title,over={})=>({id,title,path:'Review/'+title+'.md',date:'2026-11-02T10:00:00+00:00',from_recording:true,can_resummarize:true,writeup:step('written','','2026-11-02T11:00:00+00:00'),...over});
 async function notesScreen(notes,over={}){
-  const state={notes,suggestions_on:true,writeup_on:true};
+  const state={notes,writeup_on:true};
   const f=await fixture(undefined,{reviewNotes:()=>state,...over});
   const view=f.factories['coppermind-notes-in-review']({app:f.app});await view.refresh();
   f.plugin.notesBusyPollMs=5;f.plugin.notesPollMs=5;
@@ -938,22 +925,21 @@ const posts=f=>f.requests.filter(r=>r.method==='POST').map(r=>r.url.replace('htt
 
 test('Notes in Review has its own command and lists every note with where it stands in plain words',async()=>{
   const f=await notesScreen([
-    reviewNote('n1','Planning',{suggestions:step('failed','The AI service did not answer.','2026-11-02T12:00:00+00:00')}),
+    reviewNote('n1','Planning',{writeup:step('working','','2026-11-02T12:00:00+00:00')}),
     reviewNote('n2','Budget',{writeup:step('missing')}),
-    reviewNote('n3','Notes from a friend',{from_recording:false,can_resummarize:false,writeup:step('none'),suggestions:step('working','','2026-11-02T12:00:00+00:00')}),
+    reviewNote('n3','Notes from a friend',{from_recording:false,can_resummarize:false,writeup:step('none')}),
   ]);
   assert.equal(f.plugin.commands['notes-in-review'].name,'Notes in Review');
   const texts=textsOf(f.view);
   assert.ok(texts.includes('3 notes in Review · 1 without a write-up · 1 in progress.'));
   for(const title of ['Planning','Budget','Notes from a friend'])assert.ok(texts.includes(title));
-  assert.ok(texts.some(t=>t.startsWith('Write-up: written, finished ')));
+  assert.ok(texts.some(t=>t.startsWith('Write-up: being written now, started ')));
   assert.ok(texts.includes('Write-up: missing.'));
-  assert.ok(texts.some(t=>t.startsWith('Suggestions: failed at ')&&t.endsWith('. The AI service did not answer.')));
   assert.ok(texts.includes('Write-up: this note is not from a recording.'));
+  assert.ok(!texts.some(t=>t.startsWith('Suggestions')));
   const buttons=f.view.contentEl.all().filter(e=>e.tag==='button').map(b=>b.text);
-  assert.equal(buttons.filter(t=>t==='Resummarize').length,2);
-  assert.equal(buttons.filter(t=>t==='Enrich').length,2);
-  assert.ok(buttons.includes('Enriching…'));
+  assert.equal(buttons.filter(t=>t==='Resummarize').length,1);
+  assert.ok(buttons.includes('Resummarizing…'));
   assert.ok(!buttons.includes('Retry'));
 });
 
@@ -984,25 +970,6 @@ test('a refused Resummarize shows the server words on the row and the button wor
   const button=f.view.contentEl.all().find(e=>e.text==='Resummarize');await button.onclick();
   assert.ok(textsOf(f.view).includes('Recordings are not set up to be written up.'));
   assert.equal(button.disabled,false);assert.equal(button.text,'Resummarize');
-});
-
-test('Enrich runs the suggestion step on that note and shows it working, then finished',async()=>{
-  const f=await notesScreen([reviewNote('n1','Planning')],{suggestionsRequest:()=>{f.state.notes[0].suggestions=step('working','',new Date().toISOString());return {status:200,json:{jobs:['j']}};}});
-  await f.view.contentEl.all().find(e=>e.text==='Enrich').onclick();
-  assert.deepEqual(posts(f),['/v1/notes/n1/suggestions']);
-  assert.ok(textsOf(f.view).some(t=>t.startsWith('Suggestions: being written now')));
-  assert.equal(f.view.contentEl.all().find(e=>e.text==='Enriching…').disabled,true);
-  f.state.notes[0].suggestions=step('written','','2026-11-25T15:20:00+00:00');await f.view.refresh(true);
-  assert.ok(textsOf(f.view).includes('The suggestions have finished.'));
-});
-
-test('Enrich is not offered when suggestions are off, and a refused one says why',async()=>{
-  const off=await notesScreen([reviewNote('n1','Planning',{can_enrich:false,suggestions:step('off')})]);
-  assert.ok(!off.view.contentEl.all().some(e=>e.text==='Enrich'));
-  assert.ok(textsOf(off.view).includes('Suggestions: off.'));
-  const f=await notesScreen([reviewNote('n1','Planning')],{suggestionsRequest:()=>({status:422,json:{message:'Suggestions are paused.'}})});
-  await f.view.contentEl.all().find(e=>e.text==='Enrich').onclick();
-  assert.ok(textsOf(f.view).includes('Suggestions are paused.'));
 });
 
 test('Resummarize all missing writes up only the notes without a write-up',async()=>{
@@ -1067,7 +1034,8 @@ test('Needs you has no per-note Retry or bulk write-up, and points to Notes in R
   const texts=textsOf(view);
   assert.ok(texts.includes('Notes without a summary (2)'));
   assert.ok(!texts.includes('Retry')&&!texts.includes('Write up every note without a summary'));
-  assert.ok(texts.some(t=>t.includes('Notes in Review')&&t.includes('Resummarize and Enrich')));
+  assert.ok(texts.some(t=>t.includes('Notes in Review')&&t.includes('Resummarize')));
+  assert.ok(!texts.some(t=>/Enrich/.test(t)));
   let opened=0;f.plugin.openNotesInReview=async()=>{opened++;};
   await view.contentEl.all().find(e=>e.text==='Open Notes in Review').onclick();
   assert.equal(opened,1);
@@ -1078,7 +1046,7 @@ test('the review panel no longer writes a summary again and points to Notes in R
   const f=await fixture(undefined,{recording_meeting:{candidates:[],calendar_hash:'c'},meeting_summary:{summary:'Launch plan.',decisions:'',action_items:''},job_id:'job-1',state:'suggested'});
   const texts=textsOf(f.view);
   assert.ok(!texts.includes('Write the summary again')&&!texts.includes('Write a summary'));
-  assert.ok(texts.includes('To write this note up again or run its suggestions again, use Notes in Review.'));
+  assert.ok(texts.includes('To write this note up again, use Resummarize in Notes in Review.'));
   assert.ok(texts.includes('Open Notes in Review'));
 });
 
@@ -1088,7 +1056,7 @@ test('more notes in Review than one page are all loaded, counted and offered to 
   const f=await fixture(undefined,{reviewNotes:req=>{
     const cursor=new URL(req.url).searchParams.get('cursor')||'0';asked.push(cursor);
     const from=Number(cursor);const next=from+2;
-    return {notes:all.slice(from,next),total:5,next_cursor:next<5?String(next):null,suggestions_on:true,writeup_on:true};}});
+    return {notes:all.slice(from,next),total:5,next_cursor:next<5?String(next):null,writeup_on:true};}});
   const view=f.factories['coppermind-notes-in-review']({app:f.app});await view.refresh();
   assert.deepEqual(asked,['0','2','4']);
   const texts=textsOf(view);
@@ -1098,10 +1066,11 @@ test('more notes in Review than one page are all loaded, counted and offered to 
   assert.deepEqual(posts(f),['/v1/notes/n3/resummarize','/v1/notes/n4/resummarize']);
 });
 
-test('the review panel has no second Enrich, and warns when a rewrite would be discarded',async()=>{
+test('the review panel shows no field to accept, and warns when a rewrite would be discarded',async()=>{
   const f=await fixture(undefined,{rewrite_running:true,suggestions:[{kind:'tags',field:'tags',value:['a'],confidence:1,reason:'',candidates:[],contact_ids:[]}]});
   const texts=textsOf(f.view);
-  assert.ok(!f.view.contentEl.all().some(e=>e.text==='Request fresh suggestions'));
+  assert.ok(!f.view.contentEl.all().some(e=>e.tag==='toggle'));
+  assert.ok(!texts.includes('tags'));
   assert.ok(texts.includes('A new write-up is being made for this note.'));
   const calm=await fixture(undefined,{});
   assert.ok(!textsOf(calm.view).includes('A new write-up is being made for this note.'));
@@ -1121,14 +1090,13 @@ test('rows keep their place while the screen is open and re-sort only on Refresh
   assert.deepEqual(titles(),['Beta','Gamma','Alpha']);
 });
 
-test('when write-ups or suggestions are off, no button that cannot work is offered and it is said once',async()=>{
-  const f=await notesScreen([reviewNote('n1','Alpha',{can_resummarize:false,can_enrich:false,writeup:step('missing')}),reviewNote('n2','Beta',{can_resummarize:false,can_enrich:false,writeup:step('failed','x')})],{});
-  f.state.writeup_on=false;f.state.suggestions_on=false;await f.view.refresh(false,true);
+test('when write-ups are off, no button that cannot work is offered and it is said once',async()=>{
+  const f=await notesScreen([reviewNote('n1','Alpha',{can_resummarize:false,writeup:step('missing')}),reviewNote('n2','Beta',{can_resummarize:false,writeup:step('failed','x')})],{});
+  f.state.writeup_on=false;await f.view.refresh(false,true);
   const texts=textsOf(f.view);
   assert.equal(texts.filter(t=>t.startsWith('Write-ups are off')).length,1);
-  assert.equal(texts.filter(t=>t.startsWith('Suggestions are off')).length,1);
   const buttons=f.view.contentEl.all().filter(e=>e.tag==='button').map(b=>b.text);
-  assert.ok(!buttons.includes('Resummarize')&&!buttons.includes('Enrich')&&!buttons.some(t=>t.startsWith('Resummarize all')));
+  assert.ok(!buttons.includes('Resummarize')&&!buttons.some(t=>t.startsWith('Resummarize all')));
 });
 
 test('failures starting the bulk run are grouped by reason, not repeated per note',async()=>{
@@ -1220,4 +1188,55 @@ test('the pairing dialog points to the page that shows the code',async()=>{
   const text=f.modals.at(-1).contentEl.all().filter(e=>e.tag==='p').map(e=>e.text).join(' ');
   assert.match(text,/Add the companion to Obsidian/);
   assert.doesNotMatch(text,/Obsidian Sync|Pair companion/);
+});
+
+// Notes arrive filled in: nothing is proposed, so nothing is offered to accept.
+const proposalWords=/enrich|suggestion|earlier version/i;
+const wordsOf=view=>view.contentEl.all().flatMap(e=>[e.text,e.title,e.attr?.placeholder]).filter(Boolean);
+const oldServerFields=[{kind:'type',field:'type',index:0,value:'personal',confidence:1,reason:'',candidates:[],contact_ids:[]},{kind:'filename',field:'',index:1,value:'New title',confidence:1,reason:'',candidates:[],contact_ids:[]},{kind:'event',field:'event',index:2,value:'x',confidence:1,reason:'',candidates:[],contact_ids:[]}];
+test('the review panel never speaks of enrichment, suggestions or an earlier version',async()=>{
+  const cases=[
+    {},
+    {stale:true,suggestions:[...oldServerFields,proposal(3,.9)],job_id:'job',meeting_summary:summaryProposal,recording_meeting:{calendar_hash:'c',candidates:[]}},
+    {state:'failed',suggestion_error:'The model timed out.',suggestions_enabled:false,manual_speaker_review:voiceManual([match('a','Alex'),match('b','Blair')])},
+    {state:'running',manual_speaker_review:voiceManual([match('a','Alex')])},
+    {suggestions:[proposal(0,.9,'person:a')],manual_speaker_review:voiceManual([match('b','Blair')])},
+  ];
+  for(const over of cases){
+    const f=await fixture(undefined,over);
+    const bad=wordsOf(f.view).filter(t=>proposalWords.test(t));
+    assert.deepEqual(bad,[],JSON.stringify(over));
+  }
+});
+test('Notes in Review never speaks of enrichment or suggestions, even if an older server still sends them',async()=>{
+  const f=await notesScreen([reviewNote('n1','Planning',{can_enrich:true,suggestions:step('failed','x')}),reviewNote('n2','Budget',{writeup:step('missing'),suggestions:step('working')})]);
+  f.state.suggestions_on=false;await f.view.refresh(false,true);
+  assert.deepEqual(wordsOf(f.view).filter(t=>proposalWords.test(t)),[]);
+  const needs=await home({waiting:{meetings:[],failed:[],processing:[],missing_summaries:[{id:'n1',title:'Planning',path:'Review/Planning.md',date:'',message:'It failed.'}]}});
+  assert.deepEqual(wordsOf(needs.view).filter(t=>/enrich/i.test(t)),[]);
+});
+test('there is exactly one finishing button, Mark reviewed',async()=>{
+  for(const over of [{},{meeting_summary:summaryProposal,job_id:'job'},{state:'suggested',speakers_in_note:true,named_in_note:[{label:'Unknown voice 7',name:'Tom Reed'}]},{suggestions:[...oldServerFields,proposal(3,.4)]}]){
+    const f=await fixture(undefined,over);
+    const finishing=f.view.contentEl.all().filter(e=>e.tag==='button'&&/mark reviewed|apply/i.test(e.text||''));
+    assert.deepEqual(finishing.map(b=>b.text),['Mark reviewed'],JSON.stringify(over));
+    assert.equal(finishing[0].cls,'mod-cta');
+    assert.ok(!f.view.contentEl.all().some(e=>/select all/i.test(e.text||'')));
+  }
+});
+test('marking reviewed sends no filename link risk, even when an older server proposes a new title',async()=>{
+  const f=await fixture(undefined,{suggestions:oldServerFields,job_id:'job'});
+  assert.ok(!f.view.contentEl.all().some(e=>/filename/i.test(e.text||'')));
+  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed').onclick();
+  const body=JSON.parse(f.requests.find(r=>r.method==='POST'&&r.url.endsWith('/review')).body);
+  assert.ok(!('accept_link_risk' in body));
+  assert.deepEqual(body.selected,[]);
+  assert.equal(body.confirmation,'Complete review');
+});
+test('a note that arrived with its type, account and tags filled in shows no switches',async()=>{
+  const fields=[{kind:'account',field:'account',index:0,value:['Acme'],confidence:.9,reason:'',candidates:[],contact_ids:[]},{kind:'tags',field:'tags',index:1,value:['planning'],confidence:.9,reason:'',candidates:[],contact_ids:[]},{kind:'type',field:'type',index:2,value:'personal',confidence:.9,reason:'',candidates:[],contact_ids:[]}];
+  for(const suggestions of [[],fields]){
+    const f=await fixture(undefined,{note:{frontmatter:{reviewed:false,type:'personal',account:['Acme'],tags:['planning']}},suggestions});
+    assert.equal(f.view.contentEl.all().filter(e=>e.tag==='toggle').length,0);
+  }
 });

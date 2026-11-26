@@ -3,6 +3,7 @@ from typing import Any
 
 import pytest
 from coppermind_store import calendar_lookup, speaker_names
+from coppermind_store.enrichment_models import Suggestion, Suggestions
 from coppermind_store.note_lifecycle import NoteLifecycle
 
 NOTE = "01HZ" + "0" * 22
@@ -50,7 +51,10 @@ def _context(
         created_at="2026-11-26T00:00:00Z",
         note_hash="sha256:1",
         evidence_hash=suggested_against,
-        result=None,
+        result=Suggestions(
+            suggestions=[Suggestion(kind="speaker", field="Unknown voice 1", reason="a name")]
+        ),
+        decisions=[],
         state="succeeded",
         error="",
         plain="",
@@ -125,24 +129,22 @@ async def test_the_meeting_and_update_come_back_when_the_calendar_answers(monkey
 
 
 @pytest.mark.asyncio
-async def test_suggestions_are_not_called_current_when_the_calendar_could_not_be_checked(
-    monkeypatch,
-):
-    # The note is unchanged, so only the calendar could say the suggestions are out of date.
+async def test_a_voice_is_not_offered_when_the_calendar_could_not_be_checked(monkeypatch):
+    # The note is unchanged, so only the calendar could say the suggestion is out of date.
     detail = await _detail(monkeypatch, calendar_answers=False, suggested_against="calendar")
-    assert detail["stale"] is True
+    assert detail["suggestions"] == [] and "stale" not in detail
 
 
 @pytest.mark.asyncio
-async def test_suggestions_stay_current_when_the_calendar_confirms_them(monkeypatch):
+async def test_a_voice_is_offered_when_the_calendar_confirms_it(monkeypatch):
     detail = await _detail(monkeypatch, calendar_answers=True, suggested_against="calendar")
-    assert detail["stale"] is False
+    assert [s["field"] for s in detail["suggestions"]] == ["Unknown voice 1"]
 
 
 @pytest.mark.asyncio
-async def test_suggestions_are_stale_when_the_calendar_has_changed_since(monkeypatch):
+async def test_a_voice_is_not_offered_when_the_calendar_has_changed_since(monkeypatch):
     detail = await _detail(monkeypatch, calendar_answers=True, suggested_against="older")
-    assert detail["stale"] is True
+    assert detail["suggestions"] == [] and "stale" not in detail
 
 
 @pytest.mark.asyncio

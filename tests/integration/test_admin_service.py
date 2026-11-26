@@ -8,6 +8,7 @@ from coppermind_store import admin_service
 from coppermind_store.admin_notes import MISSING_GRACE, why_not_filed
 from coppermind_store.admin_service import AdminService
 from coppermind_store.ai_services import candidates
+from coppermind_store.enrichment_models import Suggestions
 from coppermind_store.note_lifecycle import SETTLING
 
 from coppermind.api_keys import COMPANION_PERMISSIONS, describe, load_keys, scopes_for
@@ -32,6 +33,74 @@ async def test_the_overview_carries_what_every_page_counts_from(store):
     assert view["trans"]["state"] == "none"
     # The same number, asked a second way.
     assert len((await store.admin.act("notes-waiting", {}))["items"]) == view["notes"]["waiting"]
+
+
+async def test_suggestions_left_on_a_waiting_note_are_never_counted_for_admin(store):
+    context = await configure(store)
+    note = await store.create_note(
+        CreateNote(title="Waiting", body="Casey attended.\n", frontmatter={"date": "2026-10-14"})
+    )
+    job = context.load_job(await context.queue_note(note.id))
+    job.evidence = await context.evidence(job)
+    job.result = Suggestions.model_validate(
+        {
+            "suggestions": [
+                {"kind": "field", "field": "account", "value": "Example", "reason": "Said so"},
+                {"kind": "field", "field": "tags", "value": ["rollout"], "reason": "Said so"},
+            ]
+        }
+    )
+    job.state = "suggested"
+    context.save_job(job)
+    view = await store.admin.act("overview", {})
+    assert set(view["notes"]) == {"stuck", "waiting"}
+    assert view["notes"]["waiting"] == 1
+    (waiting,) = (await store.admin.act("notes-waiting", {}))["items"]
+    assert "unsure" not in waiting
+    assert "unsure" not in await store.admin.act("note", {"id": note.id})
+
+
+async def test_turning_suggestions_on_fills_people_and_the_meeting_without_asking(
+    store, monkeypatch
+):
+    await configure(store)
+    _answers(store, monkeypatch, {"Home": {"text": TEXT, "speech": NO_SPEECH}})
+    home = await _add(store, "Home")
+    config = store.context.config()
+    before = config.assignments["enrichment"]
+    before.attendees_field = before.invitees_field = before.event_field = ""
+    store.context.save_config(config)
+    whitelist = list(before.fields)
+    await store.admin.act("suggestions-save", {"connection": home, "model": "m"})
+    after = store.context.config().assignments["enrichment"]
+    assert (after.attendees_field, after.invitees_field, after.event_field) == (
+        "attendees",
+        "invitees",
+        "calendar_event",
+    )
+    # Admin no longer chooses which fields may be filled: the old list is left as it was.
+    assert after.fields == whitelist
+    names = {key.name for key in store.control.schema().keys}
+    assert {"attendees", "invitees", "calendar_event"} <= names
+    shown = await store.admin.act("suggestions", {})
+    assert "fill" not in shown and "fill_options" not in shown
+    for gone in ("suggestions-fill", "suggestions-tick"):
+        with pytest.raises(KeyError):
+            await store.admin.act(gone, {"fill": []})
+
+
+async def test_reading_calendar_descriptions_is_its_own_choice(store):
+    await configure(store)
+    assert (await store.admin.act("suggestions-descr", {"descr": True}))["descr"] is True
+    assignment = store.context.config().assignments["enrichment"]
+    assert assignment.send_calendar_descriptions is True
+    assert assignment.attendees_field == "attendees"
+    assert assignment.event_field == "calendar_event"
+    await store.admin.act("suggestions-descr", {"descr": False})
+    assignment = store.context.config().assignments["enrichment"]
+    assert assignment.send_calendar_descriptions is False
+    assert assignment.invitees_field == "invitees"
+    assert (await store.admin.act("suggestions", {}))["descr"] is False
 
 
 async def test_an_unknown_action_is_refused_by_name(store):

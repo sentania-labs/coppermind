@@ -46,7 +46,6 @@ STUCK_KINDS = {
     "unparsed": "unreadable",
     "unreadable_note": "unreadable",
 }
-CONFIDENT = 0.8
 # A note deleted on a device is first seen as missing, and its records are removed once the
 # history of the notes has recorded the removal: a few minutes at most. Until this long has
 # passed a vanished note is not called a problem.
@@ -190,47 +189,11 @@ class AdminNotes:
         except (OSError, ValueError):
             return ""
 
-    def _open_suggestions(self) -> dict[str, int]:
-        """How many suggestions on each waiting note still wait for the owner's answer."""
-        latest: dict[str, Any] = {}
-        for job in sorted(self.store.context.jobs(), key=lambda item: item.created_at):
-            if job.purpose != "dossier":
-                latest[job.note_id] = job
-        counts = {}
-        for note_id, job in latest.items():
-            if job.state != "suggested" or job.result is None:
-                continue
-            decided = job.decided | {
-                d["skipped"] for d in job.decisions if isinstance(d.get("skipped"), int)
-            }
-            count = sum(
-                1
-                for index, suggestion in enumerate(job.result.suggestions)
-                if index not in decided and suggestion.kind != "filename"
-            )
-            if count:
-                counts[note_id] = count
-        return counts
-
-    async def unsure(self) -> list[dict[str, Any]]:
-        counts = self._open_suggestions()
-        rows = await self._titles(set(counts))
-        return [
-            {
-                "id": note_id,
-                "title": rows[note_id].title or Path(rows[note_id].path).stem,
-                "count": count,
-            }
-            for note_id, count in counts.items()
-            if note_id in rows and rows[note_id].state == "ok" and not rows[note_id].reviewed
-        ]
-
     async def waiting(self) -> list[dict[str, Any]]:
         asked = {job.note_id for job in self.store.context.jobs() if job.purpose != "dossier"}
         without = {
             note["id"]: note["why"] for note in await self.store.admin.features.older_notes()
         }
-        unsure = self._open_suggestions()
         rows = await self._rows(Note.state == "ok", Note.reviewed.is_(False))
         return [
             {
@@ -238,7 +201,6 @@ class AdminNotes:
                 "title": row.title or Path(row.path).stem,
                 "path": row.path,
                 "arrived": row.first_seen_at.isoformat(),
-                "unsure": unsure.get(row.id, 0),
                 # "before": waiting since before suggestions were on. "failed": the answer
                 # could not be used. "soon": new, and asked for within a minute. "": it has them.
                 "no_suggestions": without.get(row.id) or ("" if row.id in asked else "soon"),
@@ -331,7 +293,6 @@ class AdminNotes:
         result["unnamed_voices"] = VoiceStore(self.store.context).unknown_for_note(note_id)
         result["reviewed"] = row.reviewed
         result["history"] = await self._history(row)
-        result["unsure"] = self._open_suggestions().get(note_id, 0)
         from coppermind_store.reconciler import note_collisions
 
         copies = [copy_path(reason) for reason in await note_collisions(self.store, note_id)]
@@ -399,7 +360,7 @@ class AdminNotes:
                         f"Suggestions filled in {len(filled)} blank"
                         f"{'' if len(filled) == 1 else 's'}."
                         if filled
-                        else "Suggestions were written for you to check.",
+                        else "Suggestions were written.",
                     )
                 )
             elif job.state == "failed" and job.error:
@@ -477,13 +438,7 @@ class AdminNotes:
         return {"filed": True, "path": note.path, "name": Path(note.path).stem}
 
     async def check_again(self, payload: dict[str, Any]) -> dict[str, Any]:
-        note_id = _note_id(payload)
-        result = await self._file_now(note_id)
-        if payload.get("reviewed"):
-            self.forget_earlier_summary(note_id)
-            # Said by the review page, so Home can recall the review and not only the filing.
-            result["reviewed"] = True
-        return result
+        return await self._file_now(_note_id(payload))
 
     async def _mark_missing(self, note_id: str) -> None:
         """Say in the mirror, at once, that a file Admin removed is gone."""
@@ -585,6 +540,12 @@ class AdminNotes:
             else None
         )
         earlier = context.read(EARLIER_SUMMARY + note_id, None)
+        async with self.store.session_factory() as session:
+            row = await session.get(Note, note_id)
+        if earlier and row is not None and row.reviewed:
+            # Once a note is reviewed, the summary it did not use is no longer kept.
+            (context.root / (EARLIER_SUMMARY + note_id + ".json")).unlink(missing_ok=True)
+            earlier = None
         if earlier and not self._still_usable(earlier.get("job_id", "")):
             # The note changed after that summary was written, so it can no longer be added.
             earlier = None
@@ -677,10 +638,6 @@ class AdminNotes:
             )
         await context.queue_note(note_id, force=True, fresh=True)
         return {"title": row.title or Path(row.path).stem, "already": False}
-
-    def forget_earlier_summary(self, note_id: str) -> None:
-        """Once a note is reviewed, the summary it did not use is no longer kept."""
-        (self.store.context.root / (EARLIER_SUMMARY + note_id + ".json")).unlink(missing_ok=True)
 
     async def gone_on_purpose(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Stop listing a missing note as a problem: its owner removed it on purpose.

@@ -762,20 +762,20 @@ class NoteLifecycle:
                     "suggestion_error": job.error if job and job.state == "failed" else "",
                     # The same failure in whole sentences, for the banner on the review page.
                     "suggestion_plain": job.plain if job and job.state == "failed" else "",
-                    "stale": stale,
                     "speaker_notice": speaker_names.OMITTED_NOTICE
                     if job and (job.evidence.get("speaker_review") or {}).get("omitted")
                     else job.notice
                     if job
                     else "",
-                    "speaker_attendees_notice": ""
-                    if self.context.config().assignments["enrichment"].attendees_field
-                    else speaker_names.ATTENDEES_UNSET_NOTICE,
                     "recording_generation_mode": recording.generation_mode if recording else None,
                     "meeting_summary": job.result.meeting_summary.model_dump()
                     if job and job.result and job.result.meeting_summary
                     else None,
-                    "suggestions": suggestions,
+                    # Only voices are still offered for a choice, and only while the note is as
+                    # the suggestions were made for; every other answer is already in the note.
+                    "suggestions": []
+                    if stale
+                    else [s for s in suggestions if s["kind"] == "speaker"],
                     "unresolved": job.result.unresolved if job and job.result else [],
                     "roles": self.context.store.control.schema().roles,
                     "finalization": self.context.read("finalized", {}).get(note.id),
