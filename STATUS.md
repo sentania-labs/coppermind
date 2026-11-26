@@ -24,11 +24,12 @@ thing to connect once (Obsidian Sync with the companion, the AI server, the cale
 each with one plain line that says whether it is working and, when it is not, the one
 button that helps. The AI card chooses what transcribes and what summarizes together
 (`/admin/ai`). Advanced (`/admin/advanced`) opens every page that was kept, unchanged.
-Home's list of findings, tiles and feed, the setup guide, the Suggestions and
-Transcription pages, the Settings index, Colours and the calendar's meeting list are gone.
+Home's list of findings, tiles and feed, the setup guide, the Transcription page,
+the Settings index, Colours and the calendar's meeting list are gone.
 The companion auto-update switch is on Advanced, and the note that Coppermind updated the
-companion is part of the Companion line. The Notes pages and the Suggestions pages stay
-registered but are not linked from anywhere, until the work that replaces them lands.
+companion is part of the Companion line. The Notes pages stay registered but are not
+linked from anywhere, until the work that replaces them lands. Advanced opens Suggestions and holds Pause
+transcription, and saving the AI card turns suggestions on when they have no service yet.
 
 ## Admin redesign (November 12, 2026)
 
