@@ -200,15 +200,20 @@ class OwnerAlerts:
         settings = self.context.store.control.settings()
         folder = sanitize_folder(settings.notes.review_folder)
         places = {f"{folder}/{PROBLEMS_NOTE}", self.context.read(NOTE_AT, {}).get("path", "")}
+        removed = True
         for relative in sorted(place for place in places if place):
             try:
                 path = resolve(self.context.store.notes_root, relative)
                 if path.is_file() and self._ours(path.read_bytes()):
                     path.unlink()
                     log.info("removed the generated %s", PROBLEMS_NOTE)
-            except (OSError, ValueError):
+            except ValueError:
+                continue
+            except OSError:
+                removed = False
                 log.warning("the generated %s could not be removed", PROBLEMS_NOTE)
-        self.context.write(NOTE_AT, {})
+        if removed:
+            self.context.write(NOTE_AT, {})
 
     def _ours(self, data: bytes) -> bool:
         try:

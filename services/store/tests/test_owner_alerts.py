@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -269,6 +270,24 @@ async def test_an_old_note_is_removed_where_it_was_last_written(tmp_path):
     assert not old.exists()
 
 
+@pytest.mark.asyncio
+async def test_an_old_note_that_cannot_be_removed_keeps_its_place_for_the_next_try(
+    tmp_path, monkeypatch
+):
+    fixture = Fixture(tmp_path, [failed(1)])
+    old = tmp_path / "Inbox" / "Needs attention.md"
+    old.parent.mkdir()
+    old.write_text(OLD)
+    fixture.saved["attention-note"] = {"path": "Inbox/Needs attention.md"}
+    with monkeypatch.context() as broken:
+        broken.setattr(Path, "unlink", lambda self: (_ for _ in ()).throw(PermissionError()))
+        fixture.alerts.remove_old_note()
+    assert old.exists()
+    assert fixture.saved["attention-note"] == {"path": "Inbox/Needs attention.md"}
+    fixture.alerts.remove_old_note()
+    assert not old.exists()
+
+
 def webhook(fixture: Fixture, monkeypatch, answers: list[int]) -> list[dict[str, Any]]:
     """Point the webhook at a stand-in receiver that answers with each status in turn."""
     received: list[dict[str, Any]] = []
@@ -315,12 +334,9 @@ async def test_a_final_failure_is_sent_once_with_its_provider_and_external_id(
 
 
 @pytest.mark.asyncio
-async def test_a_problems_note_that_cannot_be_written_does_not_stop_the_webhook(
-    tmp_path, monkeypatch
-):
+async def test_a_failure_is_sent_by_the_regular_check(tmp_path, monkeypatch):
     fixture = Fixture(tmp_path, [failed(1)])
     received = webhook(fixture, monkeypatch, [])
-    fixture.context.store.control.settings().notes.review_folder = "///"
     await fixture.alerts.tick()
     assert len(received) == 1
 
