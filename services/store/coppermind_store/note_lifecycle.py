@@ -30,8 +30,13 @@ from coppermind.store_protocol import (
     ValidationFailed,
     VersionConflict,
 )
-from coppermind_store import meeting_summary, speaker_names
+from coppermind_store import calendar_lookup, meeting_summary, speaker_names
 from coppermind_store.request_timing import SlowOperation
+
+# How long the review page waits on the calendar for each of the two things it asks of it
+# (is the suggestion stale, which meetings fit this recording) before it shows without them.
+# The companion gives the whole page 30 seconds.
+CALENDAR_SECONDS = 8.0
 
 if TYPE_CHECKING:
     from coppermind_store.context_service import ContextService
@@ -571,9 +576,13 @@ class NoteLifecycle:
                 stale = bool(job and job.note_hash != note.content_hash)
                 if job and not stale:
                     try:
-                        stale = job.evidence_hash != await self.context.note_evidence_hash(note)
+                        with calendar_lookup.degrading(CALENDAR_SECONDS) as checked:
+                            stale = job.evidence_hash != await self.context.note_evidence_hash(note)
                     except ValueError:
                         stale = True
+                    # Evidence that could not be checked is not evidence that it is current:
+                    # hold the suggestions back, as for any other out-of-date set.
+                    stale = stale or checked.unavailable
             with timing.step("validation"):
                 problem = ""
                 try:
@@ -589,10 +598,7 @@ class NoteLifecycle:
                 if copies:
                     problem = " ".join(dict.fromkeys([*([problem] if problem else []), *copies]))
             with timing.step("calendar_and_recording"):
-                update = self.context.read("calendar-followups", {}).get(note.id)
-                if update is not None:
-                    update = dict(update, candidates=await self.context.calendar_candidates(note))
-                manual = None
+                update = manual = meeting = merge = None
                 recording = next(
                     (
                         r
@@ -601,46 +607,68 @@ class NoteLifecycle:
                     ),
                     None,
                 )
-                meeting = None
-                merge = None
-                if recording:
-                    candidates = await self.context.recording_calendar_candidates(note)
-                    suggested = [
-                        s.event_ids[0]
-                        for s in (
-                            job.result.suggestions if job and job.result and not stale else []
-                        )
-                        if s.kind == "event" and len(s.event_ids) == 1 and s.confidence >= 0.8
-                    ]
-                    meeting = {
-                        "candidates": candidates,
-                        "suggested_event_id": suggested[0] if len(suggested) == 1 else None,
-                        "calendar_hash": await self.context.calendar_evidence_hash(note),
-                        "selected_event_id": self.context.read("recording-meetings", {})
-                        .get(recording.source_id, {})
-                        .get("event_id"),
+                receipt = (
+                    self.context.read("recording-merges/" + recording.source_id, {})
+                    if recording
+                    else {}
+                )
+                if receipt:
+                    merge = {
+                        "state": receipt.get("state"),
+                        "error": receipt.get("error", ""),
+                        "target_id": receipt.get("target_id"),
                     }
-                    manual = await speaker_names.evidence(self.context, note, candidates)
-                    receipt = self.context.read("recording-merges/" + recording.source_id, {})
-                    if receipt:
-                        merge = {
-                            "state": receipt.get("state"),
-                            "error": receipt.get("error", ""),
-                            "target_id": receipt.get("target_id"),
+                with calendar_lookup.degrading(CALENDAR_SECONDS) as calendar:
+                    update = self.context.read("calendar-followups", {}).get(note.id)
+                    if update is not None:
+                        update = dict(
+                            update, candidates=await self.context.calendar_candidates(note)
+                        )
+                    if recording:
+                        candidates = await self.context.recording_calendar_candidates(note)
+                        suggested = [
+                            s.event_ids[0]
+                            for s in (
+                                job.result.suggestions if job and job.result and not stale else []
+                            )
+                            if s.kind == "event" and len(s.event_ids) == 1 and s.confidence >= 0.8
+                        ]
+                        meeting = {
+                            "candidates": candidates,
+                            "suggested_event_id": suggested[0] if len(suggested) == 1 else None,
+                            "calendar_hash": await self.context.calendar_evidence_hash(note),
+                            "selected_event_id": self.context.read("recording-meetings", {})
+                            .get(recording.source_id, {})
+                            .get("event_id"),
                         }
-                    elif recording.generation_mode == "markdown-v1" or (
-                        job and job.result and job.result.meeting_summary and not stale
-                    ):
-                        matches = await self.merge_candidates(note, recording)
-                        if matches:
-                            source = await self.context.store.get_source(recording.source_id)
-                            writeup = self.context.read("recording-writeups/" + recording.id, {})
-                            merge = {
-                                "state": "offered",
-                                "candidates": matches,
-                                "transcript_path": source.projection_path,
-                                "markdown": writeup.get("voice_generated", writeup.get("body", "")),
-                            }
+                        manual = await speaker_names.evidence(self.context, note, candidates)
+                        if not receipt and (
+                            recording.generation_mode == "markdown-v1"
+                            or (job and job.result and job.result.meeting_summary and not stale)
+                        ):
+                            matches = await self.merge_candidates(note, recording)
+                            if matches:
+                                source = await self.context.store.get_source(recording.source_id)
+                                writeup = self.context.read(
+                                    "recording-writeups/" + recording.id, {}
+                                )
+                                merge = {
+                                    "state": "offered",
+                                    "candidates": matches,
+                                    "transcript_path": source.projection_path,
+                                    "markdown": writeup.get(
+                                        "voice_generated", writeup.get("body", "")
+                                    ),
+                                }
+
+                if calendar.unavailable:
+                    # Show the review without what the calendar would have added to it; the
+                    # merge receipt and the recording's own speakers do not need the calendar.
+                    update = meeting = None
+                    manual = (
+                        await speaker_names.evidence(self.context, note, []) if recording else None
+                    )
+                    merge = merge if receipt else None
             with timing.step("speaker_details"):
                 from coppermind_store.voice_store import VoiceStore
 
