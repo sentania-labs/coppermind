@@ -199,7 +199,6 @@ async def test_a_note_about_to_be_filed_or_not_yet_reviewed_is_not_a_filing_row(
 @pytest.mark.parametrize(
     ("error", "sentence"),
     [
-        ("SourceRevisionNeedsReview", "its recording changed after you reviewed it"),
         ("ValueError: a note date is required in date", "it has no date Coppermind can read"),
         ("NoteUnparseable", "Coppermind could not read it"),
         ("PermissionError", "its folder could not be written to"),
@@ -211,3 +210,38 @@ def test_each_failure_is_one_plain_sentence(error, sentence):
 
     assert filing_sentence(error) == f"This note could not be filed because {sentence}."
     assert filing_sentence("Odd") == "This note could not be filed."
+    transient = "ValueError: note review or date changed during filing"
+    assert filing_sentence(transient) == "This note could not be filed."
+
+
+async def test_a_recording_that_changed_after_review_waits_for_review_again_with_no_failure_row(
+    store, monkeypatch
+):
+    from coppermind.store_protocol import PatchFrontmatter
+    from tests.integration.test_search_index import ingest_request
+
+    review = store.context.review_notes
+    first = await store.ingest(ingest_request())
+    note = await store.get_note(first.note.id)
+    await store.patch_frontmatter(
+        note.id, PatchFrontmatter(set={"reviewed": True}), note.content_hash
+    )
+    note = await store.get_note(note.id)
+    filing.record_review(store, note.id, note.frontmatter)
+
+    changed = ingest_request()
+    changed.source.artifacts[0].content = "Dana: the recording was processed again."
+    assert (await store.ingest(changed)).source.revision == 2
+
+    assert await file_everything(store, monkeypatch) == {"filed": 0, "filing_failed": 1}
+    listed = {n["id"]: n for n in (await review.listing({}))["notes"]}
+    assert note.id in listed
+    assert "filing" not in listed[note.id]
+    assert review.filing_problem(note.id) == ""
+    assert (await path_of(store, note.id)).startswith("Review/")
+
+    note = await store.get_note(note.id)
+    filing.record_review(store, note.id, note.frontmatter)
+    assert await file_everything(store, monkeypatch) == {"filed": 1, "filing_failed": 0}
+    assert not (await path_of(store, note.id)).startswith("Review/")
+    assert note.id not in {n["id"] for n in (await review.listing({}))["notes"]}

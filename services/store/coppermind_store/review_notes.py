@@ -72,9 +72,10 @@ RETIRED_REASONS = ("confirm the meeting time", "enter a valid local meeting time
 def filing_sentence(error: str) -> str:
     """One plain sentence for a reviewed note that could not be filed, from the recorded error."""
     cause = error.split(":", 1)[0]
-    if cause == "SourceRevisionNeedsReview":
-        return "This note could not be filed because its recording changed after you reviewed it."
-    if cause == "ValueError" and "date" in error:
+    if cause == "ValueError" and any(
+        text in error
+        for text in ("a note date is required", "expected a valid date", "without a UTC offset")
+    ):
         return "This note could not be filed because it has no date Coppermind can read."
     if cause in {"NoteUnparseable", "FrontmatterError"}:
         return "This note could not be filed because Coppermind could not read it."
@@ -196,7 +197,12 @@ class ReviewNotes:
             error = str(json.loads(journal.read_bytes()).get("error") or "")
         except (OSError, ValueError):
             return ""
-        if not error or SETTLING in error or any(old in error for old in RETIRED_REASONS):
+        if (
+            not error
+            or error.startswith("SourceRevisionNeedsReview")
+            or SETTLING in error
+            or any(old in error for old in RETIRED_REASONS)
+        ):
             return ""
         return filing_sentence(error)
 
