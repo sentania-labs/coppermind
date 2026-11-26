@@ -349,12 +349,9 @@ An explicit note review remains separate. Reviewed notes are never eligible
 for automatic field enrichment (they only contribute dossier facts), and human values are not overwritten automatically.
 
 The job binds the note version and path, calendar/contact and dossier evidence, schema,
-provider configuration, and source revisions. Changed evidence makes a proposal
-stale. Rejections suppress identical inputs; new input versions can be considered
-again. An approval receipt is durable before a file write. An interrupted
-approval can be resumed, but only if the file matches its recorded before or
-after state. Automatic fills resume through the same receipt without another
-model call. It never overwrites a divergent edit.
+provider configuration, and source revisions. Changed evidence makes the job stale: its
+speaker choices and legacy summary are no longer offered, and a new job is made as described
+above. Suggestions are filled into the note when the job finishes, never over a divergent edit.
 
 Back up the complete `/data/state/calendars` and `/data/state/context` trees.
 They contain originals, catalog, receipts, contact corrections, suggestions,
@@ -383,15 +380,6 @@ Provider contract references:
 [OpenAI Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create),
 [Anthropic models](https://platform.claude.com/docs/en/api/models/list), and
 [Anthropic Messages](https://platform.claude.com/docs/en/api/messages/create).
-
-Mistaken approved associations can be removed from a job's review page. The
-correction records authorization before changing the association ledger or
-mapped frontmatter. It preserves unrelated human field values and body bytes.
-An interrupted correction has a separate resume action. Rejecting one suggestion
-preserves the remaining choices; rejecting the remaining proposal stops all
-undecided choices. Semantically unchanged calendar re-exports do not invalidate
-accepted or rejected decisions solely because a new import receipt exists.
-
 
 ## Memory and deployment sizing
 
