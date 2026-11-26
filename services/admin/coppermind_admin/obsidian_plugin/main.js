@@ -69,7 +69,7 @@ class ReviewView extends ItemView {
       }
       el.createEl('p',{text:'Edit the note and its properties as usual. Finish here when you are ready.'});
       const meeting=data.recording_meeting;
-      const pickMeeting=!!meeting&&(meeting.candidates?.length>1||(meeting.candidates?.length===1&&meeting.selected_event_id!==meeting.candidates[0].event_id));
+      const pickMeeting=!!meeting&&(meeting.candidates?.length>1||(meeting.candidates?.length===1&&![meeting.selected_event_id,meeting.matched_event_id].includes(meeting.candidates[0].event_id)));
       if(pickMeeting){
         const box=el.createDiv({cls:'coppermind-card'});box.createEl('h3',{text:'Which meeting was this?'});
         box.createEl('p',{text:meeting.suggested_event_id?'Suggested from the conversation. Please check the choice.':meeting.candidates.length>1?'Several meetings could match. Choose one to use its context.':'This meeting was on at the time. Use it if it is the one.'});

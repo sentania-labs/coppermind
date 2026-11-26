@@ -83,6 +83,14 @@ test('the only meeting that could match can be chosen on the note, and one alrea
   assert.ok(!chosen.view.contentEl.all().some(e=>e.text==='Which meeting was this?'));
 });
 
+test('the only meeting, when the recording named it, is shown as the meeting and not asked about',async()=>{
+  const meeting={calendar_hash:'calendar',suggested_event_id:null,selected_event_id:null,matched_event_id:'a',candidates:[{event_id:'a',title:'Pipeline review',people:[{name:'Alex'}]}]};
+  const f=await fixture(undefined,{recording_meeting:meeting});
+  assert.ok(!f.view.contentEl.all().some(e=>e.text==='Which meeting was this?'));
+  const other=await fixture(undefined,{recording_meeting:{...meeting,matched_event_id:'z'}});
+  assert.ok(other.view.contentEl.all().some(e=>e.text==='Which meeting was this?'));
+});
+
 test('merging requires a confirmation and uses the checked destination and summary',async()=>{
   const raw='---\nid: test-note\nreviewed: false\n---\nHuman prose.\n';
   const digest='sha256:'+Buffer.from(await webcrypto.subtle.digest('SHA-256',Buffer.from(raw))).toString('hex');

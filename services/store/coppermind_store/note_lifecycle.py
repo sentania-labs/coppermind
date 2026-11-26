@@ -640,6 +640,12 @@ class NoteLifecycle:
                             "selected_event_id": self.context.read("recording-meetings", {})
                             .get(recording.source_id, {})
                             .get("event_id"),
+                            "matched_event_id": (
+                                self.context.read("recording-writeups/" + recording.id, {})
+                                .get("calendar", {})
+                                .get("event", {})
+                                .get("event_id")
+                            ),
                         }
                         manual = await speaker_names.evidence(self.context, note, candidates)
                         if not receipt and (
