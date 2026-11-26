@@ -445,7 +445,7 @@ compose exec -T store python3 -c \
 ingest_month_path="work/2026/2026-09/${ingest_note_path##*/}"
 wait_for_note_path "$ingest_note_id" "$ingest_month_path"
 ingest_note_path="$ingest_month_path"
-projection_path="_Sources/2026/2026-09/$source_id.md"
+projection_path="_Sources/2026/2026-09/Acme Architecture Sync transcript.md"
 reviewed_note="$(compose exec -T store cat "/data/notes/$ingest_note_path")"
 reviewed_hash="$(hash_on_volume "$ingest_note_path")"
 compose exec -T store sh -c 'echo "Person edit" >> "$1"' sh "/data/notes/$projection_path"
