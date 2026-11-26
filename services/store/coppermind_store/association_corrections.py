@@ -49,6 +49,8 @@ async def correct(context: ContextService, payload: dict[str, Any]) -> dict[str,
     unset: list[str] = []
     for key in remove_from:
         field = mapping[key]
+        if key == "events":
+            field = assignment.event_key(note.frontmatter)
         if not field or field not in note.frontmatter:
             continue
         value = note.frontmatter[field]

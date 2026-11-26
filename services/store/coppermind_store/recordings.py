@@ -1241,8 +1241,8 @@ class Recordings:
             # The note date is local time without an offset; the offset form finds nothing.
             fields[date_key] = captured.replace(tzinfo=None, microsecond=0).isoformat()
         events = await self.context.calendar_candidates(SimpleNamespace(frontmatter=fields))
-        event_field = self.context.config().assignments["enrichment"].event_field
-        linked = fields.get(event_field) if event_field else None
+        assignment = self.context.config().assignments["enrichment"]
+        linked = fields.get(assignment.event_key(fields)) if assignment.event_field else None
         if linked:
             candidates = [event for event in events if event["event_id"] == linked]
         else:

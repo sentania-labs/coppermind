@@ -41,7 +41,7 @@ OWNED = (
 )
 # Properties earlier releases created that nothing writes now. A saved schema may still hold
 # them; they are never offered as something to fill in. `calendar_event` is what the meeting
-# property was called: an install that still maps it keeps writing it under that name.
+# property was called: notes that still carry it are read as they are.
 RETIRED = ("time_unknown", "invitees", "calendar_event")
 WAITS_S = (60, 120, 300, 600)
 WAITS_TRANSCRIPTION_S = (1800, 3600, 7200, 14400)

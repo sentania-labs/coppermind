@@ -103,13 +103,31 @@ def test_update_installs_current_files_and_explains_reload(admin):
     assert "Paired devices stay paired" in message
 
 
-def test_the_companion_hides_the_four_properties_nobody_edits_and_only_those():
+def test_the_companion_hides_the_properties_nobody_edits_and_only_those():
     css = companion.companion_files()["styles.css"].decode()
     hidden = sorted(
         re.findall(r'\.metadata-property\[data-property-key="([a-z_]+)"\]\s*(?:,|\{)', css)
     )
-    assert hidden == ["artifacts", "id", "schema_version", "sources"]
-    assert re.search(r'data-property-key="schema_version"\]\s*\{\s*display:\s*none', css)
+    assert hidden == [
+        "artifacts",
+        "context",
+        "id",
+        "invitees",
+        "kind",
+        "schema_version",
+        "sources",
+        "time_unknown",
+    ]
+    assert re.search(r'data-property-key="time_unknown"\]\s*\{\s*display:\s*none', css)
     # Properties you set by hand stay visible.
-    for shown in ("date", "type", "account", "tags", "attendees", "meeting", "reviewed"):
+    for shown in (
+        "date",
+        "type",
+        "account",
+        "tags",
+        "attendees",
+        "meeting",
+        "calendar_event",
+        "reviewed",
+    ):
         assert f'data-property-key="{shown}"' not in css

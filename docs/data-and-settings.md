@@ -113,9 +113,8 @@ with the source revision's ingest date, and every note or source page that
 linked the old path is repointed. Filing a reviewed note's source material
 lands its non-text, non-audio artifacts here the same way, and the note gains
 the citation. A recording's `transcript.json` is not one of them: its timings stay in the
-source's own archive and page. A copy an earlier release filed here is removed, with its row and
-archive, once the file is still exactly what Coppermind wrote; the note that cited it keeps the
-citation, as it does for any artifact since removed, and a copy you changed is left alone.
+source's own archive and page. A copy an earlier release filed here stays where it is, with its
+row, its archive and the link in the note.
 A `Coppermind sync test.md` an earlier release's Admin sent stays where it is for you to delete;
 it is never adopted as a note, and nothing writes a new one.
 

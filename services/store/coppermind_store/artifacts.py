@@ -108,12 +108,9 @@ REMOVED_THROUGH_API = "removed through the API"
 REMOVED_AFTER_REVIEW = "recording removed after review"
 DELETED_IN_OBSIDIAN = "deleted in Obsidian"
 # The timings a recording's transcript carries. They live in the source archive and page; filing
-# no longer copies them into Artifacts, and a copy an earlier release filed is cleaned up.
+# no longer copies them into Artifacts, and a copy an earlier release filed is left where it is.
 TRANSCRIPT_DATA = "transcript.json"
-CLEANED_UP = "transcript data no longer kept as a file"
 OWNER_REMOVAL_REASONS = frozenset({REMOVED_IN_ADMIN, REMOVED_THROUGH_API, DELETED_IN_OBSIDIAN})
-# Removals after which the archive goes too: the owner's, and a copy Coppermind itself made.
-ARCHIVE_REMOVAL_REASONS = OWNER_REMOVAL_REASONS | {CLEANED_UP}
 REMOVAL_REASONS = {"admin": REMOVED_IN_ADMIN, "api": REMOVED_THROUGH_API}
 
 _LEGACY_ATTACHMENT = re.compile(
@@ -1428,7 +1425,7 @@ async def _retire(
     for job in store.context.recordings.jobs():
         if job.artifact_id == artifact_id:
             (store.context.root / "voice-pending" / (job.id + ".json")).unlink(missing_ok=True)
-    if reason in ARCHIVE_REMOVAL_REASONS:
+    if reason in OWNER_REMOVAL_REASONS:
         await asyncio.to_thread(_remove_archive, store, artifact_id)
 
 
@@ -1466,7 +1463,7 @@ async def sweep_removed_archives(store: LocalStore) -> int:
             isinstance(manifest, dict)
             and manifest.get("artifact_id") == artifact_id
             and manifest.get("removed_at")
-            and manifest.get("removed_reason") in ARCHIVE_REMOVAL_REASONS
+            and manifest.get("removed_reason") in OWNER_REMOVAL_REASONS
         ):
             await asyncio.to_thread(_remove_archive, store, artifact_id)
             record_path(store, artifact_id).unlink(missing_ok=True)
@@ -1527,12 +1524,8 @@ async def sweep(store: LocalStore, *, full: bool = False) -> dict[str, int]:
                 async with transaction(store.session_factory) as session:
                     await _remove_rows(session, row.id, datetime.now(tz=UTC))
                 record_path(store, row.id).unlink(missing_ok=True)
-                if manifest.get("removed_reason") in ARCHIVE_REMOVAL_REASONS:
+                if manifest.get("removed_reason") in OWNER_REMOVAL_REASONS:
                     await asyncio.to_thread(_remove_archive, store, row.id)
-                counts["artifacts_removed"] += 1
-                continue
-            if await asyncio.to_thread(_filed_transcript_data, store, manifest):
-                await _retire(store, manifest, reason=CLEANED_UP)
                 counts["artifacts_removed"] += 1
                 continue
             document = read_record(store, row.id)
@@ -1585,28 +1578,6 @@ async def sweep(store: LocalStore, *, full: bool = False) -> dict[str, int]:
     if (store.notes_root / sanitize_folder(settings.notes.attachments_folder)).is_dir():
         counts.update(await migrate_attachments(store))
     return counts
-
-
-def _filed_transcript_data(store: LocalStore, manifest: dict[str, Any]) -> bool:
-    """Whether this artifact is a recording's transcript timings an earlier release filed.
-
-    Coppermind made it, from a source's own archive (the origin says so, and so does the name
-    it was filed under), and the browsable copy is still exactly what it wrote. A copy the owner
-    changed, or anything they stored themselves under that name, is never matched.
-    """
-    if manifest.get("source_name") != TRANSCRIPT_DATA or not str(
-        manifest.get("origin", "")
-    ).startswith("source:"):
-        return False
-    current = _current_revision(manifest)
-    recorded = manifest.get("path")
-    if isinstance(recorded, str) and recorded:
-        try:
-            target = resolve(store.notes_root, recorded)
-            return not target.is_file() or _file_sha256(target) == current.get("sha256")
-        except (OSError, ValueError):
-            return False
-    return True
 
 
 def _restore_moved_copy(store: LocalStore, manifest: dict[str, Any], others: set[str]) -> str:

@@ -90,9 +90,13 @@ class NoteLifecycle:
             return []
         if self.context.read("recording-merge-dismissals", {}).get(recording.source_id):
             return []
-        field = self.context.config().assignments["enrichment"].event_field
+        assignment = self.context.config().assignments["enrichment"]
         choice = self.context.read("recording-meetings", {}).get(recording.source_id, {})
-        event_id = choice.get("event_id") or (note.frontmatter.get(field) if field else None)
+        event_id = choice.get("event_id") or (
+            note.frontmatter.get(assignment.event_key(note.frontmatter))
+            if assignment.event_field
+            else None
+        )
         associations = self.context.read("associations", {})
         linked_events = associations.get(note.id, {}).get("events", [])
         if not event_id and len(linked_events) == 1:
@@ -165,7 +169,11 @@ class NoteLifecycle:
                 if source_opening:
                     continue
                 linked = associations.get(item.id, {}).get("events", [])
-                if event_id in linked or (field and candidate.frontmatter.get(field) == event_id):
+                if event_id in linked or (
+                    assignment.event_field
+                    and candidate.frontmatter.get(assignment.event_key(candidate.frontmatter))
+                    == event_id
+                ):
                     matches.append(
                         {
                             "id": candidate.id,
@@ -209,8 +217,11 @@ class NoteLifecycle:
                 )
                 if any(value not in {previous, event_id} for value in record.get("events", [])):
                     raise ValueError("the note already names a different meeting; edit it first")
-                field = self.context.config().assignments["enrichment"].event_field
-                existing = note.frontmatter.get(field) if field else None
+                assignment = self.context.config().assignments["enrichment"]
+                field = assignment.event_field
+                existing = (
+                    note.frontmatter.get(assignment.event_key(note.frontmatter)) if field else None
+                )
                 if existing and existing not in {previous, event_id}:
                     raise ValueError("the note already names a different meeting; edit it first")
                 title = str(selected_event.get("title", "")).strip()

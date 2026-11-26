@@ -4,7 +4,6 @@ leaves alone, removes, or never touches on a vault that already holds the older 
 import base64
 import json
 
-import pytest
 import sqlalchemy as sa
 from coppermind_store import filing
 from coppermind_store.admin_features import Features
@@ -17,7 +16,6 @@ from coppermind.context_config import FeatureAssignment
 from coppermind.db.models import Artifact, Note, SearchDocument
 from coppermind.entities import EntityInput, EntityQuery
 from coppermind.store_protocol import (
-    ArtifactMissing,
     CreateArtifact,
     CreateNote,
     IngestArtifact,
@@ -52,17 +50,22 @@ async def test_calendar_matching_sets_up_a_meeting_property_and_no_invitees(stor
     )
 
 
-async def test_an_install_that_mapped_the_old_names_keeps_its_meeting_and_stops_invitees(store):
-    """Its notes keep their `calendar_event`; the invitees mapping no longer writes anything."""
+async def test_an_install_that_mapped_the_old_names_moves_to_meeting_and_stops_invitees(store):
+    """Its mapping moves to `meeting`; notes still saying `calendar_event` are read as they are."""
     config = store.context.config()
     config.assignments["enrichment"].event_field = "calendar_event"
     store.context.save_config(config)
+    assignment = store.context.config().assignments["enrichment"]
+    assert assignment.event_field == "meeting"
     Features(store.context).ensure_owned_properties()
     names = {key.name for key in store.control.schema().keys}
-    assert "meeting" not in names  # no second property is added beside the one in use
-    assert store.context.config().assignments["enrichment"].event_field == "calendar_event"
+    assert "meeting" in names
+    assert assignment.event_key({"calendar_event": "evt-1"}) == "calendar_event"
+    assert assignment.event_key({"calendar_event": "evt-1", "meeting": "evt-2"}) == "meeting"
+    assert assignment.event_key({}) == "meeting"
     assert FeatureAssignment.model_validate({"invitees_field": "invitees"}).invitees_field == ""
     assert FeatureAssignment.model_validate({"invitees_field": "tags"}).invitees_field == "tags"
+    assert FeatureAssignment.model_validate({"event_field": "account"}).event_field == "account"
 
 
 async def test_a_note_with_the_old_properties_files_and_keeps_every_one_of_them(store):
@@ -210,45 +213,28 @@ async def file_the_old_way(store, monkeypatch):
     return result
 
 
-async def test_a_transcript_json_an_earlier_release_filed_is_cleaned_up(store, monkeypatch):
+async def test_a_transcript_json_an_earlier_release_filed_is_left_where_it_is(store, monkeypatch):
     result = await file_the_old_way(store, monkeypatch)
     ((name, path),) = await filed_artifacts(store)
     assert name == TRANSCRIPT_DATA
-    assert (store.notes_root / path).is_file()
     artifact_id = await _only_artifact_id(store)
+    body_before = (await store.get_note(result.note.id)).body
 
     counts = await sweep(store)
 
-    assert counts["artifacts_removed"] == 1
-    assert await filed_artifacts(store) == []
-    assert not (store.notes_root / path).exists()
-    with pytest.raises(ArtifactMissing):  # a copy Coppermind made leaves no archive behind
-        read_manifest(store, artifact_id)
-    # The note still cites it, as a note keeps the citation of any artifact since removed,
-    # and nothing about the note, its source or the source's archive changed.
+    assert counts["artifacts_removed"] == 0
+    assert await filed_artifacts(store) == [(name, path)]
+    assert (store.notes_root / path).is_file()
+    assert read_manifest(store, artifact_id)["artifact_id"] == artifact_id
     note = await store.get_note(result.note.id)
     assert artifact_id in note.frontmatter["artifacts"]
+    assert note.body == body_before
     assert (store.sources_root / result.source.id / "r0001" / TRANSCRIPT_DATA).is_file()
-    assert (await sweep(store))["artifacts_removed"] == 0
 
 
 async def _only_artifact_id(store) -> str:
     async with store.session_factory() as session:
         return str(await session.scalar(sa.select(Artifact.id)))
-
-
-async def test_a_transcript_json_the_owner_changed_or_stored_themselves_is_left_alone(
-    store, monkeypatch
-):
-    await file_the_old_way(store, monkeypatch)
-    ((_, path),) = await filed_artifacts(store)
-    (store.notes_root / path).write_text('{"edited": "by hand"}')
-
-    counts = await sweep(store)
-
-    assert counts["artifacts_removed"] == 0
-    assert (store.notes_root / path).read_text() == '{"edited": "by hand"}'
-    assert len(await filed_artifacts(store)) == 1
 
 
 async def test_an_artifact_the_owner_stored_under_that_name_is_left_alone(store):

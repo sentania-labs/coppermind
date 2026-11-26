@@ -105,9 +105,9 @@ class AdminService:
         """Switch the note workflow on, which the redesigned Admin has no separate step for."""
         async with self.context.lock:
             config = self.context.config()
+            self.features.ensure_owned_properties()
             if config.lifecycle_enabled:
                 return
-            self.features.ensure_owned_properties()
             fresh = (
                 config.dropbox_folder == "Dropbox"
                 and not (self.store.notes_root / "Dropbox").exists()

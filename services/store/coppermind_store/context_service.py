@@ -396,10 +396,11 @@ class ContextService:
         matches = meeting_match.overlapping(events, captured_at)
         if not matches:
             return events
-        field = self.config().assignments["enrichment"].event_field
+        assignment = self.config().assignments["enrichment"]
         linked = set(self.read("associations", {}).get(note.id, {}).get("events", []))
-        if field and note.frontmatter.get(field):
-            linked.add(note.frontmatter[field])
+        meeting = note.frontmatter.get(assignment.event_key(note.frontmatter))
+        if assignment.event_field and meeting:
+            linked.add(meeting)
         matches.extend(
             event for event in events if event["event_id"] in linked and event not in matches
         )
@@ -2140,7 +2141,7 @@ class ContextService:
                 )[0]
             else:
                 mapped = {
-                    "event": assignment.event_field,
+                    "event": assignment.event_key(note.frontmatter),
                     "contact": assignment.contacts_field,
                     "attendee": assignment.attendees_field,
                     "invitee": assignment.invitees_field,
@@ -2371,7 +2372,16 @@ class ContextService:
                     raise ValueError("suggestion is not eligible for automatic fill")
                 if suggestion.kind == "event":
                     changes = {k: v for k, v in changes.items() if k == assignment.event_field}
-                if not changes or any(not blank(note.frontmatter.get(k)) for k in changes):
+                if not changes or any(
+                    not blank(
+                        note.frontmatter.get(
+                            assignment.event_key(note.frontmatter)
+                            if k == assignment.event_field
+                            else k
+                        )
+                    )
+                    for k in changes
+                ):
                     raise ValueError("field is not blank")
                 unset = []
             if suggestion.kind == "filename" and payload.get("accept_link_risk") is not True:
@@ -2592,11 +2602,14 @@ class ContextService:
                         "before-one-calendar-event-ids",
                         {"associations": associations, "finalized": finalized},
                     )
-                field = self.config().assignments["enrichment"].event_field
+                assignment = self.config().assignments["enrichment"]
                 complete = True
-                for note_id in sorted({*associations, *finalized} if field else ()):
+                for note_id in sorted(
+                    {*associations, *finalized} if assignment.event_field else ()
+                ):
                     try:
                         note = await self.store.get_note(note_id)
+                        field = assignment.event_key(note.frontmatter)
                         value = note.frontmatter.get(field)
                         if isinstance(value, str) and value in aliases:
                             await self.store.patch_frontmatter(
