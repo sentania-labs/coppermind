@@ -158,6 +158,8 @@ def _is_transcript(revision: dict) -> bool:
 
 def _page_stem(title: str, revision: dict) -> str:
     """What a filed source page is called: "<title> transcript", or "<title> source"."""
+    # A note's title can carry the date its file is named with; the page name does not need it.
+    title = re.sub(r"^\d{4}-\d{2}-\d{2}[ _-]+", "", title) or title
     return titled_stem(title, "transcript" if _is_transcript(revision) else "source")
 
 

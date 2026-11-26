@@ -104,7 +104,7 @@ def test_update_installs_current_files_and_explains_reload(admin):
 
 
 def test_the_companion_hides_the_four_properties_nobody_edits_and_only_those():
-    css = home.companion_files()["styles.css"].decode()
+    css = companion.companion_files()["styles.css"].decode()
     hidden = sorted(
         re.findall(r'\.metadata-property\[data-property-key="([a-z_]+)"\]\s*(?:,|\{)', css)
     )

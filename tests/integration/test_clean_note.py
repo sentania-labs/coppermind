@@ -105,6 +105,15 @@ async def test_a_filed_transcript_page_is_named_for_the_note_title_and_the_link_
     assert (await store.get_source(result.source.id)).projection_path == source.projection_path
 
 
+async def test_a_date_the_title_carries_is_not_part_of_the_page_name(store):
+    request = ingest_request()
+    request.note.title = "2026-09-08 Warehouse call"
+    result = await store.ingest(request)
+    await approve(store, result.note.id)
+    path = (await store.get_source(result.source.id)).projection_path
+    assert path == "_Sources/2026/2026-09/Warehouse call transcript.md"
+
+
 async def test_two_transcripts_with_one_title_do_not_share_a_name(store):
     first = await store.ingest(ingest_request("rec-1"))
     second = await store.ingest(ingest_request("rec-2"))
