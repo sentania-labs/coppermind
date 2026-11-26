@@ -9,6 +9,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import Response
 
 from coppermind.settings import Wiring
+from coppermind.store_protocol import StoreError
 from coppermind_admin import ui
 from coppermind_admin.pages.settings import duration, zone_name
 from coppermind_admin.shell import Ctx
@@ -25,6 +26,10 @@ def router(wiring: Wiring) -> APIRouter:
         ctx = Ctx(request, wiring)
         settings = ctx.settings()
         auto = settings.sync.companion_auto_update
+        try:
+            state = (await ctx.act("transcription", {}))["state"]
+        except StoreError:
+            state = ""
         again = duration(settings.admin.session_hours * 3600)
         rows = [
             ui.row(
@@ -57,6 +62,23 @@ def router(wiring: Wiring) -> APIRouter:
                 "How summaries are written",
                 "Your directions and the names and terms to get right.",
                 ui.go("Change", "/admin/transcription/writeup"),
+            ),
+            ui.row(
+                "Suggestions",
+                "Tags, account, context and calendar match for each note.",
+                ui.go("Open", "/admin/suggestions"),
+            ),
+            ui.row(
+                "Pause transcription",
+                "Transcription is <b>paused</b>. New recordings wait until you resume it."
+                if state == "paused"
+                else "Hold new recordings without losing them, for example while the server is "
+                "being worked on.",
+                ui.btn("Resume", "/admin/ai/resume", "primary", {"back": "/admin/advanced"})
+                if state == "paused"
+                else ui.btn("Pause", "/admin/ai/pause", "", {"back": "/admin/advanced"})
+                if state in {"on", "failing"}
+                else "",
             ),
             ui.row(
                 "AI servers",

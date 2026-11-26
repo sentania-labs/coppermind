@@ -107,18 +107,8 @@ def line(ai: dict[str, Any]) -> tuple[str, str, str]:
     return "ok", "Working.", ui.go("Change", "/admin/ai")
 
 
-def card(ai: dict[str, Any] | None) -> str:
+def card(ai: dict[str, Any]) -> str:
     """The AI card on the Coppermind page: one line, then what is used for each job."""
-    if ai is None:
-        return ui.card(
-            ui.rows(
-                ui.row(
-                    "AI server",
-                    ui.dot("warn") + " Coppermind could not check it just now. Reload in a moment.",
-                )
-            ),
-            "AI",
-        )
     kind, said, action = line(ai)
     service, summary_service = ai["trans"].get("service"), ai["summary_service"]
     rows = [ui.row("AI server", f"{ui.dot(kind)} {said}", action)]
@@ -268,10 +258,25 @@ def router(wiring: Wiring) -> APIRouter:
                     "writeup-save",
                     {"connection": written[0], "model": written[1], "enabled": True},
                 )
+                if (await ctx.act("suggestions", {}))["state"] == "none":
+                    await ctx.act(
+                        "suggestions-save", {"connection": written[0], "model": written[1]}
+                    )
         except StoreError as exc:
             return await ctx.refused(exc, "/admin/ai")
         ctx.say("ok", "Saved.")
         return ctx.go("/admin")
+
+    @routes.post("/admin/ai/pause", include_in_schema=False)
+    async def pause(request: Request) -> Response:
+        ctx = Ctx(request, wiring)
+        await ctx.form()
+        target = ctx.back("/admin/advanced")
+        try:
+            await ctx.act("transcription-pause", {"paused": True})
+        except StoreError as exc:
+            return await ctx.refused(exc, target)
+        return ctx.go(target)
 
     @routes.post("/admin/ai/resume", include_in_schema=False)
     async def resume(request: Request) -> Response:

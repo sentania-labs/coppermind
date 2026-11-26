@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
+from coppermind.store_protocol import StoreError
 from services.admin.tests.harness import VIEWS, follow, post, token
 from services.admin.tests.harness import admin as admin
 from services.admin.tests.test_pages import PAGES
@@ -26,6 +27,7 @@ ADVANCED = [
     "/admin/notes/leave-alone",
     "/admin/settings/properties",
     "/admin/transcription/writeup",
+    "/admin/suggestions",
     "/admin/services",
     "/admin/settings/search",
     "/admin/sync/what",
@@ -321,6 +323,53 @@ def test_an_ai_server_can_be_chosen_from_the_coppermind_page(admin):
     store.views["transcription"].update(state="on", service=SPEECH)
     summarizing(store)
     assert line_of(client.get("/admin").text, "AI server").startswith("Working.")
+
+
+@pytest.mark.parametrize(
+    ("state", "saves"),
+    [("none", True), ("on", False), ("paused", False), ("failing", False)],
+)
+def test_choosing_the_summary_turns_suggestions_on_only_when_they_were_never_set(
+    admin, state, saves
+):
+    client, _, store = admin
+    store.views["suggestions"]["state"] = state
+    choice = {"heard": f"{SPEECH['id']}|", "written": f"{TEXT['id']}|llama-3.1-8b"}
+    post(client, "/admin/ai/save", choice, "/admin/ai")
+    expected = [{"connection": TEXT["id"], "model": "llama-3.1-8b"}] if saves else []
+    assert store.asked("suggestions-save") == expected
+
+
+def test_choosing_only_what_transcribes_leaves_suggestions_alone(admin):
+    client, _, store = admin
+    store.views["suggestions"]["state"] = "none"
+    post(client, "/admin/ai/save", {"heard": f"{SPEECH['id']}|"}, "/admin/ai")
+    assert store.asked("suggestions-save") == []
+    assert store.asked("suggestions") == []
+
+
+def test_advanced_pauses_and_resumes_transcription(admin):
+    client, _, store = admin
+    store.views["transcription"]["state"] = "on"
+    page = client.get("/admin/advanced").text
+    assert 'action="/admin/ai/pause"' in page and 'action="/admin/ai/resume"' not in page
+    paused = post(client, "/admin/ai/pause", {"back": "/admin/advanced"}, "/admin/advanced")
+    assert paused.headers["location"] == "/admin/advanced"
+    assert store.asked("transcription-pause") == [{"paused": True}]
+    store.views["transcription"]["state"] = "paused"
+    page = client.get("/admin/advanced").text
+    assert 'action="/admin/ai/resume"' in page and 'action="/admin/ai/pause"' not in page
+    resumed = post(client, "/admin/ai/resume", {"back": "/admin/advanced"}, "/admin/advanced")
+    assert resumed.headers["location"] == "/admin/advanced"
+    assert store.asked("transcription-pause")[-1] == {"paused": False}
+
+
+def test_advanced_still_draws_without_a_pause_button_when_the_store_is_silent(admin):
+    client, _, store = admin
+    store.answers["transcription"] = StoreError("silent")
+    page = client.get("/admin/advanced").text
+    assert "Pause transcription" in page
+    assert "/admin/ai/pause" not in page and "/admin/ai/resume" not in page
 
 
 def test_the_ai_page_keeps_the_wait_already_chosen_and_never_picks_an_outside_server(admin):
