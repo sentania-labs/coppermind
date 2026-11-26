@@ -427,7 +427,7 @@ async def test_a_note_that_cites_an_artifact_links_it_files_by_month_and_lists_a
         )
     )
     assert note.frontmatter["artifacts"] == [created.id]
-    assert note.frontmatter["kind"] == "note"
+    assert "kind" not in note.frontmatter  # a note says nothing about its kind
     assert note.body.endswith("## Artifacts\n\n[[Artifacts/2026/2026-09/upgrade.pptx]]\n")
 
     assert await filing.file_reviewed(store) == {"filed": 1, "filing_failed": 0}
@@ -495,7 +495,7 @@ async def test_a_note_cannot_be_an_artifact_and_an_artifact_needs_its_kind(store
             PatchFrontmatter(set={"artifacts": ["01K4Q8Z2A0P1Q2R3S4T5U6V7W8"]}),
             note.content_hash,
         )
-    assert (await store.get_note(note.id)).frontmatter.get("kind") == "note"
+    assert "kind" not in (await store.get_note(note.id)).frontmatter
     with pytest.raises(ValueError, match="a declared kind is required"):
         CreateArtifact(filename="deck.pptx", content_base64=encoded(b"PK"))
     assert notes_tree(store) == {note.path}
