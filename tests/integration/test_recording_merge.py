@@ -552,11 +552,17 @@ async def test_merge_preserves_owner_frontmatter_comments_and_body(store):
         ]
 
     assert keys(final_text) == keys(reviewed_text)
-    assert final_text.split("---\n")[1].splitlines() == [
+    expected = [
         line
         for line in reviewed_text.split("---\n")[1].splitlines()
         if line.strip() != f"- {recording.artifact_id}"
     ]
+    # Nothing else is cited now (transcript.json is no longer filed as an artifact), so the
+    # list the removal empties is written out as an empty list.
+    for at, line in enumerate(expected):
+        if line == "artifacts:" and not expected[at + 1].lstrip().startswith("- "):
+            expected[at] = "artifacts: []"
+    assert final_text.split("---\n")[1].splitlines() == expected
 
 
 async def test_a_merged_recordings_audio_is_not_held_back_by_the_note_it_was_merged_into(store):
