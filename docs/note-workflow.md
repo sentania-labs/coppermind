@@ -1,7 +1,7 @@
 # Note workflow and shared Dropbox
 
 The note workflow is on from the first start; Admin has no switch for it. Starting adds
-the optional attendees, invitees, calendar reference and time-unknown properties.
+the optional attendees, invitees and calendar reference properties.
 Existing notes, type choices and schema roles are preserved. Conflicting property types stop setup.
 The common drop folder (called Dropbox here) defaults to `Dropbox` in the vault on an existing
 install and **To Coppermind** on a new one. Old per-calendar folders are ordinary vault folders after automatic migration.
