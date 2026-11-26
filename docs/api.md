@@ -75,7 +75,7 @@ described under [voice recognition](dossiers.md#voice-recognition).
 
 Entity search hits require both `notes:read` and `entities:read`. Unauthorized
 kinds are excluded before retrieval, ranking and pagination. Entity hits have `kind: entity` and
-link to stable `People/` or `Companies/` pages. Dossier permissions never grant
+link to a person's `People/` page; a company has no page. Dossier permissions never grant
 access to source artifacts.
 
 ## Notes and folders
