@@ -64,8 +64,7 @@ what Coppermind wrote, the new write-up replaces it and Coppermind keeps the ear
 Getting it back from the companion is not available yet; it arrives with restore from Git
 history. If you edited the body, nothing is overwritten: the row says so and **Compare with my note** shows
 your lines against the new write-up, and the note changes only if you choose **Replace my
-note with the new write-up**, which says before it happens that your text is replaced and
-afterwards that your earlier version is saved in Coppermind and not shown there. Every note has **Enrich**, which runs the suggestions step
+note with the new write-up**. Every note has **Enrich**, which runs the suggestions step
 again (attendees, account, tags, type and the like). **Resummarize all missing** at the top
 writes up every note that has no write-up or whose write-up failed. A box above the list finds a note by title as you type. Rows keep their place while the
 screen is open and are put in order again (notes needing you first) when it is opened or

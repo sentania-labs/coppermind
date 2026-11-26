@@ -277,7 +277,7 @@ class ReviewView extends ItemView {
         }catch(e){new Notice(e.message);}
       };
       if(data.recording_generation_mode!=='markdown-v1'&&(manual||summary)&&['queued','running'].includes(data.state))el.createEl('p',{text:'The summary is still being written. Marking reviewed now files the note without it.',cls:'coppermind-notice'});
-      if(data.rewrite_running)el.createEl('p',{text:'A new write-up is being made for this note. Marking it reviewed now will discard it.',cls:'coppermind-notice'});
+      if(data.rewrite_running)el.createEl('p',{text:'A new write-up is being made for this note.',cls:'coppermind-notice'});
       const apply=el.createEl('button',{text:'Apply kept suggestions & mark reviewed',cls:'mod-cta'});apply.disabled=!synced;apply.onclick=()=>finish(true);
       const without=el.createEl('button',{text:'Mark reviewed without changes'});without.disabled=!synced;without.onclick=()=>finish(false);
     }catch(e){el.createEl('p',{text:e.message,cls:'coppermind-notice'});const retry=el.createEl('button',{text:'Retry'});retry.onclick=()=>this.refresh();}
@@ -615,10 +615,9 @@ class NotesView extends ItemView {
     shell.summary.setText(parts.join(' · ')+'.');
     this.showStamp();
     shell.notices.empty();
-    shell.notices.createEl('p',{text:'Resummarize writes a note up again from its saved transcript and never overwrites what you edited. Enrich runs its suggestions again.',cls:'coppermind-hint'});
     if(data.writeup_on===false)shell.notices.createEl('p',{text:WRITEUP_OFF,cls:'coppermind-notice'});
     if(data.suggestions_on===false)shell.notices.createEl('p',{text:SUGGESTIONS_OFF,cls:'coppermind-notice'});
-    for(const title of this.left||[])shell.notices.createEl('p',{text:'"'+title+'" left Review while it was being written up. A write-up that finishes after that is not applied.',cls:'coppermind-notice'});
+    for(const title of this.left||[])shell.notices.createEl('p',{text:'"'+title+'" left Review while it was being written up.',cls:'coppermind-notice'});
     shell.bulk.empty();
     if(missing.length){
       const button=shell.bulk.createEl('button',{text:'Resummarize all missing ('+missing.length+')',cls:'mod-cta'});
@@ -644,7 +643,7 @@ class NotesView extends ItemView {
       catch(e){const why=this.fail(e,'Could not start. Check your connection.');problems.set(why,[...(problems.get(why)||[]),n.title]);}
     }
     const failed=[...problems].map(([why,titles])=>plural(titles.length,'note')+' not started ('+titles.join(', ')+'): '+why);
-    this.flash=(started?'Started '+plural(started,'note')+'. Each shows when it finishes.':'No note could be started.')+(failed.length?' '+failed.join(' '):'');
+    this.flash=(started?'Started '+plural(started,'note')+'.':'No note could be started.')+(failed.length?' '+failed.join(' '):'');
     await this.refresh();
   }
   row(note,list){
@@ -694,8 +693,7 @@ class KeptRewriteModal extends Modal {
   onOpen(){
     const el=this.contentEl, kept=this.note.kept;el.empty();
     el.createEl('h3',{text:this.note.title});
-    el.createEl('p',{text:'You edited this note, so Coppermind did not change it. Red lines (-) are in your note. Green lines (+) are in the new write-up.'});
-    el.createEl('p',{text:'Replace swaps your text for the new write-up. Your earlier version is saved in Coppermind and is not shown here.',cls:'coppermind-notice'});
+    el.createEl('p',{text:'You edited this note. Red is yours, green is the new write-up.'});
     const box=el.createEl('pre',{cls:'coppermind-diff'});
     for(const line of (kept.difference||[]).filter(l=>!/^(---|\+\+\+|@@)/.test(l)))box.createEl('div',{text:line||' ',cls:line.startsWith('+')&&!line.startsWith('+++')?'coppermind-added':line.startsWith('-')&&!line.startsWith('---')?'coppermind-removed':''});
     if(!(kept.difference||[]).length)box.createEl('div',{text:'The two are the same.'});
@@ -704,7 +702,7 @@ class KeptRewriteModal extends Modal {
     const keep=el.createEl('button',{text:'Keep my note'});
     replace.onclick=async()=>{
       replace.disabled=true;keep.disabled=true;status.setText('Replacing…');
-      try{await this.plugin.call('/v1/notes/'+encodeURIComponent(this.note.id)+'/resummarize','POST',{replace:true,if_match:kept.if_match});this.replaced=true;this.close();await this.done('Replaced with the new write-up. Your earlier version is saved in Coppermind and is not shown here.');}
+      try{await this.plugin.call('/v1/notes/'+encodeURIComponent(this.note.id)+'/resummarize','POST',{replace:true,if_match:kept.if_match});this.replaced=true;this.close();await this.done('Replaced with the new write-up.');}
       catch(e){status.setText(e.status===403?KEY_MISSING:e.status===422||e.status===404?e.message:'Could not replace the note. Check your connection, then try again.');replace.disabled=false;keep.disabled=false;}
     };
     keep.onclick=()=>this.close();

@@ -917,7 +917,8 @@ test('a rewrite held back because the note was edited is compared, and replaces 
   assert.ok(!textsOf(f.view).some(t=>t.startsWith('Write-up: written')));
   await f.view.contentEl.all().find(e=>e.text==='Compare with my note').onclick();
   const modal=f.modals[0];
-  assert.ok(modal.contentEl.all().some(e=>e.text==='Replace swaps your text for the new write-up. Your earlier version is saved in Coppermind and is not shown here.'));
+  assert.ok(modal.contentEl.all().some(e=>e.text==='You edited this note. Red is yours, green is the new write-up.'));
+  assert.ok(!modal.contentEl.all().some(e=>/saved in Coppermind|swaps your text/.test(e.text||'')));
   assert.ok(modal.contentEl.all().some(e=>e.text==='+Better body'&&e.cls==='coppermind-added'));
   assert.ok(modal.contentEl.all().some(e=>e.text==='-My own line'&&e.cls==='coppermind-removed'));
   modal.contentEl.all().find(e=>e.text==='Keep my note').onclick();
@@ -926,7 +927,7 @@ test('a rewrite held back because the note was edited is compared, and replaces 
   await f.modals[1].contentEl.all().find(e=>e.text==='Replace my note with the new write-up').onclick();
   const request=f.requests.find(r=>r.url.endsWith('/resummarize'));
   assert.deepEqual(JSON.parse(request.body),{replace:true,if_match:'sha256:1'});
-  assert.ok(textsOf(f.view).includes('Replaced with the new write-up. Your earlier version is saved in Coppermind and is not shown here.'));
+  assert.ok(textsOf(f.view).includes('Replaced with the new write-up.'));
 });
 
 test('a server that stops answering, or a key without permission, is said plainly',async()=>{
@@ -980,9 +981,9 @@ test('the review panel has no second Enrich, and warns when a rewrite would be d
   const f=await fixture(undefined,{rewrite_running:true,suggestions:[{kind:'tags',field:'tags',value:['a'],confidence:1,reason:'',candidates:[],contact_ids:[]}]});
   const texts=textsOf(f.view);
   assert.ok(!f.view.contentEl.all().some(e=>e.text==='Request fresh suggestions'));
-  assert.ok(texts.includes('A new write-up is being made for this note. Marking it reviewed now will discard it.'));
+  assert.ok(texts.includes('A new write-up is being made for this note.'));
   const calm=await fixture(undefined,{});
-  assert.ok(!textsOf(calm.view).includes('A new write-up is being made for this note. Marking it reviewed now will discard it.'));
+  assert.ok(!textsOf(calm.view).includes('A new write-up is being made for this note.'));
 });
 
 test('rows keep their place while the screen is open and re-sort only on Refresh',async()=>{
@@ -1022,7 +1023,7 @@ test('a note that leaves Review while it was being written is said at the top',a
   const f=await notesScreen([reviewNote('n1','Retro',{writeup:step('working','',new Date().toISOString())}),reviewNote('n2','Other')]);
   f.state.notes=f.state.notes.filter(n=>n.id!=='n1');
   await f.view.refresh(true);
-  assert.ok(textsOf(f.view).includes('"Retro" left Review while it was being written up. A write-up that finishes after that is not applied.'));
+  assert.ok(textsOf(f.view).includes('"Retro" left Review while it was being written up.'));
 });
 
 test('a long list can be filtered as you type, and rows are compact',async()=>{
