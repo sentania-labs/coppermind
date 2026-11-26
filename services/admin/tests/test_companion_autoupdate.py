@@ -126,19 +126,38 @@ def test_admin_start_up_asks_the_store_once_in_the_background(admin, monkeypatch
     monkeypatch.setattr("coppermind_admin.main.asyncio.sleep", quick)
     store.answers["companion-autoupdate"] = {"state": "current"}
     asyncio.run(update_companion(client.app, wiring))
+    assert waits == [2]
     assert len(store.asked("companion-autoupdate")) == 1
     assert set(store.asked("companion-autoupdate")[0]) == {"files", "url"}
 
 
-def test_admin_start_up_retries_while_the_store_is_down_and_never_raises(admin, monkeypatch):
+def test_admin_start_up_retries_until_the_store_answers(admin, monkeypatch):
     client, wiring, store = admin
+    waits = []
 
     async def quick(seconds):
-        return None
+        waits.append(seconds)
+        store.down = len(waits) < 3
+
+    monkeypatch.setattr("coppermind_admin.main.asyncio.sleep", quick)
+    store.down = True
+    store.answers["companion-autoupdate"] = {"state": "current"}
+    asyncio.run(update_companion(client.app, wiring))
+    assert waits == [2, 5, 10]
+    assert len(store.asked("companion-autoupdate")) == 1
+
+
+def test_admin_start_up_gives_up_quietly_when_the_store_never_comes_up(admin, monkeypatch):
+    client, wiring, store = admin
+    waits = []
+
+    async def quick(seconds):
+        waits.append(seconds)
 
     monkeypatch.setattr("coppermind_admin.main.asyncio.sleep", quick)
     store.down = True
     asyncio.run(update_companion(client.app, wiring))
+    assert waits == [2, 5, 10, 30, 60, 120, 300]
     assert store.calls == []
 
 
