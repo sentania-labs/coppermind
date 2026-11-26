@@ -80,18 +80,21 @@ def test_attendees_are_the_recognised_voices_and_the_matched_invite():
                 "people": [
                     {"address": "mailto:dana@example.com"},
                     {"address": "mailto:priya@example.com"},
-                    {"address": "mailto:outsider@acme.test"},
+                    {"address": "mailto:outsider@acme.test", "name": "Olive Outsider"},
+                    {"address": "mailto:nameless@acme.test"},
+                    {"address": "mailto:echo@acme.test", "name": "echo@acme.test"},
                 ],
             },
         },
     )
     found = filled_in.answers(context([dana, priya, lee, twin_a, twin_b]), write_up)
-    # A name two people share names nobody; an invitee nobody knows is kept by address.
+    # A name two people share names nobody; an invitee nobody knows is kept by the name on the
+    # invitation, and left out when it gives none. An address is never written.
     assert found["attendees"] == [
         "[[People/Dana Whitfield]]",
         "[[People/Lee Chen]]",
         "[[People/Priya Raman]]",
-        "outsider@acme.test",
+        "Olive Outsider",
     ]
     assert found["calendar_event"] == "evt-1"
 

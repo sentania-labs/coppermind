@@ -53,8 +53,9 @@ def _link(person: Any) -> str:
 
 def attendees(context: Any, saved: dict[str, Any]) -> list[str]:
     """Who was there: the people whose voices were recognised, and the people on the invitation
-    of the meeting the recording matched. A name two people share is left out: it does not say
-    which of them it was."""
+    of the meeting the recording matched. An invitee nobody knows is written by the name the
+    invitation gives, or left out; an address is never written. A name two people share is left
+    out: it does not say which of them it was."""
     people = _entities(context)
     by_name: dict[str, list[Any]] = {}
     by_email: dict[str, Any] = {}
@@ -80,8 +81,10 @@ def attendees(context: Any, saved: dict[str, Any]) -> list[str]:
             person = by_email.get(address.casefold())
             if person is not None:
                 add(_link(person))
-            elif address:
-                add(address)
+            else:
+                shown = str(who.get("name") or "").strip()
+                if shown and "@" not in shown:
+                    add(shown)
     return found
 
 
