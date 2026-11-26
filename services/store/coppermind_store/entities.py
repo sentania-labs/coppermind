@@ -76,6 +76,15 @@ def dossier_parts(text: str, entity: Entity) -> tuple[str, str]:
         return text[: found.start()], text[found.end() :]
     if entity.generated and text.endswith(entity.generated):
         return text[: -len(entity.generated)], entity.generated
+    if entity.generated == "":
+        # A plain page has nothing generated below its marker to recognise it by, so a page
+        # that lost the marker is its entity's own only when its properties say so.
+        try:
+            fields, _ = fm.parse(text)
+        except fm.FrontmatterError:
+            fields = {}
+        if matches_identity(fields, entity, []):
+            return text, ""
     raise ValueError("dossier marker is missing; restore it to resume")
 
 
@@ -229,7 +238,18 @@ def company_domains(entity: Entity, ledger: EntityLedger) -> list[str]:
     return sorted({f.value for f in active_facts(entity, ledger) if f.predicate == "domain"})
 
 
-def properties(entity: Entity, ledger: EntityLedger) -> dict[str, Any]:
+def domain_owners(ledger: EntityLedger) -> dict[str, set[str]]:
+    owners: dict[str, set[str]] = {}
+    for company in ledger.entities.values():
+        if company.kind == "company" and not company.retired_at and not company.redirect:
+            for domain in company_domains(company, ledger):
+                owners.setdefault(domain, set()).add(company.id)
+    return owners
+
+
+def properties(
+    entity: Entity, ledger: EntityLedger, owners: dict[str, set[str]] | None = None
+) -> dict[str, Any]:
     result: dict[str, Any] = {
         "aliases": entity.aliases,
         "name": entity.name,
@@ -238,12 +258,27 @@ def properties(entity: Entity, ledger: EntityLedger) -> dict[str, Any]:
         result["email"] = entity.emails
     if entity.kind == "company":
         result["domains"] = company_domains(entity, ledger)
+    if entity.kind == "person":
+        linked = {
+            f.target
+            for f in active_facts(entity, ledger)
+            if f.predicate == "organization"
+            and f.target
+            and ledger.entities[f.target].kind == "company"
+        }
+        owners = domain_owners(ledger) if owners is None else owners
+        for address in entity.emails:
+            matched = owners.get(address.rpartition("@")[2].lower(), set())
+            if len(matched) == 1:
+                linked |= matched
+        # The company's name, as plain text: a company has no page to link to.
+        result["company"] = sorted(ledger.entities[identity].name for identity in linked)
     return result
 
 
-def header(entity: Entity, ledger: EntityLedger) -> str:
+def header(entity: Entity, ledger: EntityLedger, owners: dict[str, set[str]] | None = None) -> str:
     return fm.compose(
-        properties(entity, ledger),
+        properties(entity, ledger, owners),
         f"# {label(entity.name)}\n\n## Scott's Notes\n\n",
     ) + dossier_marker(entity.id)
 
@@ -512,10 +547,12 @@ class EntityService:
                 fact.state, fact.withdrawn_for = "withdrawn", None
             if added or removed:
                 self.receipt(ledger, entity, "page domains")
-        entity.personal = owner_wrote(head)
+        # A plain page generates nothing, so whatever follows its marker is the owner's, kept as
+        # it is: the end of the page is where anyone clicks to keep writing.
+        entity.personal = owner_wrote(head) or (entity.generated == "" and bool(block.strip()))
         if block == entity.pending:
             entity.generated, entity.pending = block, None
-        if entity.generated is not None and block != entity.generated:
+        if entity.generated and block != entity.generated:
             old = {identity: text for text, identity in FACT_LINE.findall(entity.generated)}
             changed = {identity: text for text, identity in FACT_LINE.findall(block)}
             for fact in list(entity.facts):
@@ -556,25 +593,16 @@ class EntityService:
         entity: Entity,
         raw: bytes | None,
         ledger: EntityLedger,
+        owners: dict[str, set[str]] | None = None,
     ) -> str:
         if raw is None:
-            return header(entity, ledger)
+            return header(entity, ledger, owners)
         head, _ = dossier_parts(raw.decode(), entity)
         head = remove_legacy_identity(head, entity)
         head = regenerate(entity, head)
         fields, _ = fm.parse(head)
         prior = entity.projection_fields or {}
-        wanted = properties(entity, ledger)
-        # A property Coppermind wrote earlier that it no longer writes (a person's `company`
-        # link, now that company pages are gone) leaves with it, unless the owner changed it.
-        gone = [
-            key
-            for key in prior
-            if key not in wanted and key in fields and fields[key] == prior[key]
-        ]
-        if gone:
-            head = fm.patch(head, {}, unset=gone)
-            fields, _ = fm.parse(head)
+        wanted = properties(entity, ledger, owners)
         patch = {
             key: value
             for key, value in wanted.items()
@@ -599,14 +627,11 @@ class EntityService:
         entity: Entity,
         written: bytes,
         ledger: EntityLedger,
+        owners: dict[str, set[str]] | None,
     ) -> dict[str, object]:
         fields, _ = fm.parse(written.decode())
-        held = {
-            key: value
-            for key, value in (entity.projection_fields or {}).items()
-            if key in properties(entity, ledger)
-        }
-        for key, value in properties(entity, ledger).items():
+        held = dict(entity.projection_fields or {})
+        for key, value in properties(entity, ledger, owners).items():
             if fields.get(key) == value:
                 held[key] = value
         return held
@@ -616,9 +641,11 @@ class EntityService:
         ledger: EntityLedger,
         entity: Entity,
         seen: dict[str, bytes | None] | None = None,
+        owners: dict[str, set[str]] | None = None,
     ) -> None:
         if entity.kind == "company":
             return  # A company has no page: it is a name and an account, not a place to write.
+        owners = domain_owners(ledger) if owners is None else owners
         try:
             if seen is not None and entity.id in seen:
                 raw = seen[entity.id]
@@ -629,10 +656,12 @@ class EntityService:
             if entity.retired_at and raw is None:
                 return
             block = render(entity, ledger)
-            wanted = (self.prefix(entity, raw, ledger) + block).encode()
+            if raw is not None and entity.generated == "" and not block:
+                block = dossier_parts(raw.decode(), entity)[1]  # the owner's, below the marker
+            wanted = (self.prefix(entity, raw, ledger, owners) + block).encode()
             if raw == wanted:
                 entity.problem = None
-                entity.projection_fields = self.projected(entity, wanted, ledger)
+                entity.projection_fields = self.projected(entity, wanted, ledger, owners)
                 return
             entity.pending = block
             self.save(ledger)  # Persist corrections and the expected replacement before writing.
@@ -648,7 +677,7 @@ class EntityService:
                 finally:
                     staged.unlink(missing_ok=True)
             entity.generated, entity.pending, entity.problem = block, None, None
-            entity.projection_fields = self.projected(entity, wanted, ledger)
+            entity.projection_fields = self.projected(entity, wanted, ledger, owners)
         except (OSError, ValueError, UnicodeError, fm.FrontmatterError):
             entity.problem = (
                 "Dossier page could not be projected; check its identity, delimiter and path"
@@ -1396,6 +1425,7 @@ class EntityService:
                 continue
         self.contribute(ledger, notes, versions)
         await self.migrate(ledger)
+        owners = domain_owners(ledger)
         for entity in ledger.entities.values():
             if entity.page_move is not None:
                 continue
@@ -1403,7 +1433,7 @@ class EntityService:
                 continue
             if entity.id in found and len(found[entity.id]) > 1:
                 continue
-            self.project(ledger, entity, seen)
+            self.project(ledger, entity, seen, owners)
         if ledger.model_dump_json() != before:
             self.save(ledger)
         await self.mirror(ledger, seen)
@@ -1427,7 +1457,8 @@ class EntityService:
             if not raw:
                 return ""
             try:
-                return fm.parse(dossier_parts(raw.decode(), entity)[0])[1]
+                head, block = dossier_parts(raw.decode(), entity)
+                return fm.parse(head)[1] + (block if entity.generated == "" else "")
             except (ValueError, UnicodeError, fm.FrontmatterError):
                 return ""
         try:
@@ -1435,8 +1466,8 @@ class EntityService:
             fields, _ = fm.parse(text)
             if fields.get("entity_id") not in (None, entity.id):
                 return ""
-            _, body = fm.parse(dossier_parts(text, entity)[0])
-            return body
+            head, block = dossier_parts(text, entity)
+            return fm.parse(head)[1] + (block if entity.generated == "" else "")
         except (OSError, ValueError, UnicodeError, fm.FrontmatterError):
             return ""
 

@@ -307,9 +307,10 @@ async def test_a_new_person_page_is_plain(store):
     await store.entities.refresh()
     page = (store.notes_root / created["path"]).read_text()
     fields, body = fm.parse(page)
-    assert set(fields) == {"aliases", "name", "email"}
+    assert set(fields) == {"aliases", "name", "email", "company"}
+    assert fields["company"] == []  # a company is a name here, never a link to a page
     assert body == f"# Casey\n\n## Scott's Notes\n\n{dossier_marker(created['id'])}"
-    for text in ("Coppermind's Notes", "Facts", "Supporting notes", "Evidence", "company"):
+    for text in ("Coppermind's Notes", "Facts", "Supporting notes", "Evidence", "[["):
         assert text not in page
     # What was learned is still in the ledger, and still found by search.
     entity = store.entities.load().entities[created["id"]]
@@ -367,7 +368,8 @@ async def test_an_old_person_page_becomes_plain_and_keeps_what_the_owner_wrote(s
     await store.entities.refresh()
 
     fields, body = fm.parse(path.read_text())
-    assert "company" not in fields  # the link Coppermind wrote goes with the page it pointed at
+    # The link Coppermind wrote pointed at a page that is gone; it is now the company's name.
+    assert fields["company"] == []
     assert fields["nickname"] == "KC"  # their own property stays
     assert "Met at the offsite." in body
     for text in ("Coppermind's Notes", "Facts", "Supporting notes", "role: engineer"):
@@ -483,3 +485,32 @@ async def test_an_old_sync_test_note_is_never_adopted_as_a_note(store):
             sa.select(Note.id).where(Note.path == "Coppermind sync test.md")
         )
     assert "Coppermind sync test.md" in store.control.read_reconciler_exclusions()
+
+
+async def test_an_old_company_link_on_a_persons_page_becomes_the_companys_name(store):
+    await store.create_note(
+        CreateNote(
+            title="Customer meeting",
+            body="A meeting.",
+            frontmatter={
+                "reviewed": True,
+                "date": "2026-11-01",
+                "account": ["Acme"],
+                "attendees": ["pat@acme.com"],
+            },
+        )
+    )
+    await store.entities.refresh()
+    ledger = store.entities.load()
+    pat = next(e for e in ledger.entities.values() if e.kind == "person")
+    page = store.notes_root / pat.path
+    assert fm.parse(page.read_text())[0]["company"] == ["Acme"]
+    # What an earlier release wrote: a link to the company's page, which is not there now.
+    page.write_text(page.read_text().replace("- Acme", "- '[[Companies/Acme]]'"))
+    pat.projection_fields = {**(pat.projection_fields or {}), "company": ["[[Companies/Acme]]"]}
+    store.entities.save(ledger)
+
+    await store.entities.refresh()
+
+    assert fm.parse(page.read_text())[0]["company"] == ["Acme"]
+    assert not (store.notes_root / "Companies").exists()

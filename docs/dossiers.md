@@ -11,8 +11,9 @@ company, and only attaches to a company the account names.
 Email-only people get readable provisional names and retain their addresses as
 aliases. A fuller evidenced name can replace the provisional name.
 
-A person's page is the name, the properties that recognise them (`name`, `email`, `aliases`) and
-a Scott's Notes section for whatever you want to write. Nothing else is generated: no facts, no
+A person's page is the name, the properties that recognise them (`name`, `email`, `aliases`), the
+company they belong to (`company`, in plain words, never a link) and a Scott's Notes section for
+whatever you want to write. Nothing else is generated: no facts, no
 relationships and no list of supporting notes, because Obsidian's backlinks already list the notes
 that mention the person. What Coppermind has learned stays in the ledger and in search, and is
 read through the entity API and Admin's People list. Personal writing is retained when generated
@@ -30,8 +31,9 @@ may observe an intermediate state during this resumable per-file migration.
 
 Pages an earlier release wrote are tidied, never rewritten in bulk. On the next pass a person's
 page loses the generated section below the marker (the Facts, Relationships, Interests and
-Supporting notes it held) and the `company` property Coppermind wrote, and keeps everything
-you wrote and every property you added or changed. A company page that is still exactly what
+Supporting notes it held) and a `company` link Coppermind wrote becomes the company's name, and it
+keeps everything you wrote and every property you added or changed. Writing after the marker
+is writing like any other: a plain page has nothing generated there, so it is kept. A company page that is still exactly what
 Coppermind wrote is removed; one you wrote in, or edited a property or fact on, is left where it
 is as yours, Coppermind stops tending it, and deleting it later does not retire the company.
 
@@ -41,7 +43,9 @@ Each attendee gets an "attended a meeting for" relationship to the company and t
 "met with" relationship to the attendee, both under Relationships. Attending never sets a
 person's `company`.
 
-A company's known email domains are kept as `domain` facts: when a reviewed note's attendee has an
+A person's `company` is filled from their email domain when exactly one company holds it, or from an
+explicit evidenced `organization` fact. What you write in `company` always wins and is not
+overwritten. A company's known email domains are kept as `domain` facts: when a reviewed note's attendee has an
 email domain with a whole DNS label equal to the normalized account name, for example
 `xcelenergy.com` or `xcel-energy.com` for Xcel Energy, the domain is recorded on the company as a
 `domain` fact with the note as evidence. Public mail domains such as `gmail.com` never qualify.
