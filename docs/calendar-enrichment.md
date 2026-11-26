@@ -289,7 +289,18 @@ partly invalid boundary block are mended, and each mend is logged. Nothing is in
 speaker who was not supplied, HTML, YAML, a code block or an empty note are still refused.
 A note that is refused is asked for once more, with what was wrong; if the second answer
 fails too, `error` on the recording says what was wrong in plain words, without repeating
-the model's text, and the start of the answer is kept on the job for support.
+the model's text, and the start of the answer is kept on the job for support. A reply
+that declines, apologises or says there was nothing to write is a note that is refused in
+the same way, so it is never saved as the note and the recording shows Try again.
+
+Once a note is accepted, its numbers, amounts, dates and proper names are checked against the
+transcript in code, never by asking a model again. Each one that cannot be found is followed
+by "(not in the recording)" and the note is otherwise left as written, so the owner sees it
+at review and keeps or deletes it. A figure counts as found in any form it was said ("$250k",
+"250,000" and "two hundred fifty thousand" are one amount), a date that follows from a
+relative one ("by Friday") counts as found, and a name counts as found when any word of it
+is heard, or comes from the speakers, the matched invite's title and attendees, or the
+glossary. What was marked is kept as `unsupported` on the saved write-up.
 
 Jobs accepted before this change keep `generation_mode: legacy`. Their three-section
 summary proposals still run through enrichment and complete through the existing review

@@ -32,7 +32,7 @@ from coppermind.recording_writeup import (
 )
 from coppermind.schema import parse_note_time
 from coppermind.speakers_section import render as render_speakers
-from coppermind_store import meeting_match, speaker_facts
+from coppermind_store import grounding, meeting_match, speaker_facts
 from coppermind_store.answer_shape import FENCE
 from coppermind_store.model_provider import ProviderError
 
@@ -86,6 +86,41 @@ def validate(document: str, title: str, labels: list[str]) -> str:
             if owner.strip() not in labels:
                 raise ValueError("An action item group names a speaker that was not supplied.")
     return "\n".join(lines[1:]).lstrip() + "\n"
+
+
+# A reply that declines, apologises or says there was nothing to write about. It is told apart
+# from a note by what it says and by its shape: it is a few plain sentences, never a list or a
+# timestamp, so a note that happens to say "I cannot attend" is not mistaken for one.
+_DECLINE = re.compile(
+    r"""(?:^\W*(?:i\W?m|i\s+am|we\s+are|we\W?re)?\s*(?:so\s+|very\s+)?(?:sorry|apologi[sz]e)\b)
+    |\b(?:i|we)\s+(?:could\s*not|couldn\W?t|cannot|can\W?t|can\s+not|am\s+unable\s+to|
+        am\s+not\s+able\s+to|was\s+unable\s+to|do\s+not\s+have\s+enough|don\W?t\s+have\s+enough)
+        \s+(?:\w+\s+){0,3}(?:produce|write|create|generate|summari[sz]e|provide|make|complete|
+        process|transcribe|help|assist|comply|do\s+that|fulfil+)\b
+    |\bas\s+an\s+ai\b|\bas\s+a\s+language\s+model\b
+    |\bno\s+transcript\b
+    |\bthe\s+(?:transcript|recording|audio)\s+(?:is|was|appears\s+to\s+be|seems)\s+
+        (?:empty|blank|too\s+short|unintelligible|missing)\b
+    |\bnothing\s+(?:to|that\s+can\s+be)\s+(?:summari[sz]e|written)\b""",
+    re.I | re.X,
+)
+_NOTE_SHAPE = re.compile(r"^\s*(?:[-*+]\s|\d+[.)]\s)|\[\d{1,2}:\d{2}", re.M)
+# The most a refusal runs to. A reply longer than this is a note whatever it says.
+DECLINE_CHARS = 700
+
+
+def declines(answer: str) -> bool:
+    """Whether a reply is a refusal, an apology or a statement that there was nothing to write,
+    rather than a note. Only the words around the title and headings are read."""
+    prose = "\n".join(
+        line for line in answer.splitlines() if line.strip() and not re.match(r"\s*#", line)
+    ).strip()
+    return (
+        bool(prose)
+        and len(prose) <= DECLINE_CHARS
+        and not _NOTE_SHAPE.search(prose)
+        and _DECLINE.search(prose) is not None
+    )
 
 
 UNKNOWN_VOICE = re.compile(r"Unknown voice (\d+)( \(recording-local\))?", re.I)
@@ -459,6 +494,32 @@ def vocabulary(context: Any) -> dict[str, Any]:
     }
 
 
+def known_words(
+    context: Any,
+    job: Any,
+    labels: list[str],
+    voices: Any,
+    calendar: dict[str, Any],
+    limits: FeatureAssignment,
+) -> list[str]:
+    """What may be named in a note although the recording never says it: the speakers, the
+    matched invite's title and the people on it, the owner's own account for the recording, and
+    the glossary's correct spellings."""
+    event = calendar.get("event") or {}
+    people = [p for p in event.get("people", []) if isinstance(p, dict)]
+    roles = context.store.control.schema().roles
+    account = dict(job.frontmatter).get(roles.get("account_key", "account"))
+    return [
+        *labels,
+        *(v.name for v in voices if getattr(v, "name", "")),
+        str(event.get("title") or ""),
+        *(str(p.get("name") or "") for p in people),
+        *(str(p.get("email") or "").partition("@")[0] for p in people),
+        str(account or ""),
+        limits.writeup_glossary,
+    ]
+
+
 class WriteupError(ProviderError):
     """A write-up failed. `detail` is a sentence that says what was wrong, in words that never
     repeat what the model wrote."""
@@ -591,6 +652,9 @@ async def condense(
             saved[key] = (await ask_text(context, limits, PART_RULES, request, usage)).strip()
             if not saved[key]:
                 raise WriteupError("writeup-provider-empty-reply")
+            if declines(saved[key]):
+                saved.pop(key)
+                raise WriteupError("writeup-invalid", "Part of the recording got no notes.")
             context.write(saved_key, saved)
         return saved[key]
 
@@ -728,6 +792,8 @@ async def generate(
         add_usage(usage, used)
         try:
             answer, suggestion_text = split_suggestions(document)
+            if declines(_split_boundary_block(answer)[0]):
+                raise ValueError("The reply was not a note of the recording.")
             tidied, repairs = tidy(answer, title, labels, duration)
             markdown, ranges = boundaries(tidied, duration)
             body = validate(markdown, title, labels)
@@ -751,10 +817,27 @@ async def generate(
             "; ".join(repairs) or "none",
             " (after one retry)" if correction else "",
         )
+    # What the recording does not say is marked in the note, never silently kept.
+    known = known_words(context, job, labels, voices, calendar, limits)
+    try:
+        recorded_on = date.fromisoformat(title[:10])
+    except ValueError:
+        recorded_on = None
+    body, unsupported = grounding.ground(body, text, known=known, recorded_on=recorded_on)
+    summary = _boundary_summary(ranges) if ranges else None
+    if summary:
+        summary, more = grounding.ground(summary, text, known=known, recorded_on=recorded_on)
+        unsupported += more
+    if unsupported:
+        log.info(
+            "recording write-up %s: %d figure(s), date(s) or name(s) not in the recording marked",
+            job.id,
+            len(unsupported),
+        )
     body = compose_body(
         body,
         render_speakers(voices, owner_known=bool(speaker_facts.owner_person_id(context))),
-        _boundary_summary(ranges) if ranges else None,
+        summary,
     )
     # A suggestion that cannot be read costs the note nothing; it is reported on its own.
     suggestions: list[dict[str, Any]] = []
@@ -795,6 +878,7 @@ async def generate(
         "usage": usage,
         "calendar": calendar,
         "repairs": repairs,
+        "unsupported": unsupported,
         "parts": len(evidence["part_notes"]) if "part_notes" in evidence else 0,
         "owner_label": owner_label,
     }

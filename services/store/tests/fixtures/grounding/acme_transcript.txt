@@ -1,0 +1,9 @@
+[00:00:02] Scott: Thanks for making time. I want to walk through where you are with the vSphere 7 estate.
+[00:00:11] Dana Whitfield: Sure. We run vSphere 7 on the older cluster, about a hundred and forty hosts across two sites, and roughly twelve hundred VMs.
+[00:00:27] Scott: And the goal is VCF 9 by the end of next year?
+[00:00:33] Dana Whitfield: That is the target. We have set aside two hundred fifty thousand dollars for the first phase. Priya owns the storage side, so she can speak to vSAN.
+[00:00:48] Priya Raman: We are on vSAN OSA today. Moving to ESA means new hardware for most nodes, and I would guess twenty five percent of the budget goes there. Last time the cutover took forty minutes.
+[00:01:12] Scott: Okay. I will send a sizing worksheet for the ESA nodes by Friday. Is the March window still open?
+[00:01:20] Dana Whitfield: Yes, in March. Send it to me. We also need a licensing comparison before budget review, and the support contract is about two and a half million over three years.
+[00:01:41] Priya Raman: And loop me in. Our colleague Marcus Hale from networking may join later, he was invited.
+[00:01:55] Unknown voice 1: Sorry, I joined late, what did I miss?
