@@ -37,7 +37,7 @@ async function fixture(local, overrides={}){
   class Plugin {registerView(type,fn){factory=fn;factories[type]=fn;}addSettingTab(tab){this.settingTab=tab;}addCommand(command){(this.commands??={})[command.id]=command;}async saveData(data){(this.saved??=[]).push(JSON.parse(JSON.stringify(data)));}addRibbonIcon(icon,title){(this.ribbons??=[]).push(title);}registerEvent(){}async loadData(){return {url:'https://coppermind.example',secret:'local-secret-name'};}}
   class ItemView {constructor(leaf){this.app=leaf.app;this.contentEl=new El();}}
   const app={metadataCache:{getFileCache:()=>({frontmatter:{id:'test-note'}})},secretStorage:{getSecret:()=> 'synthetic-credential'},vault:{read:async()=>local??raw,getAbstractFileByPath:path=>({path})},workspace:{getActiveFile:()=>file,on:()=>null,getActiveViewOfType:()=>null,openLinkText:()=>{}}};
-  const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,Modal:class{constructor(app){this.app=app;this.contentEl=new El();}open(){modals.push(this);this.onOpen();}close(){this.onClose();}},PluginSettingTab:class{constructor(){this.containerEl=new El();}},SecretComponent:class{setValue(){return this;}onChange(){return this;}},Notice:class{constructor(text){notices.push(text);}},MarkdownView:class{},requestUrl:async req=>{requests.push(req);if(req.url.endsWith('/v1/pair')&&overrides.pair)return overrides.pair(req);if(req.url.endsWith('/v1/anything')&&overrides.page)return overrides.page(req);if(req.url.endsWith('/v1/recordings/waiting'))return overrides.waitingFail?{status:overrides.waitingFail===true?500:overrides.waitingFail,json:{message:'down'}}:overrides.waitingHang?new Promise(()=>{}):{status:200,json:overrides.waiting};if(req.url.endsWith('/v1/dropbox'))return overrides.dropboxFail?{status:overrides.dropboxFail===true?500:overrides.dropboxFail,json:{message:'down'}}:{status:200,json:overrides.dropbox??{folder:'Dropbox',items:[]}};if(req.url.includes('/v1/dropbox/')&&req.url.endsWith('/dismiss'))return overrides.dismissDropFail?{status:500,json:{}}:{status:200,json:{dismissed:'x'}};if(req.url.endsWith('/v1/recordings/summaries-again'))return overrides.summariesAgain?overrides.summariesAgain(req):{status:200,json:{queued:2,already:0,skipped:0}};if(req.url.endsWith('/summary-again'))return overrides.summaryAgain?overrides.summaryAgain(req):{status:200,json:{title:'Planning',already:false}};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/dismiss'))return overrides.dismissFail?{status:500,json:{}}:{status:200,json:{}};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/retry'))return overrides.retryFail?{status:overrides.retryFail===true?500:overrides.retryFail,json:{}}:(overrides.onRetry?.(),{status:200,json:{}});if(req.url.endsWith('/v1/schema'))return {status:200,json:{roles:{id_key:'id'}}};if(req.url.endsWith('/v1/entities/voice/recognition'))return {status:200,json:{enabled:true}};if(req.url.endsWith('/v1/entities/voice/unknowns'))return {status:200,json:overrides.unknownVoices||{}};if(req.url.endsWith('/v1/entities/voice/people'))return {status:200,json:overrides.savedPeople||{}};if(req.url.includes('/v1/entities?'))return overrides.rejectPeople?{status:overrides.rejectPeople===true?403:overrides.rejectPeople,json:{error:'forbidden'}}:{status:200,json:typeof overrides.peopleResults==='function'?await overrides.peopleResults(req):overrides.peopleResults||{items:[],next_cursor:null}};if(req.url.endsWith('/review')&&req.method==='POST'&&overrides.rejectReview)return {status:403,json:{error:'forbidden'}};return {status:200,json:{note:{content_hash:digest,frontmatter:{reviewed:false}},roles:{reviewed_key:'reviewed',type_key:'type'},suggestions:[],unresolved:[],stale:false,state:'suggested',suggestions_enabled:true,job_id:null,...overrides}};}}),crypto:webcrypto,TextEncoder,URL,setTimeout,clearTimeout,setInterval,clearInterval};
+  const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,Modal:class{constructor(app){this.app=app;this.contentEl=new El();}open(){modals.push(this);this.onOpen();}close(){this.onClose();}},PluginSettingTab:class{constructor(){this.containerEl=new El();}},SecretComponent:class{setValue(){return this;}onChange(){return this;}},Notice:class{constructor(text){notices.push(text);}},MarkdownView:class{},requestUrl:async req=>{requests.push(req);if(req.url.endsWith('/v1/pair')&&overrides.pair)return overrides.pair(req);if(req.url.endsWith('/v1/anything')&&overrides.page)return overrides.page(req);if(req.url.endsWith('/v1/recordings/waiting'))return overrides.waitingFail?{status:overrides.waitingFail===true?500:overrides.waitingFail,json:{message:'down'}}:overrides.waitingHang?new Promise(()=>{}):{status:200,json:overrides.waiting};if(req.url.endsWith('/v1/dropbox'))return overrides.dropboxFail?{status:overrides.dropboxFail===true?500:overrides.dropboxFail,json:{message:'down'}}:{status:200,json:overrides.dropbox??{folder:'Dropbox',items:[]}};if(req.url.includes('/v1/dropbox/')&&req.url.endsWith('/dismiss'))return overrides.dismissDropFail?{status:500,json:{}}:{status:200,json:{dismissed:'x'}};if(req.url.endsWith('/v1/recordings/summaries-again'))return overrides.summariesAgain?overrides.summariesAgain(req):{status:200,json:{queued:2,already:0,skipped:0}};if(req.url.endsWith('/summary-again'))return overrides.summaryAgain?overrides.summaryAgain(req):{status:200,json:{title:'Planning',already:false}};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/dismiss'))return overrides.dismissFail?{status:500,json:{}}:{status:200,json:{}};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/retry'))return overrides.retryFail?{status:overrides.retryFail===true?500:overrides.retryFail,json:{}}:(overrides.onRetry?.(),{status:200,json:{}});if(req.url.endsWith('/v1/schema'))return {status:200,json:{roles:{id_key:'id'}}};if(req.url.endsWith('/v1/entities/voice/recognition'))return {status:200,json:overrides.recognition||{enabled:true,attendees_field:'attendees'}};if(req.url.endsWith('/v1/entities/voice/unknowns'))return {status:200,json:overrides.unknownVoices||{}};if(req.url.endsWith('/v1/entities/voice/people'))return {status:200,json:overrides.savedPeople||{}};if(req.url.includes('/v1/entities?'))return overrides.rejectPeople?{status:overrides.rejectPeople===true?403:overrides.rejectPeople,json:{error:'forbidden'}}:{status:200,json:typeof overrides.peopleResults==='function'?await overrides.peopleResults(req):overrides.peopleResults||{items:[],next_cursor:null}};if(req.url.endsWith('/review')&&req.method==='POST'&&overrides.rejectReview)return {status:403,json:{error:'forbidden'}};return {status:200,json:{note:{content_hash:digest,frontmatter:{reviewed:false}},roles:{reviewed_key:'reviewed',type_key:'type'},suggestions:[],unresolved:[],stale:false,state:'suggested',suggestions_enabled:true,job_id:null,...overrides}};}}),crypto:webcrypto,TextEncoder,URL,setTimeout,clearTimeout,setInterval,clearInterval};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../coppermind_admin/obsidian_plugin/main.js'),'utf8'),context);
   const plugin=new context.module.exports();plugin.app=app;await plugin.onload();
   const view=factory({app});await view.refresh();
@@ -481,13 +481,25 @@ test('People find-a-person shows results once, tells what will happen, and confi
   await lookup.onclick();await lookup.onclick();await lookup.onclick();
   const options=all().filter(e=>e.tag==='option').map(e=>e.text);
   assert.deepEqual(options.filter(t=>t.startsWith('Scott')),['Scott Bowe (scott@a.test)','Scott Bowe (scott@b.test)']);
-  assert.ok(all().some(e=>e.text==='Found 2 people. Choose one from the list above.'));
+  assert.ok(all().some(e=>e.text==='Found 2 people. Choose one from the list below.'));
   const select=all().find(e=>e.tag==='select');select.value='person:p1';select.onchange();
   assert.ok(all().some(e=>e.text==='Unknown voice 7 will become Scott Bowe (scott@a.test) in 2 recordings.'));
   all().find(e=>e.text==='Choose and combine').onclick();
   const modal=f.modals.at(-1);assert.ok(modal.contentEl.all().some(e=>e.text?.includes('Unknown voice 7 will become Scott Bowe (scott@a.test) in 2 recordings')));
   await modal.contentEl.all().find(e=>e.text==='Combine voices').onclick();
   assert.ok(all().some(e=>e.text?.startsWith('Done: Unknown voice 7 is now Scott Bowe')));
+});
+
+test('typing a name narrows matching people without clicking Find, and says when nobody matches',async()=>{
+  const unknownVoices={'unknown:7':{name:'Unknown voice 7',signatures:[sig('n1')],assignments:[]}};
+  const peopleResults=req=>{const q=decodeURIComponent(req.url.split('q=')[1]);return {items:q==='Sc'?[{id:'p1',name:'Scott Bowe',emails:[]}]:[],next_cursor:null};};
+  const f=await fixture(undefined,{unknownVoices,peopleResults});
+  const view=f.factories['coppermind-people']({app:f.app});await view.show({id:'unknown:7',name:'Unknown voice 7',unknown:true});
+  const all=()=>view.contentEl.all();const input=all().find(e=>e.tag==='input'&&e.attr?.placeholder?.startsWith('Type a name'));
+  input.value='Sc';input.oninput();await new Promise(r=>setTimeout(r,400));
+  assert.ok(all().some(e=>e.tag==='option'&&e.text==='Scott Bowe'));
+  input.value='Zz';input.oninput();await new Promise(r=>setTimeout(r,400));
+  assert.ok(all().some(e=>e.text==='No one named Zz found.'));assert.ok(!all().some(e=>e.tag==='option'&&e.text==='Scott Bowe'));
 });
 
 test('an older person search answering last does not replace the newer results',async()=>{
@@ -503,6 +515,50 @@ test('an older person search answering last does not replace the newer results',
   release.Alex();await second;release.Al();await first;
   assert.deepEqual(all().filter(e=>e.tag==='option').map(e=>e.text).filter(t=>t.includes('A')&&t!=='Choose a voice or person'),['Alex New']);
   assert.equal(all().find(e=>e.tag==='select').value,'person:new');
+});
+
+test('people who attended the voice\'s meetings are listed first, marked, and a listed match can be chosen',async()=>{
+  const unknownVoices={'unknown:7':{name:'Unknown voice 7',signatures:[sig('n1')],assignments:[{note_id:'n1',label:'Speaker 1'}]}};
+  const items=[{id:'a',name:'Sam Early',emails:['sam@a.test'],path:'People/Sam Early.md'},{id:'b',name:'Sam Linked',emails:['x@b.test'],path:'People/Sam Linked.md'},{id:'c',name:'Sam Mailed',emails:['mail@c.test'],path:'People/Sam Mailed.md'},{id:'d',name:'Sam Last',emails:[],path:'People/Sam Last.md'}];
+  const f=await fixture(undefined,{unknownVoices,title:'Planning',path:'Planning.md',frontmatter:{attendees:['[[People/Sam Linked]]','Mail@C.test',7]},peopleResults:{items,next_cursor:null}});
+  const view=f.factories['coppermind-people']({app:f.app});await view.show({id:'unknown:7',name:'Unknown voice 7',unknown:true});
+  const all=()=>view.contentEl.all();const input=all().find(e=>e.tag==='input'&&e.attr?.placeholder?.startsWith('Type a name'));
+  input.value='Sam';input.oninput();await new Promise(r=>setTimeout(r,400));
+  const listed=all().filter(e=>e.tag==='button'&&e.text?.startsWith('Sam')).map(e=>e.text);
+  assert.deepEqual(listed,['Sam Linked (x@b.test) · attended these meetings','Sam Mailed (mail@c.test) · attended these meetings','Sam Early (sam@a.test)','Sam Last']);
+  all().find(e=>e.text==='Sam Early (sam@a.test)'&&e.tag==='button').onclick();
+  assert.equal(all().find(e=>e.tag==='select').value,'person:a');
+  assert.ok(all().some(e=>e.text==='Unknown voice 7 will become Sam Early (sam@a.test) in 1 recording.'));
+  input.value='Samu';input.oninput();
+  assert.ok(!all().some(e=>e.tag==='button'&&e.text?.startsWith('Sam ')));
+});
+
+test('attendee-first ordering reads the configured attendees property, not a fixed name',async()=>{
+  const unknownVoices={'unknown:7':{name:'Unknown voice 7',signatures:[sig('n1')],assignments:[{note_id:'n1',label:'Speaker 1'}]}};
+  const items=[{id:'a',name:'Sam Early',emails:['sam@a.test'],path:'People/Sam Early.md'},{id:'b',name:'Sam Mailed',emails:['mail@c.test'],path:'People/Sam Mailed.md'}];
+  const f=await fixture(undefined,{unknownVoices,recognition:{enabled:true,attendees_field:'present'},title:'Planning',path:'Planning.md',frontmatter:{present:['mail@c.test'],attendees:['sam@a.test']},peopleResults:{items,next_cursor:null}});
+  const view=f.factories['coppermind-people']({app:f.app});await view.show({id:'unknown:7',name:'Unknown voice 7',unknown:true});
+  const all=()=>view.contentEl.all();const input=all().find(e=>e.tag==='input'&&e.attr?.placeholder?.startsWith('Type a name'));
+  input.value='Sam';input.oninput();await new Promise(r=>setTimeout(r,400));
+  assert.deepEqual(all().filter(e=>e.tag==='button'&&e.text?.startsWith('Sam')).map(e=>e.text),['Sam Mailed (mail@c.test) · attended these meetings','Sam Early (sam@a.test)']);
+});
+
+test('typing on while an earlier search is in flight never shows its results for the shorter entry',async()=>{
+  const unknownVoices={'unknown:7':{name:'Unknown voice 7',signatures:[sig('n1')],assignments:[]}};
+  const release={};
+  const peopleResults=req=>new Promise((resolve,reject)=>{const q=decodeURIComponent(req.url.split('q=')[1]);release[q]={ok:()=>resolve({items:[{id:'s',name:'Sam Short',emails:[]}],next_cursor:null}),fail:()=>reject(new Error('down'))};});
+  const f=await fixture(undefined,{unknownVoices,peopleResults});
+  const view=f.factories['coppermind-people']({app:f.app});await view.show({id:'unknown:7',name:'Unknown voice 7',unknown:true});
+  const all=()=>view.contentEl.all();const input=all().find(e=>e.tag==='input'&&e.attr?.placeholder?.startsWith('Type a name'));
+  input.value='S';input.oninput();await new Promise(r=>setTimeout(r,400));
+  input.value='Sc';input.oninput();
+  release.S.ok();await new Promise(r=>setTimeout(r,0));
+  assert.ok(!all().some(e=>e.tag==='option'&&e.text==='Sam Short'));
+  assert.equal(all().find(e=>e.tag==='select').value,'');
+  assert.ok(all().some(e=>e.text==='Searching…'));
+  await new Promise(r=>setTimeout(r,400));release.Sc.fail();await new Promise(r=>setTimeout(r,0));
+  assert.ok(!all().some(e=>e.text==='Searching…'));
+  assert.ok(!all().some(e=>e.tag==='option'&&e.text==='Sam Short'));
 });
 
 test('strong voice suggestion explains confirmation and earlier appearances',async()=>{
