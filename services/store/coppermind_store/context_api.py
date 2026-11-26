@@ -54,6 +54,7 @@ ACTIONS = {
     "note-summary-again": "note_summary_again",
     "review-notes": "review_note_list",
     "note-resummarize": "note_resummarize",
+    "note-file-again": "note_file_again",
     "write-up-missing-summaries": "write_up_missing_summaries",
     "recording-detail": "recording_detail",
     "retry-all-failed": "retry_all_failed",

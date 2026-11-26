@@ -25,10 +25,17 @@ from coppermind.db.models import Note, NoteSource, SearchDocument
 from coppermind.db.session import transaction
 from coppermind.embeds import rewrite_embeds
 from coppermind.ids import is_valid_id
-from coppermind.schema import date_field_problem, note_date, parse_note_time
-from coppermind.store_protocol import MoveNote, ReplaceNote, StoreError
+from coppermind.naming import unique_stem
+from coppermind.schema import date_field_problem, note_date
+from coppermind.store_protocol import (
+    MoveNote,
+    RenameNote,
+    ReplaceNote,
+    StoreError,
+    ValidationFailed,
+)
 from coppermind_store.eligibility import FilingRoots, rendered_note_folder
-from coppermind_store.fs import content_hash, resolve
+from coppermind_store.fs import content_hash, existing_stems, resolve
 from coppermind_store.maintenance import writer
 
 if TYPE_CHECKING:
@@ -223,13 +230,6 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
     problem = date_field_problem(note.frontmatter, schema)
     if problem:
         raise ValueError(problem)
-    legacy = parse_note_time(note.frontmatter.get("time"))
-    if (
-        note.frontmatter.get(schema.role("type_key")) == "work"
-        and legacy.present
-        and not legacy.valid
-    ):
-        raise ValueError("enter a valid local meeting time")
     day = note_date(note.frontmatter, schema)
     if day is None:
         raise ValueError("a note date is required in date")
@@ -468,6 +468,7 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
     if not note.path.startswith(folder + "/"):
         plan["target_folder"] = folder
         _save(journal, plan)
+        note = await _free_name(store, note, folder)
         note = await store.move_note(note_id, MoveNote(target_folder=folder), note.content_hash)
     if hand_moved_from is not None:
         store.control.record_reconciler_notice(
@@ -490,6 +491,36 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
     await _publish(store, note)
     await store.entities.follow(note, before_filing_hash)
     return True
+
+
+def _title_for(stem: str, title: str) -> str:
+    """The title to rename to so the file is called `stem`: a date prefix is not part of it."""
+    parts = stem.split(" ", 1)
+    if len(parts) == 2 and len(parts[0]) == 10 and parts[0][4] == "-" and parts[0][7] == "-":
+        return parts[1]
+    return stem
+
+
+async def _free_name(store: LocalStore, note, folder: str):
+    """Give a note whose name is taken in `folder` the next free " (2)", " (3)"... name.
+
+    Only the file's name changes; the note's own heading and text stay as written. Nothing
+    already in the folder is ever replaced.
+    """
+    target = resolve(store.notes_root, folder)
+    for _ in range(10):
+        stem = Path(note.path).stem
+        in_folder = {name.casefold() for name in existing_stems(target)}
+        if stem.casefold() not in in_folder:
+            return note
+        beside = existing_stems(resolve(store.notes_root, str(Path(note.path).parent)))
+        free = unique_stem(stem, [*in_folder, *(name for name in beside if name != stem)])
+        note = await store.rename_note(
+            note.id,
+            RenameNote(title=_title_for(free, note.title), preserve_body=True),
+            note.content_hash,
+        )
+    raise ValidationFailed([f'The note could not be given a free name in "{folder}".'])
 
 
 def _settle(journal: Path, plan: dict) -> None:

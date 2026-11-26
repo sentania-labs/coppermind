@@ -89,9 +89,10 @@ UTC offset, matching Obsidian's Date and Date & time properties. Times are in th
 configured timezone (`America/Chicago` by default), a setting rather than a note
 property. New notes, ingest, enrichment and the review form write the start time
 into `date`, and never write `time` or `timezone`. A `date` carrying a UTC offset
-is rejected at review with a Problems message. Work notes (`type: work`) require a
-start time in `date`, or `time_unknown: true` with a date-only `date`. Other note
-types need only a day. Midnight is an actual time, never a sentinel for unknown.
+is rejected at review with a Problems message. Filing needs only a day, for every
+type of note, so a work note with a date-only `date` files like any other, and a note
+that carries `time_unknown` (written by earlier releases) is tolerated and never
+written again. Midnight is an actual time, never a sentinel for unknown.
 Legacy notes with a `date` and an `HH:MM` `time` keep validating and filing, a
 legacy `timezone` is ignored, and when a legacy `time` carries its own date and
 disagrees with `date`, `date` wins and Problems reports a `date_mismatch` entry
@@ -100,11 +101,19 @@ approving an enrichment date, removes the legacy `time` and `timezone`. An
 enrichment `account` suggestion is added to the note's list and never replaces it.
 
 `account` is a list of customer names. A plain string is read as a one-item list.
-A work note needs `context`; other types do not, and the review form stops asking for
-context and account once the type is not work. `account` is required when `context: external` and needs at least one entry; an
-empty list fails review the same way a missing account does. A reference note
-that applies to several customers lists them all, and a note found by any one of
-them.
+Neither `context` nor `account` holds a note back: a reviewed note with no context, or
+with `context: external` and no account, files all the same. A reference note that
+applies to several customers lists them all, and a note found by any one of them.
+
+Marking a note reviewed always files it. Once the file has stopped changing, the note
+moves to `{type}/YYYY/YYYY-MM/` by its day alone. A name already taken in that folder is
+never overwritten and never asked about: the note's file takes the next free " (2)",
+" (3)" and so on, and its heading and text stay as written. A real failure (the disk, a
+folder that cannot be written to, a note that cannot be read) leaves the note in Review as
+a row on the companion's Notes in Review screen with one plain sentence and Try again;
+Coppermind also keeps trying by itself. A note held by one of the earlier rules (a work note with no
+start time, a customer note with no account, a name already taken) files on the next
+pass after an upgrade, with nothing for the owner to do.
 
 For a recording, the review panel also shows each diarized speaker with a proposed
 person, confidence and reason. Candidates are the linked calendar attendees, or people

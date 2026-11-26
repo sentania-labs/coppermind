@@ -21,20 +21,18 @@ from coppermind import frontmatter as fm
 from coppermind.atomicio import atomic_write_bytes, create_exclusive_bytes, sync_directory
 from coppermind.db.models import Note
 from coppermind.ids import is_valid_id
-from coppermind.naming import sanitize_folder, unique_stem
+from coppermind.naming import sanitize_folder
 from coppermind.store_protocol import (
     NotFound,
-    PatchFrontmatter,
     PathCollision,
     ProblemInfo,
-    RenameNote,
     RestoreNote,
     StoreError,
     ValidationFailed,
 )
 from coppermind_store.admin_features import feature_state
 from coppermind_store.ai_services import UNREACHABLE, Refused
-from coppermind_store.fs import content_hash, existing_stems, resolve
+from coppermind_store.fs import content_hash, resolve
 from coppermind_store.note_lifecycle import SETTLING
 
 if TYPE_CHECKING:
@@ -67,11 +65,6 @@ def _recent(since: datetime) -> bool:
 
 def why_not_filed(error: str) -> tuple[str, str]:
     """Why a reviewed note was not filed: a short code Admin can act on, and plain words."""
-    if "confirm the meeting time" in error:
-        return "time", (
-            "It is a work note with no meeting time, and work notes are filed by when they "
-            "happened."
-        )
     if "date" in error and error.startswith("ValueError"):
         return "date", "It has no date Coppermind can read, and notes are filed by date."
     if error == "SourceRevisionNeedsReview":
@@ -165,10 +158,8 @@ class AdminNotes:
             entry["when"] = (row.mtime or row.updated_at).isoformat() if row else ""
             if entry["kind"] == "missing" and row and _recent(row.updated_at):
                 continue
-            error = self._filing_error(note_id)
-            entry["name_taken"] = entry["kind"] == "notfiled" and error == "PathCollision"
-            if entry["kind"] == "notfiled" and not entry["name_taken"]:
-                entry["why"], entry["reason"] = why_not_filed(error)
+            if entry["kind"] == "notfiled":
+                entry["why"], entry["reason"] = why_not_filed(self._filing_error(note_id))
             out.append(entry)
         # Notes the store refused to take on are files, not notes yet: named by their path.
         for problem in problems:
@@ -183,7 +174,6 @@ class AdminNotes:
                         "action": problem.action or "",
                         "copies": [],
                         "when": "",
-                        "name_taken": False,
                     }
                 )
         return out
@@ -356,23 +346,7 @@ class AdminNotes:
         elif error and row.state == "ok" and row.reviewed:
             result["stuck"] = "notfiled"
             result["filing_error"] = error
-            journal = self.store.control.store.state_dir / "filing" / f"{note_id}.json"
-            plan = json.loads(journal.read_bytes())
-            folder = str(plan.get("folder") or "")
-            mine = await self._file_facts(row.path)
-            if error == "PathCollision" and folder and mine:
-                taken = await self._file_facts(f"{folder}/{Path(row.path).name}")
-                if taken:
-                    result["name_taken"] = True
-                    result["mine"] = _without_body(mine)
-                    result["taken"] = _without_body(taken)
-                    result["folder"] = folder
-                    result["both_as"] = unique_stem(
-                        Path(row.path).stem,
-                        existing_stems(resolve(self.store.notes_root, folder)),
-                    )
-            if not result.get("name_taken"):
-                result["why"], result["reason"] = why_not_filed(error)
+            result["why"], result["reason"] = why_not_filed(error)
         elif row.state == "missing":
             result["stuck"] = "missing"
             result["gone"] = note_id in set(self.store.context.read(GONE, []))
@@ -457,11 +431,7 @@ class AdminNotes:
             stamp = datetime.fromtimestamp(journal.stat().st_mtime, tz=UTC).isoformat()
             with contextlib.suppress(OSError, ValueError):
                 plan = json.loads(journal.read_bytes())
-                if plan.get("error") == "PathCollision":
-                    events.append(
-                        (stamp, "Could not be filed: a file with that name is already there.")
-                    )
-                elif SETTLING in str(plan.get("error")):
+                if SETTLING in str(plan.get("error")):
                     events.append((stamp, "Waiting a moment for the file to stop changing."))
                 elif plan.get("error"):
                     events.append((stamp, "Could not be filed."))
@@ -501,15 +471,6 @@ class AdminNotes:
         note = await self.store.get_note(note_id)
         return {"filed": True, "path": note.path, "name": Path(note.path).stem}
 
-    async def no_set_time(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Say a work note had no set time, which is what was keeping it from being filed."""
-        note_id = _note_id(payload)
-        note = await self.store.get_note(note_id)
-        await self.store.patch_frontmatter(
-            note_id, PatchFrontmatter(set={"time_unknown": True}), if_match=note.content_hash
-        )
-        return await self._file_now(note_id)
-
     async def check_again(self, payload: dict[str, Any]) -> dict[str, Any]:
         note_id = _note_id(payload)
         result = await self._file_now(note_id)
@@ -517,52 +478,6 @@ class AdminNotes:
             self.forget_earlier_summary(note_id)
             # Said by the review page, so Home can recall the review and not only the filing.
             result["reviewed"] = True
-        return result
-
-    async def keep_both(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """File the note beside the file that has its name, under the next free name."""
-        note_id = _note_id(payload)
-        detail = await self.detail({"id": note_id})
-        if not detail.get("name_taken"):
-            return await self._file_now(note_id)
-        note = await self.store.get_note(note_id)
-        relative, path = await self.store._locate(note_id)
-        target = path.with_name(detail["both_as"] + path.suffix)
-        if target.exists():
-            raise PathCollision(str(target.relative_to(self.store.notes_root)))
-        # Only the file's name changes: the note's own heading and text are left as written.
-        await self.store.rename_note(
-            note_id,
-            RenameNote(title=_title_for(detail["both_as"], note.title), preserve_body=True),
-            note.content_hash,
-        )
-        relative, path = await self.store._locate(note_id)
-        if path.stem != detail["both_as"]:
-            raise ValidationFailed([f"The note could not be given the name {detail['both_as']}."])
-        return await self._file_now(note_id)
-
-    async def replace(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Delete the file that has the name, then file this note in its place."""
-        note_id = _note_id(payload)
-        detail = await self.detail({"id": note_id})
-        if not detail.get("name_taken"):
-            return await self._file_now(note_id)
-        seen = payload.get("seen")
-        if seen and seen != detail["taken"]["hash"]:
-            # The file in the way was edited after the page was drawn. What its owner
-            # agreed to move aside is not what is there now, so nothing is moved.
-            raise Refused(
-                "seen",
-                f'"{detail["taken"]["name"]}" was changed after you opened this page, so '
-                "nothing was replaced. Look at both files again and choose once more.",
-            )
-        taken = detail["taken"]["path"]
-        other = await self._rows(Note.path == taken, Note.state == "ok", limit=1)
-        await self._take_away(taken)
-        if other:
-            await self._mark_missing(other[0].id)
-        result = await self._file_now(note_id)
-        result["replaced"] = detail["taken"]["name"]
         return result
 
     async def _mark_missing(self, note_id: str) -> None:
@@ -814,14 +729,6 @@ def create_or_replace(source: Path, target: Path, data: bytes) -> None:
 
 def _without_body(facts: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in facts.items() if key != "body"}
-
-
-def _title_for(stem: str, title: str) -> str:
-    """The title to rename to so the file is called `stem`: the date prefix is not part of it."""
-    parts = stem.split(" ", 1)
-    if len(parts) == 2 and len(parts[0]) == 10 and parts[0][4] == "-" and parts[0][7] == "-":
-        return parts[1]
-    return stem
 
 
 def _difference(original: str, copy: str) -> dict[str, Any]:

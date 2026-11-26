@@ -535,7 +535,6 @@ class ContextService:
                 ("attendees", "list", "Email addresses confirmed by the reviewed note"),
                 ("invitees", "list", "Email addresses invited to the meeting"),
                 ("calendar_event", "string", "Confirmed calendar event reference"),
-                ("time_unknown", "bool", "Meeting time was unknown at review"),
             ]:
                 if name in managed:
                     raise ValueError(f"{name} is already a managed system property")
@@ -1084,6 +1083,10 @@ class ContextService:
     async def note_resummarize(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Write a recording's note up again from its saved transcript."""
         return await self.review_notes.resummarize(payload)
+
+    async def note_file_again(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """File a reviewed note straight away."""
+        return await self.review_notes.file_again(payload)
 
     async def write_up_missing_summaries(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Write up every recording note that has no summary, in one step."""

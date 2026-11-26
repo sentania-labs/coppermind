@@ -37,18 +37,6 @@ class ReviewView extends ItemView {
       const synced=await hash(local)===data.note.content_hash;
       if(!synced) el.createEl('p',{text:'Your latest edits have not reached Coppermind. Wait for sync, then refresh.',cls:'coppermind-notice'});
       const reload=el.createEl('button',{text:'Refresh from Coppermind'});reload.onclick=()=>this.refresh();
-      if(data.note.frontmatter[data.roles.type_key]==='work'){
-        const box=el.createDiv({cls:'coppermind-card'});box.createEl('h3',{text:'Meeting time'});
-        let meetingTime=String(fm[data.roles.date_key]||data.note.frontmatter[data.roles.date_key]||''), unknown=fm.time_unknown===true;
-        new Setting(box).setName('Date and start time').addText(t=>{t.inputEl.type='datetime-local';t.inputEl.step='1';t.setValue(meetingTime).onChange(v=>meetingTime=v);});
-        new Setting(box).setName('Time unknown').addToggle(t=>t.setValue(unknown).onChange(v=>unknown=v));
-        new Setting(box).setName('Save meeting properties').setDesc('Writes only these properties; let sync finish before review.').addButton(b=>b.setButtonText('Save time').onClick(async()=>{
-          await this.app.fileManager.processFrontMatter(file,f=>{
-            f.time_unknown=unknown;
-            if(meetingTime){f[data.roles.date_key]=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(meetingTime)?meetingTime+':00':meetingTime;delete f.time;delete f.timezone;}
-          });new Notice('Meeting time saved. Wait for sync, then refresh.');await this.refresh();
-        }));
-      }
       if(this.plugin.pending?.id===id){const resume=el.createEl('button',{text:'Retry recorded completion'});resume.onclick=async()=>{
         try{await this.plugin.call('/v1/notes/'+encodeURIComponent(id)+'/review','POST',this.plugin.pending.payload);this.plugin.pending=null;await this.refresh();}catch(e){new Notice(e.message);}
       };}
@@ -505,7 +493,7 @@ function stepText(label,step,unavailable){
   }
 }
 // What needs the owner comes first: a held rewrite, a failure or a gap, then work in progress, then the rest.
-const attention=n=>n.kept?0:[n.writeup,n.suggestions].some(x=>x.state==='failed')||(n.can_resummarize&&n.writeup.state==='missing')?1:[n.writeup,n.suggestions].some(x=>x.state==='working')?2:3;
+const attention=n=>n.kept||n.filing?.problem?0:[n.writeup,n.suggestions].some(x=>x.state==='failed')||(n.can_resummarize&&n.writeup.state==='missing')?1:[n.writeup,n.suggestions].some(x=>x.state==='working')?2:3;
 const WRITEUP_OFF='Write-ups are off, so notes cannot be written up again. Turn them on in Coppermind Admin, under How recordings are written up.';
 const SUGGESTIONS_OFF='Suggestions are off. Turn them on in Coppermind Admin to use Enrich.';
 class NotesView extends ItemView {
@@ -671,6 +659,19 @@ class NotesView extends ItemView {
     };
     const day=note.date&&new Date(note.date);
     if(day&&!isNaN(day))head.createEl('span',{text:day.toLocaleDateString([],{month:'short',day:'numeric'}),cls:'coppermind-hint'});
+    if(note.filing?.problem){
+      card.createEl('p',{text:note.filing.problem,cls:'coppermind-notice'});
+      const bar=card.createDiv({cls:'coppermind-actions'});
+      const again=bar.createEl('button',{text:'Try again'});
+      again.onclick=async()=>{
+        again.disabled=true;again.setText('Trying…');this.say(note.id,'Asking Coppermind…');
+        try{const result=await this.plugin.call('/v1/notes/'+encodeURIComponent(note.id)+'/file-again','POST',{});this.say(note.id,result.filed?'Filed.':'Tried again just now.',!result.filed);await this.refresh();}
+        catch(e){again.disabled=false;again.setText('Try again');this.say(note.id,this.fail(e,'Could not start. Check your connection, then try again.'),true);}
+      };
+      const message=this.local[note.id]?.message;
+      const line=card.createEl('p',{text:message||'',cls:message?'coppermind-notice':''});this.feedback[note.id]=line;
+      return;
+    }
     // A rewrite held back for an edited note is one plain status, not "written" and "not changed" together.
     const writeup=note.kept?'Write-up: a new write-up is ready. Your note has not been changed yet.':stepText('Write-up',note.writeup,'this note is not from a recording');
     card.createEl('p',{text:writeup,cls:'coppermind-status'});

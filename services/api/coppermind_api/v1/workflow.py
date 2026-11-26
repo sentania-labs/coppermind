@@ -196,6 +196,17 @@ async def resummarize(
     return await call(client, "note-resummarize", {"id": note_id, **given.model_dump()})
 
 
+@router.post("/notes/{note_id}/file-again")
+async def file_again(
+    note_id: str,
+    client: HttpStoreClient = Depends(store),
+    _: Principal = Depends(require_scopes("notes:write", "notes:read")),
+) -> Response:
+    """File a reviewed note straight away. `filed` says whether it moved; when it did not,
+    `problem` says why in one sentence."""
+    return await call(client, "note-file-again", {"id": note_id})
+
+
 @router.post("/recordings/summaries-again")
 async def summaries_again(
     client: HttpStoreClient = Depends(store),

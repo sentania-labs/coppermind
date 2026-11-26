@@ -161,9 +161,7 @@ def attention(view: dict[str, Any]) -> list[Item]:
             out.append(
                 Item(
                     f'"{title}" could not be filed',
-                    "You marked it reviewed, but a file with its name is already in the folder."
-                    if note.get("name_taken")
-                    else "You marked it reviewed, but it could not be filed. " + e(note["reason"]),
+                    "You marked it reviewed, but it could not be filed. " + e(note["reason"]),
                     "Fix it",
                     "notes",
                     to=note_path(note["id"]),

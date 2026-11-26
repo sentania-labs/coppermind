@@ -1,4 +1,4 @@
-"""A personal note needs its type and nothing about work: context is a work note's field."""
+"""A note needs its type and nothing more: context and account hold no note back."""
 
 from coppermind.schema import default_schema
 
@@ -24,14 +24,14 @@ def test_other_types_validate_without_context():
     assert problems(type="reference") == []
 
 
-def test_work_note_without_context_is_refused_with_a_clear_message():
-    found = problems(type="work")
-    assert ("context", "context: required when type is one of work") in found
+def test_work_note_without_context_validates():
+    assert problems(type="work") == []
 
 
 def test_work_note_with_context_validates():
     assert problems(type="work", context="internal") == []
     assert problems(type="work", context="external", account=["Acme"]) == []
+    assert problems(type="work", context="external") == []
 
 
 def test_context_already_on_a_personal_note_still_validates():

@@ -520,9 +520,9 @@ async def test_a_replace_keeps_the_identifier_and_checks_the_schema(store: Local
         )
     assert changed_id.value.errors == ["id: the identifier of a note cannot be changed"]
 
-    with pytest.raises(ValidationFailed) as missing_context:
-        await store.replace_note(created.id, edited(created, context=None), created.content_hash)
-    assert any("context" in problem for problem in missing_context.value.errors)
+    with pytest.raises(ValidationFailed) as missing_type:
+        await store.replace_note(created.id, edited(created, type=None), created.content_hash)
+    assert any("type" in problem for problem in missing_type.value.errors)
     assert path.read_bytes() == before
 
 
@@ -822,10 +822,7 @@ async def test_patching_source_associations_is_refused_and_changes_nothing(
     assert path.read_bytes() == before
 
 
-@pytest.mark.parametrize("key", ["type", "context"])
-async def test_unsetting_a_required_field_is_refused_and_changes_nothing(
-    store: LocalStore, key: str
-):
+async def test_unsetting_a_required_field_is_refused_and_changes_nothing(store: LocalStore):
     created = await store.create_note(CreateNote(title="Runbook", frontmatter=MEETING))
     path = store.notes_root / created.path
     before = path.read_bytes()
@@ -833,15 +830,11 @@ async def test_unsetting_a_required_field_is_refused_and_changes_nothing(
     with pytest.raises(ValidationFailed) as raised:
         await store.patch_frontmatter(
             created.id,
-            PatchFrontmatter(unset=[key]),
+            PatchFrontmatter(unset=["type"]),
             created.content_hash,
         )
 
-    expected = {
-        "type": "type: required, so it cannot be removed",
-        "context": "context: required when type is one of work",
-    }
-    assert raised.value.errors == [expected[key]]
+    assert raised.value.errors == ["type: required, so it cannot be removed"]
     assert path.read_bytes() == before
 
 

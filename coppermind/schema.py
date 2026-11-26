@@ -691,7 +691,7 @@ def shipped_key_upgrades() -> dict[str, tuple[list[KeyDefinition], KeyDefinition
     """
     shipped = {definition.name: definition for definition in default_schema().keys}
     return {
-        "context": ([OLD_CONTEXT_KEY], shipped["context"]),
+        "context": ([OLD_CONTEXT_KEY, WORK_ONLY_CONTEXT_KEY], shipped["context"]),
         "account": (
             [
                 KeyDefinition(
@@ -701,7 +701,18 @@ def shipped_key_upgrades() -> dict[str, tuple[list[KeyDefinition], KeyDefinition
                     required_when="context",
                     required_when_values=["external"],
                     description="Customer name. Required when context is external.",
-                )
+                ),
+                KeyDefinition(
+                    name="account",
+                    kind="list",
+                    required=False,
+                    required_when="context",
+                    required_when_values=["external"],
+                    description=(
+                        "Customer names, a list. A plain name is read as a one-item list. "
+                        "Needs at least one entry when context is external."
+                    ),
+                ),
             ],
             shipped["account"],
         ),
@@ -772,9 +783,31 @@ OLD_CONTEXT_KEY = KeyDefinition(
 )
 
 
+# What the shipped context key was before filing stopped depending on it: required on a work
+# note, and a customer note needing an account. A saved copy of either form is upgraded.
+WORK_ONLY_CONTEXT_KEY = KeyDefinition(
+    name="context",
+    kind="enum",
+    required=False,
+    default="internal",
+    vocabulary=["internal", "external", "personal"],
+    vocabulary_meanings={
+        "internal": "A work note about your own organisation.",
+        "external": "A work note about a customer. It needs an account.",
+        "personal": "Kept so older notes still read. A personal note is type personal.",
+    },
+    required_when="type",
+    required_when_values=["work"],
+    description=(
+        "Whether a work note is internal or about a customer. Required only when type "
+        "is work. It does not decide where a note files."
+    ),
+)
+
+
 def context_key_definition() -> KeyDefinition:
     """Context is a work note's own field: internal, or external for a customer. It does not
-    decide where a note files (type and date do), and no other type needs it."""
+    decide where a note files (type and date do), and nothing about it holds a note back."""
     return KeyDefinition(
         name="context",
         kind="enum",
@@ -783,14 +816,12 @@ def context_key_definition() -> KeyDefinition:
         vocabulary=["internal", "external", "personal"],
         vocabulary_meanings={
             "internal": "A work note about your own organisation.",
-            "external": "A work note about a customer. It needs an account.",
+            "external": "A work note about a customer.",
             "personal": "Kept so older notes still read. A personal note is type personal.",
         },
-        required_when="type",
-        required_when_values=["work"],
         description=(
-            "Whether a work note is internal or about a customer. Required only when type "
-            "is work. It does not decide where a note files."
+            "Whether a work note is internal or about a customer. It does not decide where "
+            "a note files."
         ),
     )
 
@@ -838,12 +869,7 @@ def default_schema() -> FrontmatterSchema:
                 name="account",
                 kind="list",
                 required=False,
-                required_when="context",
-                required_when_values=["external"],
-                description=(
-                    "Customer names, a list. A plain name is read as a one-item list. "
-                    "Needs at least one entry when context is external."
-                ),
+                description="Customer names, a list. A plain name is read as a one-item list.",
             ),
             KeyDefinition(
                 name="reviewed",

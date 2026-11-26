@@ -142,12 +142,44 @@ def test_an_operator_who_renamed_the_citation_key_keeps_it(tmp_path):
     assert control.schema().optional_role("artifacts_key") == "cites"
 
 
-def test_the_saved_context_that_every_note_needed_becomes_a_work_notes_field(tmp_path):
+@pytest.mark.parametrize("form", [0, 1])
+def test_a_saved_context_that_held_notes_back_stops_doing_so(tmp_path, form):
     control = ControlState(tmp_path)
     control.ensure_defaults()
-    save(control, UPGRADES["context"][0])
-    assert saved_keys(control)["context"].required is True
+    save(control, [UPGRADES["context"][0][form]])
+    held = saved_keys(control)["context"]
+    assert held.required is True or held.required_when == "type"
 
     control.ensure_defaults()
 
-    assert saved_keys(control)["context"] == {k.name: k for k in default_schema().keys}["context"]
+    shipped = {k.name: k for k in default_schema().keys}["context"]
+    assert saved_keys(control)["context"] == shipped
+    assert shipped.required is False and shipped.required_when is None
+
+
+def test_a_saved_account_that_needed_a_customer_note_to_name_one_stops_doing_so(tmp_path):
+    control = ControlState(tmp_path)
+    control.ensure_defaults()
+    needed = UPGRADES["account"][0][1]
+    assert needed.kind == "list" and needed.required_when == "context"
+    save(control, [needed])
+
+    control.ensure_defaults()
+
+    shipped = {k.name: k for k in default_schema().keys}["account"]
+    assert saved_keys(control)["account"] == shipped
+    assert shipped.required_when is None
+    revision = control.store.read("schema").revision
+    control.ensure_defaults()
+    assert control.store.read("schema").revision == revision
+
+
+def test_a_context_rule_an_operator_wrote_is_left_alone(tmp_path):
+    control = ControlState(tmp_path)
+    control.ensure_defaults()
+    mine = UPGRADES["context"][0][1].model_copy(update={"description": "Our own wording."})
+    save(control, [mine])
+
+    control.ensure_defaults()
+
+    assert saved_keys(control)["context"] == mine

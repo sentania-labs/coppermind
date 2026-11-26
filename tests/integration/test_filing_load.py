@@ -482,13 +482,16 @@ async def test_listing_pages_past_unreadable_rows_without_skipping_notes(store):
     assert second.next_cursor is None
 
 
-async def test_failed_validation_then_external_delete_is_not_called_a_filing_vanish(store):
+async def test_failed_filing_then_external_delete_is_not_called_a_filing_vanish(store, monkeypatch):
     note = await store.create_note(
         CreateNote(
             title="Undated",
-            frontmatter={"date": "2026-09-01", "type": "work", "time": "99:99", "reviewed": True},
+            frontmatter={"date": "2026-09-01", "type": "work", "reviewed": True},
         )
     )
+
+    # Refused before any filing step was planned, as a note with a date it cannot read is.
+    monkeypatch.setattr(filing, "date_field_problem", lambda *args: "date: cannot be read")
     assert (await filing.file_reviewed(store))["filing_failed"] == 1
     (store.notes_root / (await store.get_note(note.id)).path).unlink()
     assert (await reconcile_once(store))["missing"] == 1

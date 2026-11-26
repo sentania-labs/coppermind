@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import html
 import re
-from typing import Any
 
 import pytest
 
@@ -185,29 +184,6 @@ def test_a_review_is_not_saved_over_an_edit_made_somewhere_else(admin):
     assert store.patches == []
 
 
-def test_replace_is_held_to_the_file_that_was_shown(admin):
-    client, _, store = admin
-    taken: dict[str, Any] = {"name": "2026-11-11 Budget", "path": "work/b.md", "folder": "work"}
-    taken |= {"edited": "2026-11-12T10:00:00+00:00", "words": 24, "hash": "sha256:seen"}
-    mine = taken | {"path": "Review/b.md", "folder": "Review", "hash": "sha256:mine"}
-    store.views["note"].update(
-        stuck="notfiled", name_taken=True, taken=taken, mine=mine, both_as="b (2)", reviewed=True
-    )
-    asking = client.get(f"/admin/notes/{NOTE}?ask=replace").text
-    assert 'name="seen" value="sha256:seen"' in asking
-    store.answers["note-replace"] = {
-        "refused": {"field": "seen", "message": "It was changed after you opened this page."}
-    }
-    page = follow(
-        client,
-        post(
-            client, f"/admin/notes/{NOTE}/replace", {"seen": "sha256:seen"}, f"/admin/notes/{NOTE}"
-        ),
-    )
-    assert store.asked("note-replace") == [{"id": NOTE, "seen": "sha256:seen"}]
-    assert "It was changed after you opened this page." in page
-
-
 def test_a_reviewed_note_is_refused_in_words(admin):
     client, _, store = admin
     store.answers["note-summary-again"] = {
@@ -363,17 +339,23 @@ def test_notes_without_suggestions_can_be_started_and_left_out_ones_are_named(ad
     assert "1 note was left out: It is not a note Coppermind can read." in page
 
 
-def test_a_work_note_with_no_time_can_be_said_to_have_none(admin):
+def test_a_note_that_could_not_be_filed_offers_one_button_and_no_time_or_name_choices(admin):
     client, _, store = admin
-    store.views["note"].update(stuck="notfiled", why="time", reason="It has no meeting time.")
+    store.views["note"].update(stuck="notfiled", why="disk", reason="Coppermind could not write.")
     store.views["note"]["reviewed"] = True
     page = client.get(f"/admin/notes/{NOTE}").text
-    assert "There was no set time" in page
-    assert "Details for support" in page
-    store.answers["note-no-time"] = {"filed": False, "settling": True, "error": "waiting"}
-    page = follow(client, post(client, f"/admin/notes/{NOTE}/no-time", page=f"/admin/notes/{NOTE}"))
-    assert store.asked("note-no-time") == [{"id": NOTE}]
-    assert "Nothing is wrong." in page
+    assert "Not filed" in page and "Check again now" in page
+    for gone in ("There was no set time", "Keep both", "Replace the older file", "Replace it"):
+        assert gone not in page
+
+
+def test_the_pages_that_asked_about_a_time_or_a_name_clash_are_gone(admin):
+    client, _, store = admin
+    store.views["note"].update(stuck="notfiled", why="disk", reason="Coppermind could not write.")
+    for action in ("no-time", "keep-both", "replace"):
+        gone = post(client, f"/admin/notes/{NOTE}/{action}", page=f"/admin/notes/{NOTE}")
+        assert gone.status_code in {404, 405}
+    assert not [name for name, _ in store.calls if name.startswith("note-")]
 
 
 def test_a_note_about_to_be_filed_is_not_called_a_problem(admin):
