@@ -656,9 +656,10 @@ class EntityService:
             if entity.retired_at and raw is None:
                 return
             block = render(entity, ledger)
+            below = block
             if raw is not None and entity.generated == "" and not block:
-                block = dossier_parts(raw.decode(), entity)[1]  # the owner's, below the marker
-            wanted = (self.prefix(entity, raw, ledger, owners) + block).encode()
+                below = dossier_parts(raw.decode(), entity)[1]  # the owner's, below the marker
+            wanted = (self.prefix(entity, raw, ledger, owners) + below).encode()
             if raw == wanted:
                 entity.problem = None
                 entity.projection_fields = self.projected(entity, wanted, ledger, owners)

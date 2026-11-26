@@ -189,6 +189,28 @@ async def test_a_page_has_nothing_generated_and_writing_after_the_marker_is_kept
     assert any(f["value"] == "Engineer" for f in (await store.entities.get(p["id"]))["facts"])
 
 
+async def test_writing_after_the_marker_survives_the_page_being_rewritten_for_another_reason(store):
+    p = await person(store)
+    note = await reviewed_note(store)
+    await claim(store, p, note)
+    path = store.notes_root / p["path"]
+    path.write_text(path.read_text() + "Typed after the marker.\n")
+    await store.entities.refresh()
+    current = await store.entities.get(p["id"])
+    await store.entities.change(
+        p["id"],
+        EntityChange(version=current["version"], action="aliases", aliases=["Casey Alias"]),
+    )
+    await store.entities.refresh()
+    assert fm.parse(path.read_text())[0]["aliases"] == ["Casey Alias"]
+    assert path.read_text().endswith("Typed after the marker.\n")
+    await store.entities.refresh()
+    await store.entities.refresh()
+    assert path.read_text().endswith("Typed after the marker.\n")
+    assert store.entities.load().entities[p["id"]].personal
+    assert "Typed after the marker." in (await store.entities.get(p["id"]))["personal_text"]
+
+
 async def test_legacy_marker_migration_preserves_owner_frontmatter_and_body_bytes(store):
     p = await person(store, "Casey Smith")
     path = store.notes_root / p["path"]
