@@ -255,7 +255,9 @@ async def test_new_generated_voice_lines_relabel_without_overwriting_owner_edits
 
         async def write_text(connection, key, limits, system, evidence):
             return (
-                "# " + evidence["resolved_title"] + "\n\nUnknown voice 1 greeted the team.\n"
+                "# "
+                + evidence["resolved_title"]
+                + "\n\n## Top line\nUnknown voice 1 greeted the team.\n"
                 "\n<<<RECORDING_BOUNDARIES>>>\n[]\n<<<END_RECORDING_BOUNDARIES>>>\n",
                 {},
             )
@@ -613,7 +615,7 @@ async def test_naming_during_review_finishes_then_relabels_generated_lines(store
 
         async def writer(connection, key, limits, system, evidence):
             return (
-                "# " + evidence["resolved_title"] + "\n\nUnknown voice 1 said hello.\n"
+                "# " + evidence["resolved_title"] + "\n\n## Top line\nUnknown voice 1 said hello.\n"
                 "Unknown voice 2 (recording-local) answered.\n"
                 "<<<RECORDING_BOUNDARIES>>>\n[]\n<<<END_RECORDING_BOUNDARIES>>>"
             ), {}

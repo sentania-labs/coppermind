@@ -252,6 +252,17 @@ def test_a_date_that_was_said_is_not_marked_and_one_that_was_not_is():
     assert marked("- Review on 22 March.\n", transcript) == ["22 March"]
 
 
+def test_a_month_and_day_without_a_year_is_not_split_into_two_figures():
+    transcript = "[00:00:01] Scott: We spoke on the call.\n"
+    assert marked("- They met on 11/26 and will meet on 3/4.\n", transcript) == []
+
+
+def test_a_ticket_number_is_marked_once_and_only_when_it_was_not_said():
+    transcript = "[00:00:01] Scott: The ticket is PROJ-1234 and it is open.\n"
+    assert marked("- Tracked in PROJ-1234.\n", transcript) == []
+    assert marked("- Tracked in PROJ-9981.\n", transcript) == ["PROJ-9981"]
+
+
 def test_a_date_with_no_talk_of_dates_in_the_recording_is_marked():
     transcript = "[00:00:01] Scott: We run vSphere on the older cluster.\n"
     note = "- Cutover on November 27, 2026 and again in March.\n- Contract renews 2031-01-05.\n"
@@ -318,6 +329,12 @@ def test_a_long_note_is_read_in_one_pass():
         "# 2026-11-20 Planning\n\nI could not produce a note for this recording.",
         "# 2026-11-20 Planning\n\n## Top line\nI can't write this note.",
         "```\nI could not produce a note for this recording.\n```",
+        "I'm unable to summarize this recording.",
+        "I was not able to write notes.",
+        "I cannot access the audio.",
+        "Unfortunately, there is not enough audio content to create meeting notes.",
+        "There is no meaningful content in this transcript to write up.",
+        "# 2026-11-20 Planning\n\nThe call was short and nothing was decided.",
     ],
 )
 def test_a_reply_that_is_not_a_note_is_recognised(reply):
@@ -331,10 +348,13 @@ def test_a_reply_that_is_not_a_note_is_recognised(reply):
         "# 2026-11-20 Planning\n\n## Top line\nThe release is ready.",
         "## Top line\nI cannot attend on Friday; Dana will go in my place.",
         "## Top line\nI could not reach Dana, so I will write to her instead.",
-        "Unknown voice 1 said hello.\nUnknown voice 2 answered.",
+        "## Top line\nWe could not provide the budget this quarter.",
+        "# 2026-11-20 Planning\n\n## Top line\nUnknown voice 1 said hello.",
+        "- Unknown voice 1 said hello.\n- Unknown voice 2 answered.",
+        "[00:00:05] Unknown voice 1 said hello.",
         "## Top line\nDecided.\n\n## What I promised\n- I cannot write the spec before March.",
         "## Top line\nSorry came up twice but nobody was.\n- I could not make the call.",
-        "x " * 600 + "I could not produce a note for this recording.",
+        "## Notes\n" + "x " * 600 + "I could not produce a note for this recording.",
     ],
 )
 def test_a_note_is_never_mistaken_for_a_refusal(reply):

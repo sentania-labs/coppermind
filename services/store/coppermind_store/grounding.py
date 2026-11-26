@@ -94,9 +94,12 @@ _DATES = [
     re.compile(r"\b(?P<y>(?:19|20)\d{2})-(?P<mn>\d{2})-(?P<d>\d{2})\b"),
     # 11/27/2026
     re.compile(r"\b(?P<mn>\d{1,2})/(?P<d>\d{1,2})/(?P<y>(?:19|20)?\d{2})\b"),
+    # 11/27, which is as often a fraction or a ratio, so it is set aside and never marked
+    re.compile(r"(?<![\w/.])(?P<mn>\d{1,2})/(?P<d>\d{1,2})(?![\w/])"),
     # a month on its own: "in March"
     re.compile(rf"\b(?P<m>{_FULL})\b"),
 ]
+_NO_YEAR_NUMERIC = _DATES[5]
 # "May" is also a verb, so on its own it is a month only after a word that takes one.
 _BEFORE_MAY = re.compile(
     r"\b(?:in|by|until|since|early|late|mid|of|next|last|this|before|after)\s$"
@@ -159,6 +162,7 @@ _MASKED = [
     _STAMP,
 ]
 _LEAD_LABEL = re.compile(r"^\s*(?:[-*+>]\s+|\d{1,3}[.)]\s+)*\*\*[^*\n]{1,60}\*\*:?")
+_IDENTIFIER = re.compile(r"\b[A-Za-z]{2,}-(?P<num>\d{2,18})\b")
 _HEADING = re.compile(r"^\s{0,3}#{1,6}(?:\s|$)")
 
 
@@ -381,6 +385,8 @@ def _dates(
             if year is not None and year < 100:
                 year += 2000
             taken.append((match.start(), match.end()))
+            if pattern is _NO_YEAR_NUMERIC:
+                continue
             if not 1 <= month <= 12 or (day is not None and not 1 <= day <= 31):
                 continue
             if not _date_supported(heard, month, day, year, recorded_on):
@@ -492,12 +498,17 @@ def ground(
             label = _LEAD_LABEL.match(line)
             if label:
                 spans.append(label.span())
+            found = []
+            for ident in _IDENTIFIER.finditer(line):
+                spans.append(ident.span())
+                if Decimal(ident["num"]) not in heard.values:
+                    found.append((ident.end(), ident.group()))
             scan = _mask(line, spans)
             marker = _LIST_MARKER.match(scan)
             lead = marker.end() if marker else 0
             marks, taken = _dates(scan, heard, recorded_on)
             scan = _mask(scan, taken)
-            found = marks + _figures(scan, heard, recorded_on)
+            found += marks + _figures(scan, heard, recorded_on)
             scan = _mask(scan, [(m.start(), m.end()) for m in _FIGURE.finditer(scan)])
             found += _names(scan, heard, lead)
         inserts: dict[int, str] = {}

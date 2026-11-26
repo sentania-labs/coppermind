@@ -88,15 +88,14 @@ def validate(document: str, title: str, labels: list[str]) -> str:
     return "\n".join(lines[1:]).lstrip() + "\n"
 
 
-# A reply that declines, apologises or says there was nothing to write about. It is told apart
-# from a note by what it says and by its shape: it is a few plain sentences, never a list or a
-# timestamp, so a note that happens to say "I cannot attend" is not mistaken for one.
+# What a note is: every note this product asks for has `##` sections, bullets or timestamps. A
+# reply with none of them is a few plain sentences, so it is not a note whatever it says. A
+# refusal dressed in a heading is a few plain sentences too, and it is caught by what it says.
 _DECLINE = re.compile(
     r"""(?:^\W*(?:i\W?m|i\s+am|we\s+are|we\W?re)?\s*(?:so\s+|very\s+)?(?:sorry|apologi[sz]e)\b)
     |\b(?:i|we)\s+(?:could\s*not|couldn\W?t|cannot|can\W?t|can\s+not|am\s+unable\s+to|
-        am\s+not\s+able\s+to|was\s+unable\s+to|do\s+not\s+have\s+enough|don\W?t\s+have\s+enough)
-        \s+(?:\w+\s+){0,3}(?:produce|write|create|generate|summari[sz]e|provide|make|complete|
-        process|transcribe|help|assist|comply|do\s+that|fulfil+)\b
+        am\s+not\s+able\s+to|was\s+unable\s+to)
+        \s+(?:\w+\s+){0,3}(?:produce|write|create|generate|summari[sz]e|transcribe|comply)\b
     |\bas\s+an\s+ai\b|\bas\s+a\s+language\s+model\b
     |\bno\s+transcript\b
     |\bthe\s+(?:transcript|recording|audio)\s+(?:is|was|appears\s+to\s+be|seems)\s+
@@ -105,22 +104,23 @@ _DECLINE = re.compile(
     re.I | re.X,
 )
 _NOTE_SHAPE = re.compile(r"^\s*(?:[-*+]\s|\d+[.)]\s)|\[\d{1,2}:\d{2}", re.M)
+_SECTION = re.compile(r"^\s*##+\s+\S", re.M)
 # The most a refusal runs to. A reply longer than this is a note whatever it says.
 DECLINE_CHARS = 700
 
 
 def declines(answer: str) -> bool:
-    """Whether a reply is a refusal, an apology or a statement that there was nothing to write,
-    rather than a note. Only the words around the title and headings are read."""
+    """Whether a reply is not a note: it has no section, bullet or timestamp, or it is a short
+    refusal, apology or statement that there was nothing to write. The title is not read."""
     prose = "\n".join(
         line for line in answer.splitlines() if line.strip() and not re.match(r"\s*#", line)
     ).strip()
-    return (
-        bool(prose)
-        and len(prose) <= DECLINE_CHARS
-        and not _NOTE_SHAPE.search(prose)
-        and _DECLINE.search(prose) is not None
-    )
+    if not prose:
+        return False
+    shaped = _NOTE_SHAPE.search(prose) is not None
+    if not shaped and not _SECTION.search(answer):
+        return True
+    return len(prose) <= DECLINE_CHARS and not shaped and _DECLINE.search(prose) is not None
 
 
 UNKNOWN_VOICE = re.compile(r"Unknown voice (\d+)( \(recording-local\))?", re.I)
