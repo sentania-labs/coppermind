@@ -42,9 +42,8 @@ home screen. It lists the meetings waiting for review, each opening its note for
 recordings that failed, each saying why in plain words and offering Retry when a retry can
 help and Dismiss when the app is not going to retry it by itself (Dismiss only takes the
 entry off the list and deletes nothing); the notes whose summary could not be written (their count shows beside the others),
-each opening its note and offering Retry, with one button above them to write up every
-note without a summary at once (nothing in a note you edited is changed: each new summary
-joins the note when you review it); and what is still processing, with its latest known
+each opening its note, with a button that opens Notes in Review, where they are written up
+again; and what is still processing, with its latest known
 state: recordings being transcribed and files still being imported. Files put in the
 Dropbox folder also appear here. A file that could not be imported says what to do, and a
 recently finished import says what was imported (a calendar export says how many events)
@@ -52,16 +51,36 @@ and offers Open only when there is a note or file to open. Dismiss removes an im
 entry from the list; what was imported stays. The screen says when it was last updated and,
 when Coppermind does not answer, shows what it last said. It needs `notes:read` and
 `sources:read`; Retry on a recording also needs `sources:write`, `notes:write` and `artifacts:read`,
-Dismiss needs `sources:write`, and writing a summary again (one note or all of them) needs
-`notes:write`, `notes:read` and `sources:read`.
+and Dismiss needs `sources:write`.
+
+Run **Coppermind Review: Notes in Review** for the one place where notes waiting in the
+Review folder are written up again or enriched. It lists every note there with its title, its
+date and, in plain words, where its write-up and its suggestions stand: written (and when it
+finished), missing, failed (with the reason) or being written now. A note that came from a
+recording has **Resummarize**, which writes it up again from the transcript already saved,
+with the current directions, without sending the recording for transcription again, and
+leaves the note's fields and its review status alone. While the note's body is still exactly
+what Coppermind wrote, the new write-up replaces it and Coppermind keeps the earlier text.
+Getting it back from the companion is not available yet; it arrives with restore from Git
+history. If you edited the body, nothing is overwritten: the row says so and **Compare with my note** shows
+your lines against the new write-up, and the note changes only if you choose **Replace my
+note with the new write-up**. Every note has **Enrich**, which runs the suggestions step
+again (attendees, account, tags, type and the like). **Resummarize all missing** at the top
+writes up every note that has no write-up or whose write-up failed. A box above the list finds a note by title as you type. Rows keep their place while the
+screen is open and are put in order again (notes needing you first) when it is opened or
+Refresh is pressed. When write-ups or suggestions are switched off the screen says so once
+and offers no button that cannot work. Clicking a title opens the note. Both buttons show that they started, and the row says when each finished or why it
+failed; a failed rewrite leaves the note as it was. The screen needs `notes:read` and
+`sources:read`, and the buttons need `notes:write` as well; no permission beyond the
+companion's own is added.
 
 The same list is kept as a note called `Needs attention` in the review folder, which reads on
 a phone with no plugin and goes away when nothing needs attention. The calls are in [the API reference](api.md#recordings-audio-on-its-own).
 
-In the review panel, a note written from a recording has **Write the summary again** beside
-its summary. It writes a new summary from the same transcript without sending the recording
-for transcription again, and the summary on the screen stays until the new one arrives. It
-needs the same permissions as the other review actions.
+In the review panel, a note written from a recording points to Notes in Review for writing it
+up again or running its suggestions again; there is no separate button in the panel. If a
+rewrite is being made when you mark the note reviewed, the panel warns that it will be
+discarded.
 
 Open a note and run **Coppermind Review: Review current note**. The panel checks
 that the exact local bytes match the server before permitting completion. Wait

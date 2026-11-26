@@ -163,6 +163,39 @@ async def summary_again(
     return await call(client, "note-summary-again", {"id": note_id})
 
 
+class Resummarize(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    # Set both to put a held-back rewrite in place of a note the owner edited.
+    replace: bool = False
+    if_match: str = Field(default="", max_length=100)
+
+
+@router.get("/review/notes")
+async def review_notes(
+    cursor: str | None = Query(default=None, max_length=20),
+    limit: int = Query(default=100, ge=1, le=200),
+    client: HttpStoreClient = Depends(store),
+    _: Principal = Depends(require_scopes("notes:read", "sources:read")),
+) -> Response:
+    """Every note in the Review folder, a page at a time, with where its write-up and
+    suggestions stand. Send `next_cursor` back as `cursor` until it is null."""
+    return await call(client, "review-notes", {"cursor": cursor, "limit": limit})
+
+
+@router.post("/notes/{note_id}/resummarize")
+async def resummarize(
+    note_id: str,
+    payload: Resummarize | None = None,
+    client: HttpStoreClient = Depends(store),
+    _: Principal = Depends(require_scopes("notes:write", "notes:read", "sources:read")),
+) -> Response:
+    """Write a recording's note up again from its saved transcript, without transcribing it
+    again. A body the owner edited is never overwritten: the new write-up is held until
+    `replace` is sent with the `if_match` the review list gave."""
+    given = payload or Resummarize()
+    return await call(client, "note-resummarize", {"id": note_id, **given.model_dump()})
+
+
 @router.post("/recordings/summaries-again")
 async def summaries_again(
     client: HttpStoreClient = Depends(store),

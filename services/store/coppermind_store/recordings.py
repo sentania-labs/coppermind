@@ -514,7 +514,8 @@ class Recordings:
                     "date": job.captured_at,
                     "message": why
                     + (
-                        " Retry writes it again from the same transcript."
+                        " Open Notes in Review and press Resummarize to write it again from the "
+                        "same transcript."
                         if ready
                         else " Turn suggestions on and make sure the AI service answers, then "
                         "retry."
@@ -1537,6 +1538,9 @@ class Recordings:
             self.save(job)
             writeup = await generate(self.context, job, transcript, voice_map)
             title, body, transcript = writeup["title"], writeup["body"], writeup["transcript"]
+            from coppermind_store.review_notes import write_status
+
+            write_status(self.context, job.id, writeup)
             body = await self.with_references(job, writeup, body)
             job.boundaries = [RecordingBoundary.model_validate(b) for b in writeup["boundaries"]]
             job.stage = "Saving note"

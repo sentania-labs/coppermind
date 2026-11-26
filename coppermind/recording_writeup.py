@@ -244,8 +244,8 @@ Write the one note from them as if you had read the whole transcript. Timestamps
 speaker labels in the notes are the recording's own."""
 
 
-def failure_message(rule: str, detail: str = "") -> str:
-    """Plain, safe explanations, also used when displaying failures saved by older builds.
+def failure_reason(rule: str, detail: str = "") -> str:
+    """Why a write-up failed, in a sentence that never repeats what the model wrote.
 
     `detail` says what was wrong in a sentence that never repeats what the model wrote."""
     if rule == "writeup-settings":
@@ -264,9 +264,13 @@ def failure_message(rule: str, detail: str = "") -> str:
         reason = "The writing service stopped before finishing the note."
     else:
         reason = "The writing service could not finish this note."
+    return reason + (" " + detail if detail else "")
+
+
+def failure_message(rule: str, detail: str = "") -> str:
+    """Plain, safe explanations, also used when displaying failures saved by older builds."""
     return (
-        reason
-        + (" " + detail if detail else "")
+        failure_reason(rule, detail)
         + " Your recording and transcript are kept. No note was saved. "
         "Check How recordings are written up, then try again."
     )

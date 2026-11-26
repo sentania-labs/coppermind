@@ -6,3 +6,16 @@
 .coppermind-meeting-option input { flex:none;margin-top:4px; }
 .coppermind-name { overflow-wrap:anywhere;margin:0 0 6px; }
 .coppermind-stamp { color:var(--text-muted);margin-left:8px; }
+.workspace-leaf-content[data-type="coppermind-notes-in-review"] button { margin:6px 8px 6px 0;white-space:normal;height:auto;padding:8px 12px; }
+.workspace-leaf-content[data-type="coppermind-notes-in-review"] .coppermind-title { background:none;box-shadow:none;border:0;padding:0;margin:0 0 4px;color:var(--text-accent);font-size:var(--font-ui-medium);font-weight:var(--font-semibold);text-align:left;height:auto;cursor:pointer; }
+.coppermind-hint { color:var(--text-muted);font-size:var(--font-ui-smaller);margin:2px 0 6px; }
+.coppermind-diff { max-height:50vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-family:var(--font-monospace);font-size:var(--font-smaller);border:1px solid var(--background-modifier-border);border-radius:6px;padding:8px; }
+.coppermind-added { background:rgba(var(--color-green-rgb),0.18); }
+.coppermind-removed { background:rgba(var(--color-red-rgb),0.18); }
+.coppermind-row { padding:8px 10px;margin:8px 0; }
+.coppermind-row p { margin:2px 0; }
+.coppermind-head { display:flex;justify-content:space-between;align-items:baseline;gap:8px; }
+.coppermind-status { font-size:var(--font-ui-small); }
+.coppermind-actions { display:flex;flex-wrap:wrap;gap:4px; }
+.workspace-leaf-content[data-type="coppermind-notes-in-review"] .coppermind-actions button { margin:4px 4px 2px 0;padding:4px 10px; }
+.coppermind-find { width:100%;margin:8px 0; }

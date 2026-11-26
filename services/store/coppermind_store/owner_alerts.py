@@ -249,7 +249,7 @@ class OwnerAlerts:
                     [
                         "What failed: the summary of this note could not be written.",
                         f"Why and what to do: {line['message']} In Obsidian, open "
-                        "Coppermind Review: Needs you and press Retry.",
+                        "Coppermind Review: Notes in Review and press Resummarize.",
                     ],
                 )
             )

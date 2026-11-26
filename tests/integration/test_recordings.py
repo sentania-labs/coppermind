@@ -1887,6 +1887,10 @@ async def test_companion_retry_permissions_and_waiting_count_through_real_store(
             )
             assert recognition.status_code != 403
             assert (await api.get("/v1/recordings/waiting", headers=headers)).status_code == 200
+            # Notes in Review needs nothing the companion preset does not already grant.
+            assert (await api.get("/v1/review/notes", headers=headers)).status_code == 200
+            asked = await api.post(f"/v1/notes/{'0' * 26}/resummarize", headers=headers)
+            assert asked.status_code not in {401, 403}, asked.text
             accepted_retry = await api.post(f"/v1/recordings/{job.id}/retry", headers=headers)
             assert accepted_retry.status_code == 200
             after = await api.get("/v1/recordings/waiting", headers=reader_headers)
@@ -2209,3 +2213,120 @@ async def test_audio_that_became_a_recording_is_listed_once_as_the_recording(sto
         stored = await store.admin.act("files", {})
     assert listed == ["r:" + accepted["id"]]
     assert stored["items"] == [] and stored["total"] == 0
+
+
+async def settle_rewrites(context):
+    while context.review_notes.live:
+        await asyncio.gather(*list(context.review_notes.live.values()))
+
+
+async def test_notes_in_review_writes_a_recording_up_again_without_losing_hand_edits(store):
+    """The whole path through the real store: list, resummarize an untouched note, an edited
+    one, and a rewrite that fails. No new transcription happens at any point."""
+    from coppermind_store.model_provider import ProviderError
+
+    from coppermind.store_protocol import ReplaceNote
+
+    async with Service(delay=0.1) as service:
+        context = await setup_transcription(store, service)
+        accepted = await context.accept_recording(request(await store_audio(store)))
+        assert await context.recordings.tick() is True
+        transcriptions = len(service.requests)
+        done = await context.recording_status({"id": accepted["id"]})
+        note_id = done["note_id"]
+
+        listed = await context.review_note_list({})
+        row = next(item for item in listed["notes"] if item["id"] == note_id)
+        assert row["from_recording"] and row["can_resummarize"]
+        assert row["writeup"]["state"] == "written"
+
+        async def second_try(connection, key, limits, system, evidence):
+            return (
+                "# " + evidence["resolved_title"] + "\n\n## Top line\nA much better greeting.\n\n"
+                "## Action items\nNo explicit commitments.\n\n"
+                "## Executive summary\nThe speakers greeted each other warmly.\n"
+                + "\n<<<RECORDING_BOUNDARIES>>>\n[]\n<<<END_RECORDING_BOUNDARIES>>>\n"
+            ), {}
+
+        first_try = context.provider.write_text
+        context.provider.write_text = second_try
+        before = await store.get_note(note_id)
+        assert "A brief greeting." in before.body
+
+        # An untouched note takes the new write-up, keeps its fields, and links its transcript.
+        assert await context.note_resummarize({"id": note_id}) == {
+            "started": True,
+            "already": False,
+        }
+        await settle_rewrites(context)
+        after = await store.get_note(note_id)
+        assert "A much better greeting." in after.body and "A brief greeting." not in after.body
+        assert after.frontmatter == before.frontmatter
+        assert "[[" in after.body.split("References", 1)[1]
+        assert (await context.review_note_list({}))["notes"][0]["writeup"]["state"] == "written"
+
+        # A note edited by hand is never overwritten; the new write-up is held for a choice.
+        context.provider.write_text = first_try
+        await store.replace_note(
+            note_id,
+            ReplaceNote(frontmatter=after.frontmatter, body=after.body + "\nMy own line.\n"),
+            if_match=after.content_hash,
+        )
+        edited = await store.get_note(note_id)
+        await context.note_resummarize({"id": note_id})
+        await settle_rewrites(context)
+        assert (await store.get_note(note_id)).body == edited.body
+        held = next(i for i in (await context.review_note_list({}))["notes"] if i["id"] == note_id)
+        assert any(line.startswith("-My own line.") for line in held["kept"]["difference"])
+        with pytest.raises(ValueError, match="changed"):
+            await context.note_resummarize({"id": note_id, "replace": True, "if_match": "nope"})
+        await context.note_resummarize(
+            {"id": note_id, "replace": True, "if_match": held["kept"]["if_match"]}
+        )
+        replaced = await store.get_note(note_id)
+        assert "My own line." not in replaced.body and "A brief greeting." in replaced.body
+
+        # A failed rewrite leaves the note alone and says why.
+        async def broken(*_):
+            raise ProviderError("cut short", "provider-incomplete")
+
+        context.provider.write_text = broken
+        await context.note_resummarize({"id": note_id})
+        await settle_rewrites(context)
+        assert (await store.get_note(note_id)).body == replaced.body
+        failed = next(
+            i for i in (await context.review_note_list({}))["notes"] if i["id"] == note_id
+        )
+        assert failed["writeup"]["state"] == "failed"
+        assert "stopped before finishing" in failed["writeup"]["reason"]
+        assert failed["writeup"]["reason"].endswith("The note is unchanged.")
+        assert len(service.requests) == transcriptions
+
+
+async def test_notes_in_review_pages_so_no_note_is_left_out(store):
+    async with Service(delay=0.1) as service:
+        context = await setup_transcription(store, service)
+        for number in (1, 2, 3):
+            audio = await store_audio(
+                store, name=f"call-{number}.m4a", data=AUDIO + bytes([number])
+            )
+            await context.accept_recording(
+                request(audio, external_source_id=f"plaud/rec-{number}", title=f"Call {number}")
+            )
+            assert await context.recordings.tick() is True
+        seen: list[str] = []
+        cursor = None
+        pages = 0
+        while True:
+            page = await context.review_note_list({"limit": 2, "cursor": cursor})
+            assert page["total"] == 3 and len(page["notes"]) <= 2
+            seen += [item["id"] for item in page["notes"]]
+            pages += 1
+            cursor = page["next_cursor"]
+            if cursor is None:
+                break
+        assert pages == 2 and len(seen) == len(set(seen)) == 3
+        with pytest.raises(ValueError, match="cursor"):
+            await context.review_note_list({"cursor": "later"})
+        with pytest.raises(ValueError, match="limit"):
+            await context.review_note_list({"limit": 0})
