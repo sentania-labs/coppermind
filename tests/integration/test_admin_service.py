@@ -534,13 +534,14 @@ async def test_turning_transcription_on_with_one_service_sets_the_write_up_to_us
     writeup = (await store.admin.features.writeup_settings())["assignment"]
     assert (writeup["connection"], writeup["model"], writeup["enabled"]) == (one, "m", True)
 
-    # A write-up the owner already pointed somewhere is left alone, and so is a choice
-    # between several services.
-    two = await _add(store, "Two")
-    await store.admin.features.writeup_save({"connection": two, "model": "m"})
+    # With the only service, a write-up the owner already pointed somewhere is left alone.
+    await store.admin.features.writeup_save({"connection": one, "model": "custom"})
     await store.admin.act("transcription-save", {"connection": one, "wait_s": 3600})
-    assert store.context.config().assignments["writeup"].connection == two
+    assert store.context.config().assignments["writeup"].model == "custom"
+
+    # With several services there is a choice to make, so none is picked for the owner.
     await store.admin.features.writeup_save({"connection": "", "model": ""})
+    await _add(store, "Two")
     await store.admin.act("transcription-save", {"connection": one, "wait_s": 3600})
     assert store.context.config().assignments["writeup"].connection == ""
 
