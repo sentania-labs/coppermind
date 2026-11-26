@@ -412,6 +412,20 @@ async def test_long_transcript_is_written_up_in_parts_and_combined(store):
         assert not context.read("recording-writeup-parts/" + job.id, {})
 
 
+async def test_a_part_that_is_only_a_refusal_fails_the_write_up_whatever_its_shape(store):
+    async with Service() as service:
+        context, job = await transcribed(store, service, turns(300, 40), limit=6000)
+
+        async def write_text(connection, key, limits, system, evidence, **kwargs):
+            return "- I could not produce a note for this recording.", {}
+
+        context.provider.write_text = write_text
+        await context.recordings.tick()
+        job = context.recordings.load(job.id)
+        assert job.state == "failed" and job.error_rule == "writeup-invalid"
+        assert not job.note_id and await count_notes(store) == 0
+
+
 async def test_a_retry_after_failure_does_not_write_the_finished_parts_again(store):
     async with Service() as service:
         context, job = await transcribed(store, service, turns(60, 40), limit=6000)

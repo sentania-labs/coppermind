@@ -335,6 +335,14 @@ def test_a_long_note_is_read_in_one_pass():
         "Unfortunately, there is not enough audio content to create meeting notes.",
         "There is no meaningful content in this transcript to write up.",
         "# 2026-11-20 Planning\n\nThe call was short and nothing was decided.",
+        # A refusal is one whatever it is laid out as.
+        "## Top line\n- I could not produce a note for this recording.",
+        "- I could not produce a note for this recording.",
+        "1. I'm unable to summarize this recording.",
+        "## Top line\n- Sorry, I can't help with that.\n- Please send a transcript.",
+        "# 2026-11-20 Planning\n\n## Top line\nI cannot access the audio.\n\n## Summary\n"
+        "- I am unable to write a summary of this recording.",
+        "[00:00:01] I could not produce a note for this recording.",
     ],
 )
 def test_a_reply_that_is_not_a_note_is_recognised(reply):
@@ -354,6 +362,9 @@ def test_a_reply_that_is_not_a_note_is_recognised(reply):
         "[00:00:05] Unknown voice 1 said hello.",
         "## Top line\nDecided.\n\n## What I promised\n- I cannot write the spec before March.",
         "## Top line\nSorry came up twice but nobody was.\n- I could not make the call.",
+        "## Top line\nAgreed the plan.\n\n## Open questions\n"
+        "- I could not write the spec before March.\n- Dana owns the budget.\n- Ship on Friday.",
+        "## Top line\n- Decided to hold; I could not produce a figure for the budget.",
         "## Notes\n" + "x " * 600 + "I could not produce a note for this recording.",
     ],
 )
@@ -367,3 +378,28 @@ def test_one_enormous_line_is_read_in_one_pass_too():
     out, found = ground(note, "[00:00:01] A: nothing here.\n", recorded_on=TODAY)
     assert time.perf_counter() - start < 5
     assert len(found) == 4 * 4000 - 1 and out.count(MARK) == 4 * 4000 - 1
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "- See [ticket](https://example.com/PROJ-9981) for the fix.",
+        "- Tracked in [[PROJ-9981]] and [[Plans/PROJ-9981|the plan]].",
+        "- Raw link https://example.com/PROJ-9981 and `PROJ-9981`.",
+    ],
+)
+def test_a_link_target_or_wiki_link_is_never_edited(line):
+    out, found = ground("## Notes\n" + line + "\n", "[00:00:01] A: nothing here.\n")
+    assert out == "## Notes\n" + line + "\n" and found == []
+
+
+def test_an_identifier_in_plain_text_is_still_marked():
+    out, found = ground("## Notes\n- Case PROJ-9981 is open.\n", "[00:00:01] A: hello.\n")
+    assert out == "## Notes\n- Case PROJ-9981 (not in the recording) is open.\n"
+    assert found == ["PROJ-9981"]
+
+
+@pytest.mark.parametrize("marker", ["10.", "12)", "100.", "- 10."])
+def test_a_list_number_is_not_a_figure(marker):
+    note = f"## Notes\n{marker} Send the plan.\n"
+    assert ground(note, "[00:00:01] A: hello.\n") == (note, [])

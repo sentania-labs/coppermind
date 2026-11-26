@@ -92,10 +92,14 @@ def validate(document: str, title: str, labels: list[str]) -> str:
 # reply with none of them is a few plain sentences, so it is not a note whatever it says. A
 # refusal dressed in a heading is a few plain sentences too, and it is caught by what it says.
 _DECLINE = re.compile(
-    r"""(?:^\W*(?:i\W?m|i\s+am|we\s+are|we\W?re)?\s*(?:so\s+|very\s+)?(?:sorry|apologi[sz]e)\b)
-    |\b(?:i|we)\s+(?:could\s*not|couldn\W?t|cannot|can\W?t|can\s+not|am\s+unable\s+to|
+    r"""(?:^\W*(?:i\W?m|i\s+am|we\s+are|we\W?re)?\s*(?:so\s+|very\s+)?(?:sorry|apologi[sz]e)\b
+        (?=\s*[,.!:;]|\s+(?:but|i|we|for|that)\b))
+    |\b(?:(?:i|we)\s+(?:could\s*not|couldn\W?t|cannot|can\W?t|can\s+not|am\s+unable\s+to|
         am\s+not\s+able\s+to|was\s+unable\s+to)
-        \s+(?:\w+\s+){0,3}(?:produce|write|create|generate|summari[sz]e|transcribe|comply)\b
+        |(?:i|we)\W?(?:m|re)\s+(?:unable|not\s+able)\s+to)
+        \s+(?:\w+\s+){0,3}(?:summari[sz]e|transcribe|comply
+        |(?:produce|write|create|generate)\s+(?:\w+\s+){0,4}
+            (?:notes?|summary|write-?ups?|transcript|recording|document))\b
     |\bas\s+an\s+ai\b|\bas\s+a\s+language\s+model\b
     |\bno\s+transcript\b
     |\bthe\s+(?:transcript|recording|audio)\s+(?:is|was|appears\s+to\s+be|seems)\s+
@@ -110,17 +114,22 @@ DECLINE_CHARS = 700
 
 
 def declines(answer: str) -> bool:
-    """Whether a reply is not a note: it has no section, bullet or timestamp, or it is a short
-    refusal, apology or statement that there was nothing to write. The title is not read."""
-    prose = "\n".join(
-        line for line in answer.splitlines() if line.strip() and not re.match(r"\s*#", line)
-    ).strip()
+    """Whether a reply is not a note: it has no section, bullet or timestamp, or what it says is
+    a refusal, an apology or a statement that there was nothing to write, in whatever shape it
+    is laid out. A real note that mentions something that could not be done says more than that,
+    so it passes. The title is not read."""
+    lines = [
+        re.sub(r"^\s*(?:[-*+]|\d+[.)])\s+", "", line).strip()
+        for line in answer.splitlines()
+        if line.strip() and not re.match(r"\s*#", line)
+    ]
+    prose = "\n".join(lines)
     if not prose:
         return False
-    shaped = _NOTE_SHAPE.search(prose) is not None
-    if not shaped and not _SECTION.search(answer):
+    if _NOTE_SHAPE.search(answer) is None and not _SECTION.search(answer):
         return True
-    return len(prose) <= DECLINE_CHARS and not shaped and _DECLINE.search(prose) is not None
+    said = sum(len(line) for line in lines if _DECLINE.search(line))
+    return len(prose) <= DECLINE_CHARS and said * 2 >= len(prose)
 
 
 UNKNOWN_VOICE = re.compile(r"Unknown voice (\d+)( \(recording-local\))?", re.I)

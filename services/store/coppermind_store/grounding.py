@@ -498,14 +498,17 @@ def ground(
             label = _LEAD_LABEL.match(line)
             if label:
                 spans.append(label.span())
+            marker = _LIST_MARKER.match(line)
+            lead = marker.end() if marker else 0
+            if lead:
+                spans.append((0, lead))
             found = []
-            for ident in _IDENTIFIER.finditer(line):
+            protected = _mask(line, spans)
+            for ident in _IDENTIFIER.finditer(protected):
                 spans.append(ident.span())
                 if Decimal(ident["num"]) not in heard.values:
                     found.append((ident.end(), ident.group()))
             scan = _mask(line, spans)
-            marker = _LIST_MARKER.match(scan)
-            lead = marker.end() if marker else 0
             marks, taken = _dates(scan, heard, recorded_on)
             scan = _mask(scan, taken)
             found += marks + _figures(scan, heard, recorded_on)
