@@ -2300,6 +2300,22 @@ async def test_notes_in_review_writes_a_recording_up_again_without_losing_hand_e
         assert failed["writeup"]["state"] == "failed"
         assert "stopped before finishing" in failed["writeup"]["reason"]
         assert failed["writeup"]["reason"].endswith("The note is unchanged.")
+
+        # A reply that is not a note is a failed write-up too: nothing is replaced.
+        async def declines(*_, **__):
+            return "I could not produce a note for this recording.", {}
+
+        context.provider.write_text = declines
+        await context.note_resummarize({"id": note_id})
+        await settle_rewrites(context)
+        assert (await store.get_note(note_id)).body == replaced.body
+        refused = next(
+            i for i in (await context.review_note_list({}))["notes"] if i["id"] == note_id
+        )
+        assert refused["writeup"]["state"] == "failed"
+        assert "could not be used as a complete note" in refused["writeup"]["reason"]
+        assert "could not produce" not in refused["writeup"]["reason"]
+        assert refused["writeup"]["reason"].endswith("The note is unchanged.")
         assert len(service.requests) == transcriptions
 
 

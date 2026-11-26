@@ -235,7 +235,7 @@ commitments (who promised what, with the timestamp, and a due date only when sta
 unresolved questions, important names, versions, case numbers and figures, and anything
 that suggests the recording continued after the meeting or contains another meeting, with
 timestamps. Use only the supplied speaker labels, exactly as written. Invent nothing.
-Output Markdown bullets or short paragraphs with no title, YAML, HTML, code fences or
+Output Markdown bullets, each starting with "- ", with no title, YAML, HTML, code fences or
 em-dashes."""
 
 COMBINE_RULES = """The transcript was too long to send at once, so it was written up in

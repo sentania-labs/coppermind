@@ -196,7 +196,8 @@ of the table, and one references block at the bottom (source transcript, recordi
 match), with no title heading. Suggestions may be off; when they are on, the write-up also
 suggests account, context, type, tags and attendees (see
 [calendar and enrichment](calendar-enrichment.md)). Review handles frontmatter separately
-and never asks to accept the body.
+and never asks to accept the body. A number, amount, date or name in the note that the
+recording never says is followed by "(not in the recording)", so you can keep or delete it.
 A failed write-up retains the recording and transcript without creating a note; Retry on
 Recordings and imports resumes from the last saved stage. Configure the document prompt
 and model under **Transcription > How recordings are written up**. Existing notes are not
