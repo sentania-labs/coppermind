@@ -585,18 +585,14 @@ class NoteLifecycle:
                         if isinstance(value, list)
                         else str(value)
                     )
-            calendar_unavailable = False
             with timing.step("evidence"):
                 stale = bool(job and job.note_hash != note.content_hash)
                 if job and not stale:
                     try:
-                        with calendar_lookup.degrading(CALENDAR_SECONDS) as calendar:
+                        with calendar_lookup.degrading(CALENDAR_SECONDS):
                             stale = job.evidence_hash != await self.context.note_evidence_hash(note)
                     except ValueError:
                         stale = True
-                    # The calendar cannot say whether the suggestions are out of date, so the
-                    # page does not claim they are.
-                    calendar_unavailable = calendar.unavailable
             with timing.step("validation"):
                 problem = ""
                 try:
@@ -683,7 +679,6 @@ class NoteLifecycle:
                         await speaker_names.evidence(self.context, note, []) if recording else None
                     )
                     merge = merge if receipt else None
-                    calendar_unavailable = True
             with timing.step("speaker_details"):
                 from coppermind_store.voice_store import VoiceStore
 
@@ -789,7 +784,6 @@ class NoteLifecycle:
                     "roles": self.context.store.control.schema().roles,
                     "finalization": self.context.read("finalized", {}).get(note.id),
                     "calendar_update": update,
-                    "calendar_unavailable": calendar_unavailable,
                     "recording_meeting": meeting,
                     "recording_merge": merge,
                     "body_hash": fingerprint(note.body),
