@@ -90,16 +90,16 @@ async def test_several_overlapping_events_narrow_the_candidates():
     assert associated[0] == ["b", "a", "c"]
 
 
-async def test_calendar_descriptions_leave_the_store_only_when_asked(monkeypatch):
+async def test_calendar_descriptions_leave_the_store_only_when_asked(monkeypatch, tmp_path):
     from types import SimpleNamespace
 
-    import coppermind_store.context_service as module
+    from coppermind_store import calendar_lookup
     from coppermind_store.context_service import ContextService
 
     catalog = SimpleNamespace(events=SimpleNamespace(page=lambda *a, **k: []))
 
     class Fake:
-        archive = SimpleNamespace(catalog=lambda: catalog)
+        archive = SimpleNamespace(catalog=lambda: catalog, root=tmp_path)
         store = SimpleNamespace(
             control=SimpleNamespace(
                 schema=lambda: SimpleNamespace(role=lambda name: "date"),
@@ -108,7 +108,9 @@ async def test_calendar_descriptions_leave_the_store_only_when_asked(monkeypatch
         )
 
     monkeypatch.setattr(
-        module, "occurrences", lambda *a: [{"event_id": "a", "description": "Dial-in PIN 1234"}]
+        calendar_lookup,
+        "occurrences",
+        lambda *a: [{"event_id": "a", "description": "Dial-in PIN 1234"}],
     )
     note = SimpleNamespace(frontmatter={"date": "2026-11-11"})
     hidden = await ContextService.calendar_candidates(Fake(), note)

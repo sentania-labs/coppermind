@@ -72,6 +72,32 @@ class ImportReceipt(BaseModel):
     retryable: bool = False
 
 
+def incoming_path(root: Path, event_id: str, version: str) -> Path:
+    """Where the other version of a disagreement is kept once it has been read."""
+    return root / "conflict-incoming" / f"{event_id}-{version}.json"
+
+
+def save_incoming(root: Path, receipt: ImportReceipt, event: CalendarEvent) -> None:
+    """Keep the other version of a disagreement, so Admin never reads its file back to show it."""
+    event = event.model_copy(
+        update={
+            "provenance": [
+                EventProvenance(
+                    source_id=receipt.id,
+                    filename=receipt.export_filename or receipt.filename,
+                    entry=receipt.original_entry or event.source_entry,
+                    imported_at=receipt.received_at,
+                )
+            ]
+        }
+    )
+    atomic_write_text(
+        incoming_path(root, event.identity, event.semantic_hash),
+        json.dumps({"receipt": receipt.id, "event": event.model_dump(mode="json")}),
+        mode=0o600,
+    )
+
+
 class ContactEvidence(BaseModel):
     event_id: str
     address: str
@@ -305,6 +331,7 @@ class CalendarArchive:
                     # Each disagreeing incoming version is recorded once per event, in the
                     # shape the acknowledge path already keeps on the mirror.
                     receipt.conflicts = _retain_conflicts(connection, problems, kept)
+                    self._keep_incoming(receipt, events, receipt.conflicts)
                     # Persist the count before promotion so crash recovery can finish the receipt.
                     self._save_receipt(receipt)
                     # The atomic filesystem promotion precedes the database commit.
@@ -333,6 +360,24 @@ class CalendarArchive:
             receipt.imported_at = receipt.imported_at or datetime.now(UTC).isoformat()
             self._save_receipt(receipt)
             return receipt
+
+    def _keep_incoming(
+        self, receipt: ImportReceipt, events: list[CalendarEvent], conflicts: list[CalendarProblem]
+    ) -> None:
+        """Save the other version of each new disagreement while the file is already read.
+
+        Admin shows both versions, and without this it would parse the whole file again
+        for every disagreement the first time it is asked. A copy that cannot be written
+        costs nothing here: Admin fills it in later, off the request that asked.
+        """
+        wanted = {(problem.event_id, problem.version) for problem in conflicts}
+        for event in events:
+            if (event.identity, event.semantic_hash) in wanted:
+                wanted.discard((event.identity, event.semantic_hash))
+                try:
+                    save_incoming(self.root, receipt, event)
+                except OSError:
+                    log.warning("conflict_incoming_not_saved", exc_info=True)
 
     def dismiss_conflict(self, event_id: str, version: str) -> None:
         with self._lock:

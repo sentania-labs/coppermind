@@ -340,7 +340,7 @@ def setup_steps(view: dict[str, Any]) -> list[Step]:
         Step(
             "cal",
             "Add your calendar",
-            view["calendar"]["files"] > 0,
+            view["calendar"]["files"] > 0 or bool(view["calendar"].get("unavailable")),
             "So a recording or note can be matched to the meeting it came from.",
             "Added.",
             "/admin/calendar",

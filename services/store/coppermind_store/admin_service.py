@@ -416,7 +416,11 @@ class AdminService:
             with timing.step("calendar"):
                 calendar = await self.calendar.attention()
             with timing.step("files"):
-                files = await timing.to_thread("calendar_files", self.calendar._files)
+                listed = await self.calendar.files()
+                if listed is None:
+                    # The calendar could not be read in time: show the page without it.
+                    calendar = {**calendar, "unavailable": True}
+                files = listed or []
             with timing.step("apps"):
                 apps = self.apps()
             with timing.step("waiting"):
