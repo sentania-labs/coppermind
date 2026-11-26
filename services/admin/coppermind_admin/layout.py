@@ -208,6 +208,7 @@ audio{height:30px;vertical-align:middle;max-width:220px}
   .choice{align-items:center;min-height:44px}
   .lede{margin-bottom:8px}
   .hide-wide{display:initial}
+  .hide-narrow{display:none}
   .tcards thead{display:none}
   .tcards tr{display:block;padding:8px 0;border-bottom:1px solid var(--line-soft)}
   .tcards td{display:block;border:0;padding:1px 0}
