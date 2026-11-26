@@ -52,7 +52,14 @@ async def entity_action(action: str, payload: dict[str, Any], request: Request) 
                     if type(payload.get("enabled")) is not bool:
                         raise ValidationFailed(["Invalid voice recognition setting"])
                     voice.set_recognition_enabled(payload["enabled"])
-                result = {"enabled": voice.recognition_enabled()}
+                result = {
+                    "enabled": voice.recognition_enabled(),
+                    # The note property that lists who attended, so a screen can read it.
+                    "attendees_field": request.app.state.store.context.config()
+                    .assignments["enrichment"]
+                    .attendees_field
+                    or "",
+                }
         elif action in {"voice-unknown-list", "voice-unknown-delete"}:
             from coppermind_store.voice_store import VoiceStore
 

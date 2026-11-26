@@ -31,7 +31,8 @@ from coppermind.recording_writeup import (
     read_field_suggestions,
 )
 from coppermind.schema import parse_note_time
-from coppermind_store import meeting_match
+from coppermind.speakers_section import render as render_speakers
+from coppermind_store import meeting_match, speaker_facts
 from coppermind_store.answer_shape import FENCE
 from coppermind_store.model_provider import ProviderError
 
@@ -670,17 +671,24 @@ async def generate(
         + [float(transcript.get("duration") or 0)]
     )
     vocab = vocabulary(context)
+    voices, owner_label = speaker_facts.heard(context, job.id, transcript, calendar)
     evidence = {
         "resolved_title": title,
         "recording_date": title[:10],
         "meeting_kind": meeting_kind(context, dict(job.frontmatter)),
         "allowed_speaker_labels": labels,
+        "speakers": [
+            {"label": v.label, "identified": bool(v.name), "owner": v.owner}
+            for v in sorted(voices, key=lambda v: v.label)
+        ],
         "transcript": text,
         "calendar": calendar,
         "duration_seconds": duration,
         "known_accounts": sorted(set(vocab["accounts"].values()))[:300],
         "known_tags": sorted(set(vocab["tags"].values()))[:300],
     }
+    if owner_label:
+        evidence["owner_label"] = owner_label
     if limits.writeup_glossary.strip():
         evidence["glossary"] = limits.writeup_glossary.strip()
     system = (
@@ -743,7 +751,11 @@ async def generate(
             "; ".join(repairs) or "none",
             " (after one retry)" if correction else "",
         )
-    body = compose_body(body, labels, _boundary_summary(ranges) if ranges else None)
+    body = compose_body(
+        body,
+        render_speakers(voices, owner_known=bool(speaker_facts.owner_person_id(context))),
+        _boundary_summary(ranges) if ranges else None,
+    )
     # A suggestion that cannot be read costs the note nothing; it is reported on its own.
     suggestions: list[dict[str, Any]] = []
     suggestion_error = ""
@@ -784,6 +796,7 @@ async def generate(
         "calendar": calendar,
         "repairs": repairs,
         "parts": len(evidence["part_notes"]) if "part_notes" in evidence else 0,
+        "owner_label": owner_label,
     }
     context.write(key, saved)
     context.write("recording-writeup-parts/" + job.id, {})

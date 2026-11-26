@@ -37,7 +37,7 @@ async function fixture(local, overrides={}){
   class Plugin {registerView(type,fn){factory=fn;factories[type]=fn;}addSettingTab(tab){this.settingTab=tab;}addCommand(command){(this.commands??={})[command.id]=command;}async saveData(data){(this.saved??=[]).push(JSON.parse(JSON.stringify(data)));}addRibbonIcon(icon,title){(this.ribbons??=[]).push(title);}registerEvent(){}async loadData(){return {url:'https://coppermind.example',secret:'local-secret-name'};}}
   class ItemView {constructor(leaf){this.app=leaf.app;this.contentEl=new El();}}
   const app={metadataCache:{getFileCache:()=>({frontmatter:{id:'test-note'}})},secretStorage:{getSecret:()=> 'synthetic-credential'},vault:{read:async()=>local??raw,getAbstractFileByPath:path=>({path})},workspace:{getActiveFile:()=>file,on:()=>null,getActiveViewOfType:()=>null,openLinkText:()=>{}}};
-  const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,Modal:class{constructor(app){this.app=app;this.contentEl=new El();}open(){modals.push(this);this.onOpen();}close(){this.onClose();}},PluginSettingTab:class{constructor(){this.containerEl=new El();}},SecretComponent:class{setValue(){return this;}onChange(){return this;}},Notice:class{constructor(text){notices.push(text);}},MarkdownView:class{},requestUrl:async req=>{requests.push(req);if(req.url.endsWith('/v1/pair')&&overrides.pair)return overrides.pair(req);if(req.url.endsWith('/v1/anything')&&overrides.page)return overrides.page(req);if(req.url.endsWith('/v1/recordings/waiting'))return overrides.waitingFail?{status:overrides.waitingFail===true?500:overrides.waitingFail,json:{message:'down'}}:overrides.waitingHang?new Promise(()=>{}):{status:200,json:overrides.waiting};if(req.url.endsWith('/v1/dropbox'))return overrides.dropboxFail?{status:overrides.dropboxFail===true?500:overrides.dropboxFail,json:{message:'down'}}:{status:200,json:overrides.dropbox??{folder:'Dropbox',items:[]}};if(req.url.includes('/v1/dropbox/')&&req.url.endsWith('/dismiss'))return overrides.dismissDropFail?{status:500,json:{}}:{status:200,json:{dismissed:'x'}};if(req.url.endsWith('/v1/recordings/summaries-again'))return overrides.summariesAgain?overrides.summariesAgain(req):{status:200,json:{queued:2,already:0,skipped:0}};if(new URL(req.url).pathname==='/v1/review/notes')return overrides.reviewNotesFail?{status:overrides.reviewNotesFail===true?500:overrides.reviewNotesFail,json:{message:'down'}}:{status:200,json:typeof overrides.reviewNotes==='function'?overrides.reviewNotes(req):overrides.reviewNotes};if(req.url.endsWith('/resummarize')&&req.method==='POST')return overrides.resummarize?overrides.resummarize(req):{status:200,json:{started:true,already:false}};if(req.url.endsWith('/suggestions')&&req.method==='POST')return overrides.suggestionsRequest?overrides.suggestionsRequest(req):{status:200,json:{jobs:['j']}};if(req.url.endsWith('/summary-again'))return overrides.summaryAgain?overrides.summaryAgain(req):{status:200,json:{title:'Planning',already:false}};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/dismiss'))return overrides.dismissFail?{status:500,json:{}}:{status:200,json:{}};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/retry'))return overrides.retryFail?{status:overrides.retryFail===true?500:overrides.retryFail,json:{}}:(overrides.onRetry?.(),{status:200,json:{}});if(req.url.endsWith('/v1/schema'))return {status:200,json:{roles:{id_key:'id'}}};if(req.url.endsWith('/v1/entities/voice/recognition'))return {status:200,json:{enabled:true}};if(req.url.endsWith('/v1/entities/voice/unknowns'))return {status:200,json:overrides.unknownVoices||{}};if(req.url.endsWith('/v1/entities/voice/people'))return {status:200,json:overrides.savedPeople||{}};if(req.url.includes('/v1/entities?'))return overrides.rejectPeople?{status:overrides.rejectPeople===true?403:overrides.rejectPeople,json:{error:'forbidden'}}:{status:200,json:typeof overrides.peopleResults==='function'?await overrides.peopleResults(req):overrides.peopleResults||{items:[],next_cursor:null}};if(req.url.endsWith('/review')&&req.method==='POST'&&overrides.rejectReview)return {status:403,json:{error:'forbidden'}};return {status:200,json:{note:{content_hash:digest,frontmatter:{reviewed:false}},roles:{reviewed_key:'reviewed',type_key:'type'},suggestions:[],unresolved:[],stale:false,state:'suggested',suggestions_enabled:true,job_id:null,...overrides}};}}),crypto:webcrypto,TextEncoder,URL,setTimeout,clearTimeout,setInterval,clearInterval};
+  const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,Modal:class{constructor(app){this.app=app;this.contentEl=new El();}open(){modals.push(this);this.onOpen();}close(){this.onClose();}},PluginSettingTab:class{constructor(){this.containerEl=new El();}},SecretComponent:class{setValue(){return this;}onChange(){return this;}},Notice:class{constructor(text){notices.push(text);}},MarkdownView:class{},requestUrl:async req=>{requests.push(req);if(req.url.endsWith('/v1/pair')&&overrides.pair)return overrides.pair(req);if(req.url.endsWith('/v1/anything')&&overrides.page)return overrides.page(req);if(req.url.endsWith('/v1/recordings/waiting'))return overrides.waitingFail?{status:overrides.waitingFail===true?500:overrides.waitingFail,json:{message:'down'}}:overrides.waitingHang?new Promise(()=>{}):{status:200,json:overrides.waiting};if(req.url.endsWith('/v1/dropbox'))return overrides.dropboxFail?{status:overrides.dropboxFail===true?500:overrides.dropboxFail,json:{message:'down'}}:{status:200,json:overrides.dropbox??{folder:'Dropbox',items:[]}};if(req.url.includes('/v1/dropbox/')&&req.url.endsWith('/dismiss'))return overrides.dismissDropFail?{status:500,json:{}}:{status:200,json:{dismissed:'x'}};if(req.url.endsWith('/v1/recordings/summaries-again'))return overrides.summariesAgain?overrides.summariesAgain(req):{status:200,json:{queued:2,already:0,skipped:0}};if(new URL(req.url).pathname==='/v1/review/notes')return overrides.reviewNotesFail?{status:overrides.reviewNotesFail===true?500:overrides.reviewNotesFail,json:{message:'down'}}:{status:200,json:typeof overrides.reviewNotes==='function'?overrides.reviewNotes(req):overrides.reviewNotes};if(req.url.endsWith('/resummarize')&&req.method==='POST')return overrides.resummarize?overrides.resummarize(req):{status:200,json:{started:true,already:false}};if(req.url.endsWith('/suggestions')&&req.method==='POST')return overrides.suggestionsRequest?overrides.suggestionsRequest(req):{status:200,json:{jobs:['j']}};if(req.url.endsWith('/summary-again'))return overrides.summaryAgain?overrides.summaryAgain(req):{status:200,json:{title:'Planning',already:false}};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/dismiss'))return overrides.dismissFail?{status:500,json:{}}:{status:200,json:{}};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/retry'))return overrides.retryFail?{status:overrides.retryFail===true?500:overrides.retryFail,json:{}}:(overrides.onRetry?.(),{status:200,json:{}});if(req.url.endsWith('/v1/schema'))return {status:200,json:{roles:{id_key:'id'}}};if(req.url.endsWith('/v1/entities/voice/recognition'))return {status:200,json:overrides.recognition||{enabled:true,attendees_field:'attendees'}};if(req.url.endsWith('/v1/entities/voice/unknowns'))return {status:200,json:overrides.unknownVoices||{}};if(req.url.endsWith('/v1/entities/voice/people'))return {status:200,json:overrides.savedPeople||{}};if(req.url.includes('/v1/entities?'))return overrides.rejectPeople?{status:overrides.rejectPeople===true?403:overrides.rejectPeople,json:{error:'forbidden'}}:{status:200,json:typeof overrides.peopleResults==='function'?await overrides.peopleResults(req):overrides.peopleResults||{items:[],next_cursor:null}};if(req.url.endsWith('/review')&&req.method==='POST'&&overrides.rejectReview)return {status:403,json:{error:'forbidden'}};return {status:200,json:{note:{content_hash:digest,frontmatter:{reviewed:false}},roles:{reviewed_key:'reviewed',type_key:'type'},suggestions:[],unresolved:[],stale:false,state:'suggested',suggestions_enabled:true,job_id:null,...overrides}};}}),crypto:webcrypto,TextEncoder,URL,setTimeout,clearTimeout,setInterval,clearInterval};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../coppermind_admin/obsidian_plugin/main.js'),'utf8'),context);
   const plugin=new context.module.exports();plugin.app=app;await plugin.onload();
   const view=factory({app});await view.refresh();
@@ -176,6 +176,36 @@ test('failed suggestions show the cause, point to Notes in Review, and still per
   await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
   const body=JSON.parse(f.requests.find(r=>r.method==='POST').body);
   assert.equal(body.manual_speakers['Speaker 1'],'person:a');assert.equal(body.manual_source_revision,2);
+});
+test('a voice named in the note is not asked for again, and the panel says it will be applied',async()=>{
+  const f=await fixture(undefined,{state:'failed',named_in_note:[{label:'Unknown voice 7',name:'Tom Reed'}],manual_speaker_review:{revision:2,speakers:['Unknown voice 7','Unknown voice 8'],candidates:[{id:'person:a',name:'Alex'}]}});
+  const all=f.view.contentEl.all();
+  assert.ok(all.some(e=>e.text==='Unknown voice 7 → Tom Reed (typed in the note)'));
+  assert.ok(!all.some(e=>e.tag==='h3'&&e.text==='Unknown voice 7'));
+  assert.ok(all.some(e=>e.tag==='h3'&&e.text==='Unknown voice 8'));
+});
+test('with names typed in the note the panel lists them and no longer promises no changes',async()=>{
+  const f=await fixture(undefined,{state:'suggested',speakers_in_note:true,named_in_note:[{label:'Unknown voice 7',name:'Tom Reed'}],manual_speaker_review:{revision:2,speakers:['Unknown voice 7'],candidates:[]}});
+  const all=f.view.contentEl.all();
+  assert.ok(all.some(e=>e.text==='Unknown voice 7 → Tom Reed (typed in the note)'));
+  assert.ok(!all.some(e=>e.text==='No speaker names selected.'));
+  assert.ok(!all.some(e=>e.tag==='button'&&e.text==='Mark reviewed without changes'));
+  assert.ok(all.some(e=>e.tag==='button'&&e.text==='Mark reviewed, applying only the names typed in the note'));
+});
+test('a note with a Speakers section is named in the note, not by a competing control here',async()=>{
+  const f=await fixture(undefined,{state:'suggested',speakers_in_note:true,manual_speaker_review:{revision:2,speakers:['Unknown voice 7'],candidates:[{id:'person:a',name:'Alex'}]}});
+  const all=f.view.contentEl.all();
+  assert.ok(all.some(e=>e.text?.includes('Name a voice in the Speakers section at the top of the note')));
+  assert.ok(!all.some(e=>e.tag==='select'));
+  assert.ok(!all.some(e=>e.tag==='h3'&&e.text==='Unknown voice 7'));
+  assert.ok(all.some(e=>e.text==='No voice has been named in the note.'));
+});
+test('after review the panel says what became of each name typed in the note',async()=>{
+  const f=await fixture(undefined,{note:{frontmatter:{reviewed:true}},named_in_note:[{label:'Unknown voice 2',name:'Tom'},{label:'Unknown voice 3',name:'Dana Lee'}],speaker_naming:[{label:'Unknown voice 1',typed:'Scott Bowe',status:'named',name:'Scott Bowe',created:true},{label:'Unknown voice 2',typed:'Tom',status:'not-named',reason:'Tom could be Tom Reed, but a first name alone is not enough to say so. The note is already reviewed, so correcting the name here and saving the note is enough.'}]});
+  const text=f.view.contentEl.all().map(e=>e.text||'');
+  assert.ok(text.includes('Unknown voice 1 is now Scott Bowe (added to People).'));
+  assert.ok(text.some(t=>t.startsWith('Unknown voice 2 was not named as Tom: Tom could be Tom Reed')&&t.includes('saving the note is enough')));
+  assert.ok(text.some(t=>t.includes('The name you typed for Unknown voice 3 (Dana Lee) is applied about 30 seconds after')));
 });
 test('empty candidates permit searching People and choosing a result',async()=>{
   const f=await fixture(undefined,{state:'failed',manual_speaker_review:{revision:1,speakers:['Speaker 1'],candidates:[]},peopleResults:{items:[{id:'b',name:'Blair',emails:[]}],next_cursor:null}});
@@ -451,13 +481,25 @@ test('People find-a-person shows results once, tells what will happen, and confi
   await lookup.onclick();await lookup.onclick();await lookup.onclick();
   const options=all().filter(e=>e.tag==='option').map(e=>e.text);
   assert.deepEqual(options.filter(t=>t.startsWith('Scott')),['Scott Bowe (scott@a.test)','Scott Bowe (scott@b.test)']);
-  assert.ok(all().some(e=>e.text==='Found 2 people. Choose one from the list above.'));
+  assert.ok(all().some(e=>e.text==='Found 2 people. Choose one from the list below.'));
   const select=all().find(e=>e.tag==='select');select.value='person:p1';select.onchange();
   assert.ok(all().some(e=>e.text==='Unknown voice 7 will become Scott Bowe (scott@a.test) in 2 recordings.'));
   all().find(e=>e.text==='Choose and combine').onclick();
   const modal=f.modals.at(-1);assert.ok(modal.contentEl.all().some(e=>e.text?.includes('Unknown voice 7 will become Scott Bowe (scott@a.test) in 2 recordings')));
   await modal.contentEl.all().find(e=>e.text==='Combine voices').onclick();
   assert.ok(all().some(e=>e.text?.startsWith('Done: Unknown voice 7 is now Scott Bowe')));
+});
+
+test('typing a name narrows matching people without clicking Find, and says when nobody matches',async()=>{
+  const unknownVoices={'unknown:7':{name:'Unknown voice 7',signatures:[sig('n1')],assignments:[]}};
+  const peopleResults=req=>{const q=decodeURIComponent(req.url.split('q=')[1]);return {items:q==='Sc'?[{id:'p1',name:'Scott Bowe',emails:[]}]:[],next_cursor:null};};
+  const f=await fixture(undefined,{unknownVoices,peopleResults});
+  const view=f.factories['coppermind-people']({app:f.app});await view.show({id:'unknown:7',name:'Unknown voice 7',unknown:true});
+  const all=()=>view.contentEl.all();const input=all().find(e=>e.tag==='input'&&e.attr?.placeholder?.startsWith('Type a name'));
+  input.value='Sc';input.oninput();await new Promise(r=>setTimeout(r,400));
+  assert.ok(all().some(e=>e.tag==='option'&&e.text==='Scott Bowe'));
+  input.value='Zz';input.oninput();await new Promise(r=>setTimeout(r,400));
+  assert.ok(all().some(e=>e.text==='No one named Zz found.'));assert.ok(!all().some(e=>e.tag==='option'&&e.text==='Scott Bowe'));
 });
 
 test('an older person search answering last does not replace the newer results',async()=>{
@@ -473,6 +515,50 @@ test('an older person search answering last does not replace the newer results',
   release.Alex();await second;release.Al();await first;
   assert.deepEqual(all().filter(e=>e.tag==='option').map(e=>e.text).filter(t=>t.includes('A')&&t!=='Choose a voice or person'),['Alex New']);
   assert.equal(all().find(e=>e.tag==='select').value,'person:new');
+});
+
+test('people who attended the voice\'s meetings are listed first, marked, and a listed match can be chosen',async()=>{
+  const unknownVoices={'unknown:7':{name:'Unknown voice 7',signatures:[sig('n1')],assignments:[{note_id:'n1',label:'Speaker 1'}]}};
+  const items=[{id:'a',name:'Sam Early',emails:['sam@a.test'],path:'People/Sam Early.md'},{id:'b',name:'Sam Linked',emails:['x@b.test'],path:'People/Sam Linked.md'},{id:'c',name:'Sam Mailed',emails:['mail@c.test'],path:'People/Sam Mailed.md'},{id:'d',name:'Sam Last',emails:[],path:'People/Sam Last.md'}];
+  const f=await fixture(undefined,{unknownVoices,title:'Planning',path:'Planning.md',frontmatter:{attendees:['[[People/Sam Linked]]','Mail@C.test',7]},peopleResults:{items,next_cursor:null}});
+  const view=f.factories['coppermind-people']({app:f.app});await view.show({id:'unknown:7',name:'Unknown voice 7',unknown:true});
+  const all=()=>view.contentEl.all();const input=all().find(e=>e.tag==='input'&&e.attr?.placeholder?.startsWith('Type a name'));
+  input.value='Sam';input.oninput();await new Promise(r=>setTimeout(r,400));
+  const listed=all().filter(e=>e.tag==='button'&&e.text?.startsWith('Sam')).map(e=>e.text);
+  assert.deepEqual(listed,['Sam Linked (x@b.test) · attended these meetings','Sam Mailed (mail@c.test) · attended these meetings','Sam Early (sam@a.test)','Sam Last']);
+  all().find(e=>e.text==='Sam Early (sam@a.test)'&&e.tag==='button').onclick();
+  assert.equal(all().find(e=>e.tag==='select').value,'person:a');
+  assert.ok(all().some(e=>e.text==='Unknown voice 7 will become Sam Early (sam@a.test) in 1 recording.'));
+  input.value='Samu';input.oninput();
+  assert.ok(!all().some(e=>e.tag==='button'&&e.text?.startsWith('Sam ')));
+});
+
+test('attendee-first ordering reads the configured attendees property, not a fixed name',async()=>{
+  const unknownVoices={'unknown:7':{name:'Unknown voice 7',signatures:[sig('n1')],assignments:[{note_id:'n1',label:'Speaker 1'}]}};
+  const items=[{id:'a',name:'Sam Early',emails:['sam@a.test'],path:'People/Sam Early.md'},{id:'b',name:'Sam Mailed',emails:['mail@c.test'],path:'People/Sam Mailed.md'}];
+  const f=await fixture(undefined,{unknownVoices,recognition:{enabled:true,attendees_field:'present'},title:'Planning',path:'Planning.md',frontmatter:{present:['mail@c.test'],attendees:['sam@a.test']},peopleResults:{items,next_cursor:null}});
+  const view=f.factories['coppermind-people']({app:f.app});await view.show({id:'unknown:7',name:'Unknown voice 7',unknown:true});
+  const all=()=>view.contentEl.all();const input=all().find(e=>e.tag==='input'&&e.attr?.placeholder?.startsWith('Type a name'));
+  input.value='Sam';input.oninput();await new Promise(r=>setTimeout(r,400));
+  assert.deepEqual(all().filter(e=>e.tag==='button'&&e.text?.startsWith('Sam')).map(e=>e.text),['Sam Mailed (mail@c.test) · attended these meetings','Sam Early (sam@a.test)']);
+});
+
+test('typing on while an earlier search is in flight never shows its results for the shorter entry',async()=>{
+  const unknownVoices={'unknown:7':{name:'Unknown voice 7',signatures:[sig('n1')],assignments:[]}};
+  const release={};
+  const peopleResults=req=>new Promise((resolve,reject)=>{const q=decodeURIComponent(req.url.split('q=')[1]);release[q]={ok:()=>resolve({items:[{id:'s',name:'Sam Short',emails:[]}],next_cursor:null}),fail:()=>reject(new Error('down'))};});
+  const f=await fixture(undefined,{unknownVoices,peopleResults});
+  const view=f.factories['coppermind-people']({app:f.app});await view.show({id:'unknown:7',name:'Unknown voice 7',unknown:true});
+  const all=()=>view.contentEl.all();const input=all().find(e=>e.tag==='input'&&e.attr?.placeholder?.startsWith('Type a name'));
+  input.value='S';input.oninput();await new Promise(r=>setTimeout(r,400));
+  input.value='Sc';input.oninput();
+  release.S.ok();await new Promise(r=>setTimeout(r,0));
+  assert.ok(!all().some(e=>e.tag==='option'&&e.text==='Sam Short'));
+  assert.equal(all().find(e=>e.tag==='select').value,'');
+  assert.ok(all().some(e=>e.text==='Searching…'));
+  await new Promise(r=>setTimeout(r,400));release.Sc.fail();await new Promise(r=>setTimeout(r,0));
+  assert.ok(!all().some(e=>e.text==='Searching…'));
+  assert.ok(!all().some(e=>e.tag==='option'&&e.text==='Sam Short'));
 });
 
 test('strong voice suggestion explains confirmation and earlier appearances',async()=>{

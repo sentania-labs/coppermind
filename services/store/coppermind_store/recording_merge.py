@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from coppermind.meeting_summary import MeetingSummary
+from coppermind.recording_writeup import SOURCE_TARGET_TOKEN
 
 
 def append_summary(body: str, summary: MeetingSummary, projection_path: str) -> str:
@@ -112,7 +113,9 @@ async def apply(context, receipt):
                 (
                     target.body
                     + "\n\n## Recording write-up\n\n"
-                    + receipt["markdown"]
+                    + receipt["markdown"].replace(
+                        SOURCE_TARGET_TOKEN, receipt["projection_path"].removesuffix(".md")
+                    )
                     + "\n\n[["
                     + receipt["projection_path"].removesuffix(".md")
                     + "|Transcript]]\n"
