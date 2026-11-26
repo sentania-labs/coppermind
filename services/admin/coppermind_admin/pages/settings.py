@@ -20,6 +20,7 @@ from coppermind.statefiles import RevisionConflict, StateStore
 from coppermind.store_protocol import StoreError
 from coppermind_admin import ui
 from coppermind_admin.auth import AdminRecordUnreadable
+from coppermind_admin.pages.ai import WAITS
 from coppermind_admin.pages.common import (
     health_badge,
     service_choices,
@@ -1399,12 +1400,7 @@ is sent to this service a little at a time, in the background.</p>
                 heard = None
             if heard is not None:
                 here = {"back": "/admin/settings/advanced"}
-                waits = (
-                    ("1800", "30 minutes"),
-                    ("3600", "1 hour"),
-                    ("7200", "2 hours"),
-                    ("14400", "4 hours"),
-                )
+                waits = WAITS
                 # A wait the store would refuse is shown as the next one listed.
                 wait = next(
                     (value for value, _ in waits if int(value) >= int(heard["wait_s"])),

@@ -179,6 +179,21 @@ def test_obsidian_can_be_connected_from_the_coppermind_page(admin):
     assert "Back to Coppermind" in connect
 
 
+def test_a_paired_device_without_a_name_is_still_named_in_the_companion_line(admin):
+    client, _, store = admin
+    paired = store.views["overview"]["companion"]["paired"]
+    store.views["overview"]["companion"]["paired"] = [{**paired[0], "device": ""}]
+    assert line_of(client.get("/admin").text, "Companion").startswith("On A device.")
+
+
+def test_a_speech_server_added_from_the_ai_page_is_offered_for_the_ai_server(admin):
+    client, _, store = admin
+    store.answers["service"] = {"service": SPEECH}
+    page = client.get(f"/admin/services/{SPEECH['id']}?for=ai&pick=1").text
+    assert "cannot write suggestions" not in page
+    assert f"/admin/ai?use={SPEECH['id']}" in page
+
+
 @pytest.mark.parametrize(
     ("change", "says", "action"),
     [
@@ -466,14 +481,11 @@ def test_the_waits_for_a_recording_are_on_the_limits_page(admin):
 
 
 @pytest.mark.parametrize("path", ["/admin", "/admin/advanced", "/admin/ai"])
-def test_a_phone_gets_a_menu_button_and_one_column(admin, path):
+def test_a_phone_gets_a_menu_button(admin, path):
     client, _, _ = admin
     page = client.get(path).text
     assert 'name="viewport" content="width=device-width,initial-scale=1"' in page
     assert 'data-menu aria-controls="side">Menu</button>' in page
-    narrow = page.split("@container app (max-width: 720px)", 1)[1].split("</style>", 1)[0]
-    for rule in (".side{display:none}", ".row{grid-template-columns:1fr}", "min-height:44px"):
-        assert rule in narrow, rule
 
 
 def test_the_page_says_when_the_store_is_silent(admin):

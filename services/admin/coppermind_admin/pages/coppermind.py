@@ -66,7 +66,7 @@ def companion_row(view: dict[str, Any]) -> str:
         kind, said = "warn", "In your vault, and not paired with a device yet."
         action = ui.go("Pair a device", "/admin/setup/companion", "primary")
     else:
-        devices = sorted({app["device"] for app in paired})
+        devices = sorted({app["device"] or "A device" for app in paired})
         kind, said = "ok", "On " + ui.sentence_list([e(name) for name in devices]) + "."
         action = ui.go("Add a device", "/admin/apps/pair?from=coppermind")
     if companion_needs_update(view):
