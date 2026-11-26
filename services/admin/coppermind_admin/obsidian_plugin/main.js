@@ -7,6 +7,8 @@ const PEOPLE_VIEW = 'coppermind-people';
 const NOTES_VIEW = 'coppermind-notes-in-review';
 const WAITING_VIEW = 'coppermind-waiting';  // The id stays so saved layouts keep their place; the screen is now Needs you.
 const COMPANION_PERMISSIONS = 'Read notes, Add and change notes, Hand in recordings and files, Search, and Read and correct people and companies';
+// A date with no time ("2026-11-26") is that calendar day where the owner is; new Date() would read it as UTC midnight and show the day before.
+const parseDate=value=>{const day=/^(\d{4})-(\d{2})-(\d{2})$/.exec(typeof value==='string'?value.trim():'');return day?new Date(+day[1],+day[2]-1,+day[3]):new Date(value);};
 async function hash(text) {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
   return 'sha256:' + [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2,'0')).join('');
@@ -67,16 +69,17 @@ class ReviewView extends ItemView {
       }
       el.createEl('p',{text:'Edit the note and its properties as usual. Finish here when you are ready.'});
       const meeting=data.recording_meeting;
-      if(meeting?.candidates?.length>1){
+      const pickMeeting=!!meeting&&(meeting.candidates?.length>1||(meeting.candidates?.length===1&&meeting.selected_event_id!==meeting.candidates[0].event_id));
+      if(pickMeeting){
         const box=el.createDiv({cls:'coppermind-card'});box.createEl('h3',{text:'Which meeting was this?'});
-        box.createEl('p',{text:meeting.suggested_event_id?'Suggested from the conversation. Please check the choice.':'Several meetings could match. Choose one to use its context.'});
-        let choice=meeting.selected_event_id||meeting.suggested_event_id||'';
+        box.createEl('p',{text:meeting.suggested_event_id?'Suggested from the conversation. Please check the choice.':meeting.candidates.length>1?'Several meetings could match. Choose one to use its context.':'This meeting was on at the time. Use it if it is the one.'});
+        let choice=meeting.selected_event_id||meeting.suggested_event_id||(meeting.candidates.length===1?meeting.candidates[0].event_id:'');
         for(const event of meeting.candidates){
           const row=box.createEl('label',{cls:'coppermind-meeting-option'});
           const radio=row.createEl('input',{attr:{type:'radio',name:'coppermind-meeting-'+id},value:event.event_id});
           radio.checked=choice===event.event_id;radio.onchange=()=>{if(radio.checked)choice=event.event_id;};
           const people=(event.people||[]).map(p=>p.name).filter(Boolean).join(', ');
-          const when=event.start&&!Number.isNaN(Date.parse(event.start))?new Date(event.start).toLocaleString([],{dateStyle:'medium',timeStyle:'short'}):'';
+          const when=event.start&&!Number.isNaN(Date.parse(event.start))?parseDate(event.start).toLocaleString([],{dateStyle:'medium',timeStyle:'short'}):'';
           row.createEl('span',{text:event.title+(when?' · '+when:'')+(event.event_id===meeting.suggested_event_id?' · Suggested':'')+(people?' · '+people:'')});
         }
         new Setting(box).addButton(b=>b.setButtonText('Use selected meeting').setDisabled(!synced).onClick(async()=>{
@@ -214,7 +217,7 @@ class ReviewView extends ItemView {
       const typedNames=Object.fromEntries((data.named_in_note||[]).map(t=>[t.label,t.name]));
       if(data.speakers_in_note)el.createEl('p',{text:'Name a voice in the Speakers section at the top of the note: type the name after "Name this voice:", then mark the note reviewed here.',cls:'coppermind-notice'});
       for(const s of data.suggestions){
-        if(s.kind==='event'&&meeting?.candidates?.length>1)continue;
+        if(s.kind==='event'&&pickMeeting)continue;
         if(s.kind==='speaker'&&(!ready||typedNames[s.field]||data.speakers_in_note))continue;
         const card=el.createDiv({cls:'coppermind-card'});let toggle;
         const voice=s.kind==='speaker'?voicePlan(s.field,s):null;
@@ -372,7 +375,7 @@ class HomeView extends ItemView {
       for(const item of processing){
         const card=el.createDiv({cls:'coppermind-card'});card.createEl('h4',{text:item.title,cls:'coppermind-name'});
         card.createEl('p',{text:item.message});
-        const since=item.since&&new Date(item.since);if(since&&!isNaN(since))card.createEl('p',{text:'Since '+since.toLocaleString([],{dateStyle:'medium',timeStyle:'short'})+'.'});
+        const since=item.since&&parseDate(item.since);if(since&&!isNaN(since))card.createEl('p',{text:'Since '+since.toLocaleString([],{dateStyle:'medium',timeStyle:'short'})+'.'});
       }
       for(const item of activeImports){
         const card=el.createDiv({cls:'coppermind-card'});card.createEl('h4',{text:item.filename,cls:'coppermind-name'});
@@ -392,7 +395,7 @@ class HomeView extends ItemView {
   meetingCard(meeting){
     const card=this.contentEl.createDiv({cls:'coppermind-card'});
     const open=card.createEl('button',{text:meeting.title});
-    if(meeting.date){const date=new Date(meeting.date);if(!isNaN(date))card.createEl('p',{text:date.toLocaleDateString()});}
+    if(meeting.date){const date=parseDate(meeting.date);if(!isNaN(date))card.createEl('p',{text:date.toLocaleDateString()});}
     card.createEl('p',{text:'Open note and review'});
     open.onclick=async()=>{
       const file=this.app.vault.getAbstractFileByPath(meeting.path);
@@ -403,7 +406,7 @@ class HomeView extends ItemView {
   missingCard(note){
     const card=this.contentEl.createDiv({cls:'coppermind-card'});
     const open=card.createEl('button',{text:note.title});
-    if(note.date){const date=new Date(note.date);if(!isNaN(date))card.createEl('p',{text:date.toLocaleDateString()});}
+    if(note.date){const date=parseDate(note.date);if(!isNaN(date))card.createEl('p',{text:date.toLocaleDateString()});}
     card.createEl('p',{text:'The summary of this note could not be written. '+note.message});
     open.onclick=async()=>{
       const file=this.app.vault.getAbstractFileByPath(note.path);
@@ -422,7 +425,7 @@ class HomeView extends ItemView {
     card.createEl('p',{text:recording.message});
     for(const problem of recording.field_problems||[])card.createEl('p',{text:'Details: the '+JSON.stringify(problem.field)+' field '+problem.reason+'.'});
     if(recording.field_problems_unavailable)card.createEl('p',{text:'Details: the specific field was not recorded. Retry to check the note again.'});
-    if(recording.retry_after){const date=new Date(recording.retry_after);if(!isNaN(date))card.createEl('p',{text:'Next attempt after '+date.toLocaleString()+'.'});}
+    if(recording.retry_after){const date=parseDate(recording.retry_after);if(!isNaN(date))card.createEl('p',{text:'Next attempt after '+date.toLocaleString()+'.'});}
     if(recording.can_retry){
       const button=card.createEl('button',{text:'Retry'}), feedback=card.createEl('p');
       button.onclick=async()=>{button.disabled=true;feedback.setText('Queuing retry…');
@@ -476,7 +479,7 @@ const NOTES_POLL_MS=15000;
 const NOTES_BUSY_POLL_MS=4000;
 // A time as the owner reads it: just the time for today, with the day for any other.
 const when=value=>{
-  const date=value&&new Date(value);if(!date||isNaN(date))return '';
+  const date=value&&parseDate(value);if(!date||isNaN(date))return '';
   const today=date.toDateString()===new Date().toDateString();
   return date.toLocaleString([],today?{timeStyle:'short'}:{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
 };
@@ -657,7 +660,7 @@ class NotesView extends ItemView {
       if(!file){this.say(note.id,'That note is not in this vault yet. Wait for sync, then refresh.',true);return;}
       await this.app.workspace.getLeaf(false).openFile(file);
     };
-    const day=note.date&&new Date(note.date);
+    const day=note.date&&parseDate(note.date);
     if(day&&!isNaN(day))head.createEl('span',{text:day.toLocaleDateString([],{month:'short',day:'numeric'}),cls:'coppermind-hint'});
     if(note.filing?.problem){
       card.createEl('p',{text:note.filing.problem,cls:'coppermind-notice'});
@@ -828,7 +831,7 @@ function showError(el,status,e){
   if(e.details){const more=el.createEl('details');more.createEl('summary',{text:'Details for support'});more.createEl('p',{text:e.details});}
 }
 const PAIR_SECRET='coppermind-companion';
-const PAIR_HELP='In Coppermind Admin open Obsidian Sync, press Pair companion on this device\'s line, and type the six-digit code it shows.';
+const PAIR_HELP='In Coppermind Admin, open "Add the companion to Obsidian". It shows the six-digit code to type here.';
 class PairModal extends Modal {
   constructor(app,plugin,done){super(app);this.plugin=plugin;this.done=done;}
   onOpen(){

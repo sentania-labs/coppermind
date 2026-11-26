@@ -27,8 +27,8 @@ HOME_LEDE = (
 PLUGIN = Path(__file__).parent.parent / "obsidian_plugin"
 PLUGIN_FILES = ("main.js", "manifest.json", "styles.css")
 COMPANION_LEDE = (
-    "The companion is a small add-on for Obsidian. With it you review notes, see what needs "
-    "you and hand in recordings without opening Admin."
+    "The companion is a small add-on for Obsidian. With it you review notes and see what "
+    "needs you without opening Admin."
 )
 OBSIDIAN_STEPS = (
     "On your computer or phone open Obsidian, then Settings, then Community plugins, and "

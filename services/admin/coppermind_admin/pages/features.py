@@ -1135,8 +1135,9 @@ minutes. Pick more only if your recordings run for several hours.</div></div>
                 f"The {plural(recordings, 'recording that was', 'recordings that were')} "
                 f"waiting {'is' if recordings == 1 else 'are'} being written up now."
                 if recordings
-                else "To try it, record with the companion in Obsidian or add a recording "
-                "under " + ui.a("Recordings and imports", "/admin/incoming") + "."
+                else "To try it, add a recording under "
+                + ui.a("Recordings and imports", "/admin/incoming")
+                + "."
             )
             + await paused_note(ctx, "transcription"),
         )

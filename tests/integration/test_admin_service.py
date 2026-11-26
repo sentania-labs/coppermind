@@ -520,6 +520,31 @@ async def test_turning_a_feature_on_for_the_first_time_is_not_paused(store, monk
     assert store.context.config().assignments["transcription"].paused is False
 
 
+async def test_turning_transcription_on_with_one_service_sets_the_write_up_to_use_it(
+    store, monkeypatch
+):
+    """Bug 9: the write-up was left on "Choose a service" with an empty model."""
+    _answers(
+        store,
+        monkeypatch,
+        {"One": {"text": TEXT, "speech": SPEECH}, "Two": {"text": TEXT, "speech": SPEECH}},
+    )
+    one = await _add(store, "One")
+    await store.admin.act("transcription-save", {"connection": one, "wait_s": 3600})
+    writeup = (await store.admin.features.writeup_settings())["assignment"]
+    assert (writeup["connection"], writeup["model"], writeup["enabled"]) == (one, "m", True)
+
+    # A write-up the owner already pointed somewhere is left alone, and so is a choice
+    # between several services.
+    two = await _add(store, "Two")
+    await store.admin.features.writeup_save({"connection": two, "model": "m"})
+    await store.admin.act("transcription-save", {"connection": one, "wait_s": 3600})
+    assert store.context.config().assignments["writeup"].connection == two
+    await store.admin.features.writeup_save({"connection": "", "model": ""})
+    await store.admin.act("transcription-save", {"connection": one, "wait_s": 3600})
+    assert store.context.config().assignments["writeup"].connection == ""
+
+
 async def test_turning_suggestions_on_again_does_not_send_what_arrived_while_it_was_off(
     store, monkeypatch
 ):

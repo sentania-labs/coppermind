@@ -312,7 +312,7 @@ def setup_steps(view: dict[str, Any]) -> list[Step]:
             "companion",
             "Add the companion to Obsidian",
             bool(view["companion"]["paired"]),
-            "So you can review notes and hand in recordings from inside Obsidian.",
+            "So you can review notes from inside Obsidian.",
             "Connected.",
             "/admin/setup/companion",
             needed=True,

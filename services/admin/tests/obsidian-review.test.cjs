@@ -73,6 +73,16 @@ test('a suggested meeting can be changed before confirming',async()=>{
   assert.equal(JSON.parse(request.body).event_id,'b');
 });
 
+test('the only meeting that could match can be chosen on the note, and one already chosen is not asked again',async()=>{
+  const meeting={calendar_hash:'calendar',suggested_event_id:null,selected_event_id:null,candidates:[{event_id:'a',title:'Pipeline review',people:[{name:'Alex'}]}]};
+  const f=await fixture(undefined,{recording_meeting:meeting});
+  assert.ok(f.view.contentEl.all().some(e=>e.text==='Which meeting was this?'));
+  await f.view.contentEl.all().find(e=>e.text==='Use selected meeting').onclick();
+  assert.equal(JSON.parse(f.requests.find(r=>r.url.endsWith('/recording-meeting')).body).event_id,'a');
+  const chosen=await fixture(undefined,{recording_meeting:{...meeting,selected_event_id:'a'}});
+  assert.ok(!chosen.view.contentEl.all().some(e=>e.text==='Which meeting was this?'));
+});
+
 test('merging requires a confirmation and uses the checked destination and summary',async()=>{
   const raw='---\nid: test-note\nreviewed: false\n---\nHuman prose.\n';
   const digest='sha256:'+Buffer.from(await webcrypto.subtle.digest('SHA-256',Buffer.from(raw))).toString('hex');
@@ -1169,4 +1179,21 @@ test('Try again that fails says why on the row and offers it again',async()=>{
 test('a reviewed note that has not failed shows no filing row',async()=>{
   const f=await notesScreen([reviewNote('n1','Planning')]);
   assert.ok(!textsOf(f.view).includes('Try again'));
+});
+
+test('a note dated with a day only shows that day, not the one before',async()=>{
+  const was=process.env.TZ;process.env.TZ='America/Chicago';
+  try{
+    const f=await notesScreen([reviewNote('n1','Hallway chat',{date:'2026-11-26'})]);
+    const day=f.view.contentEl.all().find(e=>e.cls==='coppermind-hint'&&/^[A-Z][a-z]{2} \d+$/.test(e.text||''));
+    assert.equal(day.text,'Nov 26');
+  }finally{if(was===undefined)delete process.env.TZ;else process.env.TZ=was;}
+});
+
+test('the pairing dialog points to the page that shows the code',async()=>{
+  const f=await fixture();
+  f.plugin.commands['pair-device'].callback();
+  const text=f.modals.at(-1).contentEl.all().filter(e=>e.tag==='p').map(e=>e.text).join(' ');
+  assert.match(text,/Add the companion to Obsidian/);
+  assert.doesNotMatch(text,/Obsidian Sync|Pair companion/);
 });

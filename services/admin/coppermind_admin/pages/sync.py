@@ -452,8 +452,8 @@ aria-label="Name for this server" autofocus>{ui.submit("Save", busy="Saving…")
             if not companions:
                 listed += ui.item(
                     f"{shown} {ui.badge('', 'No companion')}",
-                    last + " Notes sync to it, but it cannot review notes or hand in "
-                    "recordings until the companion is paired.",
+                    last + " Notes sync to it, but it cannot review notes until the companion "
+                    "is paired.",
                     ui.btn("Pair companion", "/admin/apps/pair/code", "", {"from": "sync"}),
                 )
         if not listed:
@@ -539,8 +539,8 @@ aria-label="Name for this server" autofocus>{ui.submit("Save", busy="Saving…")
             if app:
                 dialog = ui.dialog(
                     f"Unpair the companion on {e(app['device'])}?",
-                    f"The companion on {e(app['device'])} can no longer review notes or hand in "
-                    "recordings. It stops at once. Notes keep syncing to the device until you "
+                    f"The companion on {e(app['device'])} can no longer review notes. It stops at "
+                    "once. Notes keep syncing to the device until you "
                     "sign it out in your Obsidian account. You can pair it again later.",
                     "/admin/sync/unpair",
                     "Unpair companion",

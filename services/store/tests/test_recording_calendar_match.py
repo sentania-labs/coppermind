@@ -59,6 +59,14 @@ CALENDAR = [
         "ATTENDEE;CN=Casey;PARTSTAT=ACCEPTED:mailto:casey@example.com",
     ),
     timed("hold-b", "Hold B", "20261124", "0900", "1000"),
+    timed(
+        "pipeline",
+        "Pipeline review",
+        "20261125",
+        "1000",
+        "1100",
+        "ATTENDEE;CN=Priya Raman;PARTSTAT=ACCEPTED:mailto:priya@example.com",
+    ),
 ]
 # Years of unrelated history, like a real export.
 CALENDAR += [
@@ -94,11 +102,11 @@ def job(captured_at, title="Meeting: Recorder title", frontmatter=None):
     )
 
 
-async def resolve(context, captured_at, **kwargs):
+async def resolve(context, captured_at, transcript="A greeting.", **kwargs):
     context.calendar_candidates = lambda note, d=False: ContextService.calendar_candidates(
         context, note, d
     )
-    return await resolve_title(context, job(captured_at, **kwargs), "A greeting.")
+    return await resolve_title(context, job(captured_at, **kwargs), transcript)
 
 
 @pytest.mark.parametrize(
@@ -107,16 +115,33 @@ async def resolve(context, captured_at, **kwargs):
         ("2026-11-19T08:01:00-06:00", "Customer sync"),  # a minute late
         ("2026-11-19T14:17:00-06:00", "Weekly customer meeting"),  # joined 17 minutes late
         ("2026-11-26T14:05:00-06:00", "Weekly customer meeting"),  # a later occurrence
-        ("2026-11-20T10:35:00-06:00", "Dentist"),  # a personal appointment
         ("2026-11-19T07:55:00-06:00", "Customer sync"),  # a few minutes early
         ("2026-11-20T02:05:00+00:00", "Evening review"),  # sent in UTC, local evening before
         ("2026-11-19T08:01:00", "Customer sync"),  # no offset: read in the lab's zone
     ],
 )
 async def test_recording_matches_its_event(context, captured_at, title):
-    resolved, evidence = await resolve(context, captured_at)
+    resolved, evidence = await resolve(context, captured_at, f"Welcome to the {title}.")
     assert evidence["matched"], evidence
     assert resolved.endswith(" " + title)
+
+
+async def test_the_only_meeting_at_that_time_is_not_enough(context):
+    """Bug 10: a call that is not on the calendar was retitled to the one meeting then."""
+    resolved, evidence = await resolve(
+        context, "2026-11-25T10:05:00-06:00", "Thanks for taking the partner call."
+    )
+    assert not evidence["matched"]
+    assert "not named in the recording" in evidence["reason"]
+    assert resolved.endswith(" Recorder title")
+
+
+async def test_the_only_meeting_counts_when_the_recording_names_an_attendee(context):
+    resolved, evidence = await resolve(
+        context, "2026-11-25T10:05:00-06:00", "Priya Raman: the numbers look right."
+    )
+    assert evidence["matched"], evidence
+    assert resolved.endswith(" Pipeline review")
 
 
 @pytest.mark.parametrize(
