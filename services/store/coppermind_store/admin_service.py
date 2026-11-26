@@ -31,6 +31,7 @@ from coppermind.api_keys import (
 from coppermind.atomicio import atomic_write_bytes, atomic_write_text
 from coppermind.companion import fingerprint
 from coppermind.context_config import ContextConfig
+from coppermind.logging import get_logger
 from coppermind.naming import sanitize_folder
 from coppermind.settings import ProductSettings
 from coppermind.statefiles import RevisionConflict
@@ -69,6 +70,8 @@ FOLDER_SETTINGS = {
     "journal": "journal_folder",
     "trash": "trash_folder",
 }
+
+log = get_logger("coppermind-store")
 
 
 def now() -> str:
@@ -240,6 +243,9 @@ class AdminService:
         folder = self.store.notes_root / PLUGIN_FOLDER
         for name in PLUGIN_FILES:
             data = base64.b64decode(files[name], validate=True)
+            with contextlib.suppress(OSError):
+                if (folder / name).read_bytes() == data:
+                    continue
             await asyncio.to_thread(atomic_write_bytes, folder / name, data)
         settings_file = folder / "data.json"
         saved: dict[str, Any] = {}
@@ -251,6 +257,38 @@ class AdminService:
                 atomic_write_text, settings_file, json.dumps(saved, indent=2) + "\n"
             )
         return {"placed": True}
+
+    async def companion_autoupdate(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """At start-up, replace a companion that is in the vault but out of date.
+
+        Uses the same install as the Update button. It never adds a companion where none
+        exists, leaves one that already matches alone, and a failure is recorded, not raised.
+        """
+        if not self.store.control.settings().sync.companion_auto_update:
+            return {"state": "off"}
+        try:
+            wanted = fingerprint(
+                {name: base64.b64decode(payload["files"][name]) for name in PLUGIN_FILES}
+            )
+            new = str(json.loads(base64.b64decode(payload["files"]["manifest.json"]))["version"])
+            async with self.context.lock:
+                if not await asyncio.to_thread(self.companion_placed):
+                    return {"state": "absent"}
+                old = await asyncio.to_thread(self.companion_version)
+                if old and await asyncio.to_thread(self.companion_fingerprint) == wanted:
+                    return {"state": "current"}
+                await self.companion_install(payload)
+                self.context.write(
+                    "companion-updated",
+                    {"from": old or "", "to": new, "at": now(), "dismissed": False},
+                )
+        except Exception as exc:  # noqa: BLE001 - a failed update leaves the Update button working
+            log.warning("companion auto-update failed", error=str(exc))
+            with contextlib.suppress(Exception):
+                self.context.write("companion-update-failed", {"error": str(exc), "at": now()})
+            return {"state": "failed"}
+        log.info("companion updated automatically", old=old or "", new=new)
+        return {"state": "updated", "from": old or "", "to": new}
 
     def _pairing(self) -> dict[str, Any]:
         return self.context.read("pairing", {})
@@ -434,6 +472,19 @@ class AdminService:
     def _notices(self, problems: list[Any]) -> list[dict[str, Any]]:
         dismissed = set(self.context.read("admin-dismissed", []))
         notices = []
+        updated = self.context.read("companion-updated", {})
+        if updated and not updated.get("dismissed"):
+            notices.append(
+                {
+                    "id": "companion-updated",
+                    "kind": "companion_updated",
+                    "note_id": "",
+                    "reference": "",
+                    "reason": "",
+                    "from": updated.get("from", ""),
+                    "to": updated.get("to", ""),
+                }
+            )
         for problem in problems:
             if problem.kind not in NOTICE_KINDS:
                 continue
@@ -455,6 +506,10 @@ class AdminService:
 
     async def notice_dismiss(self, payload: dict[str, Any]) -> dict[str, Any]:
         key = str(payload["id"])
+        if key == "companion-updated":
+            updated = self.context.read("companion-updated", {})
+            self.context.write("companion-updated", {**updated, "dismissed": True})
+            return {}
         problems = await self.store.get_problems()
         target = next((n for n in self._notices(problems) if n["id"] == key), None)
         if target and target["kind"] == "returned_note" and target["note_id"]:
@@ -864,6 +919,7 @@ class AdminService:
             "apps": plain(_wrap(self.apps)),
             "key-used": self.key_used,
             "companion-install": self.companion_install,
+            "companion-autoupdate": self.companion_autoupdate,
             "pairing-start": self.pairing_start,
             "pairing-state": self.pairing_state,
             "pair-exchange": self.pair_exchange,

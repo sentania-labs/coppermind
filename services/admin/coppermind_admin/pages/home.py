@@ -203,6 +203,14 @@ def notice_text(notice: dict[str, Any]) -> tuple[str, str]:
             f'"{reference}" was moved in Obsidian, and Coppermind put it back',
             e(notice["reason"]) + " Nothing for you to do.",
         )
+    if notice["kind"] == "companion_updated":
+        old = notice.get("from")
+        return (
+            "The companion was updated"
+            + (f" from {e(old)}" if old else "")
+            + f" to {e(notice.get('to', ''))}",
+            "Reload Obsidian on each device to pick it up. Paired devices stay paired.",
+        )
     if notice["kind"] == "folder_kept":
         return ("An old month folder was kept", e(notice["reason"]))
     if notice["kind"] == "reserved_type":
@@ -326,7 +334,7 @@ def router(wiring: Wiring) -> APIRouter:
             await ctx.act("notice-dismiss", {"id": form.get("id", "")})
         except StoreError as exc:
             return await ctx.refused(exc, "/admin")
-        return ctx.go("/admin")
+        return ctx.go(ctx.back("/admin"))
 
     # -- setup guide ---------------------------------------------------------------------
 
@@ -492,8 +500,19 @@ def router(wiring: Wiring) -> APIRouter:
             if placed and not carried
             else ""
         )
+        updated = "".join(
+            ui.banner("ok", ". ".join(notice_text(n)))
+            + ui.btn(
+                "OK, got it",
+                "/admin/notices/dismiss",
+                "",
+                {"id": n["id"], "back": "/admin/setup/companion"},
+            )
+            for n in view["notices"]
+            if n["kind"] == "companion_updated"
+        )
         body = f"""{ui.head("Add the companion to Obsidian", COMPANION_LEDE, back)}
-<div class="stack">{setup_strip(view, "companion")}{ctx.flash()}{need_sync}{not_carried}
+<div class="stack">{setup_strip(view, "companion")}{ctx.flash()}{updated}{need_sync}{not_carried}
 {
             ui.card(f'''<ol class="steps-list stack">
 <li><b>Put the companion in your vault.</b> {first}</li>
@@ -542,7 +561,11 @@ def router(wiring: Wiring) -> APIRouter:
     return routes
 
 
+def place_payload(wiring: Wiring) -> dict[str, Any]:
+    files = {name: base64.b64encode(data).decode() for name, data in companion_files().items()}
+    return {"files": files, "url": wiring.public_url}
+
+
 async def place_companion(ctx: Ctx, wiring: Wiring) -> None:
     """Hand the companion's files to the store, which writes them into the notes filesystem."""
-    files = {name: base64.b64encode(data).decode() for name, data in companion_files().items()}
-    await ctx.act("companion-install", {"files": files, "url": wiring.public_url})
+    await ctx.act("companion-install", place_payload(wiring))
