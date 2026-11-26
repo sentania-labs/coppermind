@@ -177,6 +177,10 @@ class VoiceStore:
             )
             self._save(data)
 
+    def recording_count(self) -> int:
+        """How many recordings have a voice appearance on file, named or not."""
+        return len({a["note_id"] for a in self._load().get("assignments", [])})
+
     def unknown_for_note(self, note_id: str, source_id: str | None = None) -> list[dict[str, str]]:
         return [
             {"id": identity, "name": item["name"]}

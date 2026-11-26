@@ -1515,6 +1515,11 @@ class Recordings:
                     elif job.generation_mode == "markdown-v1":
                         voice_map[label] = f"Unknown voice {len(voice_map) + 1} (recording-local)"
                 self.context.write("voice-mappings/" + job.id, voice_map)
+                # Who each recognised name is, so the note can link their dossier.
+                self.context.write(
+                    "voice-basis/" + job.id,
+                    {named[label]: named_ids[label] for label in named if label in voice_map},
+                )
             if job.generation_mode == "markdown-v1" and not voice_map:
                 voice_map = {
                     label: f"Unknown voice {i} (recording-local)"

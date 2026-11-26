@@ -6,6 +6,7 @@ import asyncio
 import io
 import json
 import os
+import re
 import wave
 from pathlib import Path
 
@@ -74,9 +75,16 @@ async def test_finished_body_without_suggestions_then_review(store):
         note = await store.get_note(job.note_id)
         # Speakers first, then the top line; no title heading; one references block last.
         assert "# 2026-11-09 Standup" not in note.body
-        assert note.body.startswith(
-            "## Speakers\n\n- Alex Example\n- Unknown voice 1\n\n## Top line"
+        speakers = note.body.partition("## Top line")[0]
+        assert speakers.startswith("## Speakers\n\n")
+        assert re.search(
+            r"^- (\[\[[^\]|]+\|)?Alex Example(\]\])?, 3 s. Identified by voice \(strong match\)\.$",
+            speakers,
+            re.M,
         )
+        assert "- Unknown voice 1, 4 s. Not identified yet.\n" in speakers
+        assert "  - [ ] This is me\n  - Name this voice:" in speakers
+        assert speakers.index("Alex Example") < speakers.index("Unknown voice 1")
         assert "Alex Example and Unknown voice 1" in note.body
         references = note.body.partition("## References")[2]
         assert note.body.count("## References") == 1 and "## Artifacts" not in note.body

@@ -53,6 +53,14 @@ class ReviewView extends ItemView {
       };}
       if(data.note.frontmatter[data.roles.reviewed_key]===true){
         el.createEl('p',{text:data.review_problem?'Review needs attention: '+data.review_problem:'Reviewed. Filing and indexing finish in the background.'});
+        // The note moves folders once filed, so say here what became of each name typed in it.
+        const outcomes=data.speaker_naming||[];
+        const waiting=(data.named_in_note||[]).filter(t=>!outcomes.some(o=>o.label===t.label));
+        if(outcomes.length||waiting.length){
+          const box=el.createDiv({cls:'coppermind-card'});box.createEl('h3',{text:'Speaker names'});
+          for(const o of outcomes)box.createEl('p',{text:o.status==='named'?o.label+' is now '+o.name+(o.created?' (added to People).':'.'):o.label+' was not named as '+o.typed+': '+o.reason});
+          for(const t of waiting)box.createEl('p',{text:'The name you typed for '+t.label+' ('+t.name+') is applied about 30 seconds after the note is marked reviewed. Refresh to see the result.'});
+        }
         if(data.calendar_update){
           const update=data.calendar_update;
           el.createEl('p',{text:update.message});
@@ -149,11 +157,14 @@ class ReviewView extends ItemView {
         preview.empty();preview.createEl('h3',{text:'What will change'});
         if(summary&&ready)preview.createEl('p',{text:Object.values(summary).some(v=>v.trim())?'The kept summary sections will be appended to your note. Your existing text stays intact.':'All summary sections dropped. No summary text will be added.'});
         const changes=cards.filter(c=>c.active()&&c.chooser.value);
-        if(!changes.length)preview.createEl('p',{text:'No speaker names selected.'});
+        const typed=Object.entries(typedNames);
+        if(!changes.length&&!typed.length)preview.createEl('p',{text:data.speakers_in_note?'No voice has been named in the note.':'No speaker names selected.'});
+        for(const [label,name] of typed)preview.createEl('p',{text:label+' → '+name+' (typed in the note)'});
+        if(typed.length)preview.createEl('p',{text:'Marking the note reviewed, with or without the other changes here, names these voices in this note, in other notes that used them, and in recordings to come.'});
         for(const c of changes){const person=c.people.find(p=>p.id===c.chooser.value);if(person){preview.createEl('p',{text:c.label+' → '+person.name});const count=manual?.voice_appearances?.[c.label];if(count!==undefined)preview.createEl('p',{text:'Also name this voice in '+Math.max(0,count-1)+' earlier recordings. Transcripts and unchanged generated labels will change; your own writing in reviewed notes stays intact.'});}}
         const attendeesNotice=cards.length&&data.speaker_attendees_notice;
         if(attendeesNotice)preview.createEl('p',{text:data.speaker_attendees_notice});
-        preview.createEl('p',{text:attendeesNotice?'Completing review updates transcript labels for selected people. Unnamed speakers stay as they are.':'Completing review updates transcript labels, note attendees and links to selected people. Unnamed speakers stay as they are.'});
+        if(!data.speakers_in_note||changes.length||typed.length)preview.createEl('p',{text:attendeesNotice?'Completing review updates transcript labels for selected people. Unnamed speakers stay as they are.':'Completing review updates transcript labels, note attendees and links to selected people. Unnamed speakers stay as they are.'});
       };
       const makeChooser=(card,label,people,initial,onSelect,disabled,voice=[])=>{
         const chooser=card.createEl('select');
@@ -212,9 +223,12 @@ class ReviewView extends ItemView {
         const agreed=!!voiceKey&&voiceKey===modelKey;
         return {matches,strong,conflict,agreed,initial:conflict?'':voiceKey?(agreed?suggestion.value:strong[0].id):suggestion?.value||''};
       };
+      // Names typed in the note's Speakers section are applied when review finishes; do not ask twice.
+      const typedNames=Object.fromEntries((data.named_in_note||[]).map(t=>[t.label,t.name]));
+      if(data.speakers_in_note)el.createEl('p',{text:'Name a voice in the Speakers section at the top of the note: type the name after "Name this voice:", then mark the note reviewed here.',cls:'coppermind-notice'});
       for(const s of data.suggestions){
         if(s.kind==='event'&&meeting?.candidates?.length>1)continue;
-        if(s.kind==='speaker'&&!ready)continue;
+        if(s.kind==='speaker'&&(!ready||typedNames[s.field]||data.speakers_in_note))continue;
         const card=el.createDiv({cls:'coppermind-card'});let toggle;
         const voice=s.kind==='speaker'?voicePlan(s.field,s):null;
         const initial=s.kind==='speaker'&&ready&&!voice.conflict&&!!voice.initial&&(voice.strong.length===1||s.confidence>=0.8);
@@ -244,7 +258,7 @@ class ReviewView extends ItemView {
       }
       const proposed=new Set(data.suggestions.filter(s=>s.kind==='speaker'&&ready).map(s=>s.field));
       for(const label of manual?.speakers||[]){
-        if(proposed.has(label))continue;
+        if(proposed.has(label)||typedNames[label]||data.speakers_in_note)continue;
         const card=el.createDiv({cls:'coppermind-card'});card.createEl('h3',{text:label});
         if(label.startsWith('Unknown voice '))card.createEl('p',{text:'This voice will be remembered across recordings.'});
         if(manual?.voice_unavailable?.includes(label))card.createEl('p',{text:'There was too little speech to recognise this voice in later recordings. A name chosen here applies only to this recording.'});
@@ -279,7 +293,7 @@ class ReviewView extends ItemView {
       };
       if(data.recording_generation_mode!=='markdown-v1'&&(manual||summary)&&['queued','running'].includes(data.state))el.createEl('p',{text:'The summary is still being written. Marking reviewed now files the note without it.',cls:'coppermind-notice'});
       const apply=el.createEl('button',{text:'Apply kept suggestions & mark reviewed',cls:'mod-cta'});apply.disabled=!synced;apply.onclick=()=>finish(true);
-      const without=el.createEl('button',{text:'Mark reviewed without changes'});without.disabled=!synced;without.onclick=()=>finish(false);
+      const without=el.createEl('button',{text:Object.keys(typedNames).length?'Mark reviewed, applying only the names typed in the note':'Mark reviewed without changes'});without.disabled=!synced;without.onclick=()=>finish(false);
       const refresh=el.createEl('button',{text:'Request fresh suggestions'});refresh.disabled=!synced;refresh.onclick=async()=>{
         try{await this.plugin.call('/v1/notes/'+encodeURIComponent(id)+'/suggestions','POST',{});new Notice('Suggestions queued. Refresh when processing finishes.');}catch(e){new Notice(e.message);}
       };

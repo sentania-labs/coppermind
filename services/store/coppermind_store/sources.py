@@ -49,7 +49,7 @@ from coppermind.db.models import (
 from coppermind.db.session import transaction
 from coppermind.ids import is_valid_id, new_id
 from coppermind.naming import sanitize_folder, unique_stem
-from coppermind.recording_writeup import SOURCE_LINK_TOKEN
+from coppermind.recording_writeup import SOURCE_LINK_TOKEN, SOURCE_TARGET_TOKEN
 from coppermind.schema import FrontmatterSchema, note_date, note_date_mismatch
 from coppermind.settings import ProductSettings
 from coppermind.statefiles import RevisionConflict
@@ -327,7 +327,7 @@ async def _ingest_new(
             # and carries no title heading: the file name and `title` already say it.
             body_with_link = trimmed_body.replace(
                 SOURCE_LINK_TOKEN, f"[[{projection_link_target}]]"
-            )
+            ).replace(SOURCE_TARGET_TOKEN, projection_link_target)
         else:
             body_with_link = (
                 f"# {note_request.title}\n\n[[{projection_link_target}]]\n{trimmed_body}"

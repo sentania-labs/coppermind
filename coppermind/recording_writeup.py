@@ -158,6 +158,15 @@ with timestamps. Describe a second meeting separately in the same note, with tim
 and its own commitments; do not blend its decisions into the first meeting.
 Do not write a Speakers section, a Sources or References section, or a line about calendar
 matching; the application adds those. The top line is one or two sentences.
+`speakers` in the evidence says, for each label, whether that voice is identified (a person
+the owner or a voice match has confirmed) and whether it is the owner, whose label is also
+`owner_label` when the owner was heard. The owner is "I". Assign a commitment to a named
+person only when that speaker is identified. A commitment from a voice that is not
+identified stays with its exact Unknown voice label and ends with "(speaker not identified)".
+Never put commitments from different voices under one label for convenience, and never
+write a person's name next to an Unknown voice label. A name that is only said in the
+conversation ("thanks, Tom") may be written as "(possibly Tom, from the conversation)" and
+never as fact. A person who is mentioned but did not speak is not a speaker and did not attend.
 A commitment is only something a speaker said they will do. Ideas, offers and "we could"
 belong under a "Possible follow-ups" heading, never among commitments. Never add a
 duration, deadline, owner, number or version that the transcript does not contain.
@@ -267,6 +276,8 @@ def failure_message(rule: str, detail: str = "") -> str:
 # What the code guarantees about the finished note, whatever the model returns.
 
 SOURCE_LINK_TOKEN = "<<coppermind-source-transcript-link>>"
+# The page the transcript link points at, for a link with its own text: [[<target>|00:03:12]].
+SOURCE_TARGET_TOKEN = "<<coppermind-source-transcript-target>>"
 REFERENCES_HEADING = "## References"
 
 # Sections the application writes itself. A copy the model writes is dropped.
@@ -295,12 +306,13 @@ def split_sections(body: str) -> tuple[str, list[tuple[str, str]]]:
     )
 
 
-def compose_body(body: str, speakers: list[str], boundaries: str | None) -> str:
+def compose_body(body: str, speakers: str, boundaries: str | None) -> str:
     """The note body in the order the owner reads it: who was heard, the top line, the
     boundary notice only when there is one, then the summary sections. No title, and no
-    section the application writes elsewhere. `boundaries` is the boundary section to show
-    when something was trimmed or a second meeting was found, and None when the recording
-    was clean, however the model described it."""
+    section the application writes elsewhere. `speakers` is the finished Speakers section
+    (see `coppermind.speakers_section`), or empty. `boundaries` is the boundary section to
+    show when something was trimmed or a second meeting was found, and None when the
+    recording was clean, however the model described it."""
     preamble, sections = split_sections(body)
     top = next((text for heading, text in sections if _TOP_LINE.match(heading)), None)
     model_boundaries = next((t for h, t in sections if _BOUNDARIES.match(h)), None)
@@ -311,8 +323,8 @@ def compose_body(body: str, speakers: list[str], boundaries: str | None) -> str:
     ]
     shown = (model_boundaries or boundaries) if boundaries is not None else None
     parts: list[str] = []
-    if speakers:
-        parts.append("## Speakers\n\n" + "\n".join(f"- {name}" for name in speakers))
+    if speakers.strip():
+        parts.append(speakers.strip())
     if top is not None:
         parts.append(top)
         if shown:
