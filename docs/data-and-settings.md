@@ -223,7 +223,9 @@ exactly a default an earlier release shipped, follows the current default; edite
 are kept. The same page chooses the writer service, model, enabled state,
 input character limit ("Most the model reads at once"; longer transcripts are
 written up in parts), silence wait and response token budget.
-The initial assignment copies the configured legacy summary model and limits.
+The initial assignment copies the configured legacy summary model and limits. When
+transcription is first turned on with exactly one AI service and no write-up service chosen yet,
+the write-up is set to that service and its best text model in the same step.
 Locked evidence rules and the structured boundary response contract are shown read-only.
 
 `recording-writeups/<recording id>.json` retains the exact accepted response, Markdown,

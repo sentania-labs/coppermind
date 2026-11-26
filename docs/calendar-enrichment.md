@@ -202,8 +202,8 @@ the supplied title and local date), and saves the accepted document before filin
 Without a match, a leading date the supplied title already carries (`YYYY-MM-DD`, `MM-DD`,
 `MM/DD`, `M-D`) and a bare `Meeting:` prefix are dropped, so the date is not doubled. The
 reference block (below) says whether a calendar event was matched and, when none was,
-why (no capture time, lookup failed, nothing overlapped the start, or several did and none
-stood out).
+why (no capture time, lookup failed, nothing overlapped the start, one did but the recording
+does not name it, or several did and none stood out).
 The note arrives in Review with `reviewed: false`. Suggestions can be off; frontmatter
 review runs separately and never accepts or appends the generated body.
 
