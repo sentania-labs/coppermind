@@ -141,7 +141,7 @@ removed here or on its device's line under {ui.a("Obsidian Sync", "/admin/sync")
             "Its key stops working at once. Nothing it already did is undone. To let it back "
             "in, connect it again with a new key."
             if not app["companion"]
-            else "This companion can no longer review notes or hand in recordings. It stops at "
+            else "This companion can no longer review notes. It stops at "
             "once. To let it back in, pair the device again.",
             f"{app_path(app['id'])}/remove",
             "Remove access" if not app["companion"] else "Unpair companion",

@@ -395,6 +395,8 @@ def unresolved_reason(captured: bool, found: int, error: Exception | None) -> st
         return f"the calendar lookup failed ({type(error).__name__}); review can try again"
     if found == 0:
         return "no calendar event overlaps the recording's start"
+    if found == 1:
+        return "the one calendar event at the recording's start is not named in the recording"
     return f"{found} calendar events overlap the recording's start and none stood out"
 
 
@@ -422,7 +424,9 @@ async def resolve_title(context: Any, job: Any, transcript: str) -> tuple[str, d
         chosen = [event for event in events if event["event_id"] == linked] if linked else []
         if not chosen:
             if len(events) == 1:
-                chosen = events
+                # Only meeting on at that time is not evidence: a call that is not on the
+                # calendar must not take the title of the meeting that happened to be.
+                chosen = events if meeting_match.supported(events[0], transcript) else []
             else:
                 suggested = meeting_match.suggest(events, transcript)
                 chosen = [event for event in events if event["event_id"] == suggested]

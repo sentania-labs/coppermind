@@ -477,8 +477,8 @@ hours {ui.submit("Save", busy="Saving…")} {ui.go("Cancel", "/admin/incoming")}
                 ui.card(
                     ui.empty(
                         "Nothing has come in yet",
-                        "Record with the companion in Obsidian, drop a file into "
-                        f'the "{e(folder)}" folder in your vault, or add one here.',
+                        f'Drop a file into the "{e(folder)}" folder in your vault, '
+                        "or add one here.",
                         add,
                     )
                 )

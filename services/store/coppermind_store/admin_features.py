@@ -571,8 +571,22 @@ class Features:
         wait_s = int(payload.get("wait_s", 3600))
         if wait_s not in WAITS_TRANSCRIPTION_S:
             raise ValueError("choose one of the listed waits")
+        from coppermind_store.recording_writeup import assignment as writeup_assignment
+
         async with self.context.lock:
             config = self.context.config()
+            # The write-up needs a service too. With one AI connection there is nothing to
+            # choose, so a first recording is written up without a second visit.
+            writeup = None
+            if (
+                len(config.connections) == 1
+                and service["text"]["ok"]
+                and not (
+                    config.assignments.get("writeup") or config.assignments["enrichment"]
+                ).connection
+            ):
+                writeup = writeup_assignment(self.context)
+                config = self.context.config()
             old = config.assignments.get("transcription") or FeatureAssignment()
             was = feature_state(
                 config.assignments.get("transcription"), self._service(old.connection)
@@ -588,6 +602,10 @@ class Features:
                 response_format=reply_format,
                 automatic_after=old.automatic_after,
             )
+            if writeup is not None and writeup.enabled:
+                config.assignments["writeup"] = writeup.model_copy(
+                    update={"connection": service["id"], "model": service["text"]["best"]}
+                )
             self.context.save_config(config)
         resumed = await self.services.resume(service["id"])
         return {"was": was, "service": service["name"], "resumed": resumed}

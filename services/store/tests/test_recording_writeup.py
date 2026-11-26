@@ -186,7 +186,7 @@ async def test_title_abstains_on_ambiguous_calendar(candidates, expected):
         frontmatter={},
         title="Uploaded recording",
     )
-    title, evidence = await resolve_title(context, job, "A greeting.")
+    title, evidence = await resolve_title(context, job, "Welcome to the Release review.")
     assert title == expected
     assert evidence["matched"] == (len(candidates) == 1)
 

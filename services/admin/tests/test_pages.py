@@ -74,6 +74,22 @@ def test_page_draws(admin, path, words):
         assert leak not in shown, f"{path} shows {leak!r}"
 
 
+def test_nothing_promises_recording_from_the_companion(admin):
+    """Bug 7: the companion reviews notes; it has no command to record or hand one in."""
+    client, _, store = admin
+    store.answers["incoming"] = {**VIEWS["incoming"], "items": []}
+    paths = [path for path, _ in PAGES] + ["/admin/incoming"]
+    for path in paths:
+        shown = " ".join(strip_tags(client.get(path).text).split())
+        assert "Record with the companion" not in shown, path
+        found = re.search(
+            r"companion(?:(?!Can:)[^.]){0,80}hand in recordings"
+            r"|hand in recordings[^.]{0,40}Obsidian",
+            shown,
+        )
+        assert not found, f"{path}: {found and found.group(0)}"
+
+
 def strip_tags(page: str) -> str:
     page = re.sub(r"<(script|style)\b.*?</\1>", "", page, flags=re.S)
     return re.sub(r"<[^>]+>", " ", page)

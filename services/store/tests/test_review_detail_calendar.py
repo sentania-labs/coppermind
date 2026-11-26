@@ -9,7 +9,9 @@ NOTE = "01HZ" + "0" * 22
 RECEIPT = {"state": "failed", "error": "The note was edited meanwhile.", "target_id": "target"}
 
 
-def _context(calendar_answers: bool, suggested_against: str | None = None):
+def _context(
+    calendar_answers: bool, suggested_against: str | None = None, stored: dict | None = None
+):
     note = SimpleNamespace(
         id=NOTE,
         body="# Call\n",
@@ -24,6 +26,7 @@ def _context(calendar_answers: bool, suggested_against: str | None = None):
     state: dict[str, Any] = {
         "calendar-followups": {NOTE: {"event_id": "event"}},
         "recording-merges/src": RECEIPT,
+        **(stored or {}),
     }
 
     async def get_note(_):
@@ -77,7 +80,12 @@ def _context(calendar_answers: bool, suggested_against: str | None = None):
     )
 
 
-async def _detail(monkeypatch, calendar_answers: bool, suggested_against: str | None = None):
+async def _detail(
+    monkeypatch,
+    calendar_answers: bool,
+    suggested_against: str | None = None,
+    stored: dict | None = None,
+):
     async def evidence(*_):
         return None
 
@@ -91,7 +99,7 @@ async def _detail(monkeypatch, calendar_answers: bool, suggested_against: str | 
         "coppermind_store.voice_store.VoiceStore",
         lambda _: SimpleNamespace(unknown_for_note=lambda _id: []),
     )
-    context = _context(calendar_answers, suggested_against)
+    context = _context(calendar_answers, suggested_against, stored)
     return await NoteLifecycle(context).detail({"note_id": NOTE})
 
 
@@ -135,3 +143,17 @@ async def test_suggestions_stay_current_when_the_calendar_confirms_them(monkeypa
 async def test_suggestions_are_stale_when_the_calendar_has_changed_since(monkeypatch):
     detail = await _detail(monkeypatch, calendar_answers=True, suggested_against="older")
     assert detail["stale"] is True
+
+
+@pytest.mark.asyncio
+async def test_the_meeting_the_recording_was_matched_to_on_evidence_is_reported(monkeypatch):
+    matched = {
+        "recording-writeups/rec": {"calendar": {"matched": True, "event": {"event_id": "event"}}}
+    }
+    unmatched = {"recording-writeups/rec": {"calendar": {"matched": False, "reason": "none"}}}
+    detail = await _detail(monkeypatch, calendar_answers=True, stored=matched)
+    assert detail["recording_meeting"]["matched_event_id"] == "event"
+    detail = await _detail(monkeypatch, calendar_answers=True, stored=unmatched)
+    assert detail["recording_meeting"]["matched_event_id"] is None
+    detail = await _detail(monkeypatch, calendar_answers=True)
+    assert detail["recording_meeting"]["matched_event_id"] is None
