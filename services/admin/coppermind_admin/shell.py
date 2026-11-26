@@ -89,15 +89,19 @@ def read_pins(text: str) -> dict[str, int]:
     return pins
 
 
-def store_client(request: Request, wiring: Wiring) -> HttpStoreClient:
+def app_store_client(app: Any, wiring: Wiring) -> HttpStoreClient:
     """The store client, built on first use so Admin starts without the store."""
-    client = getattr(request.app.state, "store", None)
+    client = getattr(app.state, "store", None)
     if client is None:
         client = HttpStoreClient(
             wiring.store_url, wiring.read_internal_token(), timeout=wiring.store_timeout_s
         )
-        request.app.state.store = client
+        app.state.store = client
     return client
+
+
+def store_client(request: Request, wiring: Wiring) -> HttpStoreClient:
+    return app_store_client(request.app, wiring)
 
 
 class Ctx:

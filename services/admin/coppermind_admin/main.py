@@ -8,6 +8,7 @@ every form that changes something carries a token bound to the signed-in session
 
 from __future__ import annotations
 
+import asyncio
 import html
 import re
 import secrets
@@ -39,7 +40,7 @@ from coppermind_admin.auth import (
     InvalidClaimCode,
     SignedSessions,
 )
-from coppermind_admin.shell import COOKIE, csrf_token, with_csrf
+from coppermind_admin.shell import COOKIE, app_store_client, csrf_token, with_csrf
 
 SERVICE = "coppermind-admin"
 PUBLIC = {"/admin/welcome", "/admin/signin", "/healthz", "/readyz"}
@@ -211,6 +212,31 @@ def signin_body(error: str, notice: str = "") -> str:
 <div>{forgot}</div>"""
 
 
+async def update_companion(app: FastAPI, wiring: Wiring) -> None:
+    """Hand the store the bundled companion once, so it replaces an out-of-date one.
+
+    The store decides: it does nothing when no companion is in the vault, when it is already
+    current, or when the owner has turned this off. A store that is not up yet is tried again.
+    """
+    from coppermind.store_protocol import StoreError
+    from coppermind_admin.pages.home import place_payload
+
+    for wait in (2, 5, 10, 30, 60, 120, 300):
+        await asyncio.sleep(wait)
+        try:
+            # Admin builds its store client on the first request, and a start-up with no
+            # visitor yet has none, so this builds it the same way a request would.
+            store = app_store_client(app, wiring)
+            answer = await store.admin_action("companion-autoupdate", place_payload(wiring))
+        except StoreError:
+            continue
+        except Exception as exc:  # noqa: BLE001 - never fatal; the Update button still works
+            log.warning("companion auto-update could not run", error=str(exc))
+            return
+        log.info("companion auto-update checked", state=answer.get("state", ""))
+        return
+
+
 def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = None) -> FastAPI:
     settings = wiring or Wiring()
     configure_logging(SERVICE, settings.log_level)
@@ -223,9 +249,14 @@ def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = N
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # Once per start, in the background: never holds up readiness or a request.
+        update = asyncio.create_task(update_companion(app, settings), name="companion-update")
         try:
             yield
         finally:
+            update.cancel()
+            with suppress(asyncio.CancelledError):
+                await update
             client = getattr(app.state, "store", None)
             if isinstance(client, HttpStoreClient):
                 await client.aclose()

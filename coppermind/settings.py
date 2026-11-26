@@ -285,6 +285,13 @@ class SyncSettings(BaseModel):
         default_factory=lambda: ["_Trash"],
         description="Folders excluded from syncing, as a JSON array.",
     )
+    companion_auto_update: bool = Field(
+        default=True,
+        description=(
+            "When Coppermind starts on a new version and the Obsidian companion is already in "
+            "the vault but out of date, replace it. Never adds a companion where none exists."
+        ),
+    )
     file_types: list[Literal["image", "audio", "video", "pdf", "unsupported"]] = Field(
         default=["image", "audio", "video", "pdf", "unsupported"],
         min_length=1,

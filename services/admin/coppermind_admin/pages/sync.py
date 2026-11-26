@@ -462,6 +462,7 @@ aria-label="Name for this server" autofocus>{ui.submit("Save", busy="Saving…")
                 "Open the vault in Obsidian on your phone or computer and change a note. It "
                 "shows here within a minute or two.",
             )
+        auto = ctx.settings().sync.companion_auto_update
         devices = ui.card(
             f'<p class="muted">Phones and computers that open the vault "{vault}". A device '
             f"shows here the first time it changes a note.</p>{listed}"
@@ -486,7 +487,24 @@ aria-label="Name for this server" autofocus>{ui.submit("Save", busy="Saving…")
                 {"again": "1", "back": "/admin/sync"},
                 busy="Adding…",
             )
-            + '</div><p class="lat-hint" style="margin-top:8px">To add a device, install '
+            + '</div><div class="item" style="margin-top:12px"><div class="item-b">'
+            + (
+                "Update the companion by itself when Coppermind starts on a new version. "
+                "It is <b>on</b>. Coppermind only replaces a companion that is already in "
+                "your vault and keeps its pairing and settings."
+                if auto
+                else "Updating the companion by itself is <b>off</b>. Use the buttons above "
+                "when an update is available."
+            )
+            + '</div><div class="item-a">'
+            + ui.btn(
+                "Turn off" if auto else "Turn on",
+                "/admin/sync/companion-auto",
+                "",
+                {"on": "" if auto else "1"},
+                busy="Saving…",
+            )
+            + '</div></div><p class="lat-hint" style="margin-top:8px">To add a device, install '
             "Obsidian on it and open the vault. A lost or sold device: unpair its companion "
             "here, which cuts it off from Coppermind. To stop it syncing the vault as well, "
             "sign it out in your Obsidian account. That part only Obsidian can do.</p>",
@@ -714,6 +732,26 @@ aria-label="Name for this server" autofocus>{ui.submit("Save", busy="Saving…")
             ctx.say("ok", said)
         except (OSError, ValueError, HelperRefused):
             ctx.say("bad", HELPER_DOWN)
+        return ctx.go(ctx.back("/admin/sync"))
+
+    @routes.post("/admin/sync/companion-auto", include_in_schema=False)
+    async def companion_auto(request: Request) -> Response:
+        ctx = Ctx(request, wiring)
+        form = await ctx.form()
+        on = form.get("on") == "1"
+        try:
+            ctx.save_settings(
+                lambda doc: doc.setdefault("sync", {}).update(companion_auto_update=on)
+            )
+            ctx.say(
+                "ok",
+                "Saved. Coppermind will update the companion in your vault when it starts on a "
+                "new version."
+                if on
+                else "Saved. Coppermind will leave the companion in your vault as it is.",
+            )
+        except (ValueError, RevisionConflict):
+            ctx.say("bad", "That could not be saved just now. Try again.")
         return ctx.go(ctx.back("/admin/sync"))
 
     @routes.post("/admin/sync/pause", include_in_schema=False)
