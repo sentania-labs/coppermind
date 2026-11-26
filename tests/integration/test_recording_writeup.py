@@ -255,7 +255,9 @@ async def test_new_generated_voice_lines_relabel_without_overwriting_owner_edits
 
         async def write_text(connection, key, limits, system, evidence):
             return (
-                "# " + evidence["resolved_title"] + "\n\nUnknown voice 1 greeted the team.\n"
+                "# "
+                + evidence["resolved_title"]
+                + "\n\n## Top line\nUnknown voice 1 greeted the team.\n"
                 "\n<<<RECORDING_BOUNDARIES>>>\n[]\n<<<END_RECORDING_BOUNDARIES>>>\n",
                 {},
             )
@@ -410,6 +412,20 @@ async def test_long_transcript_is_written_up_in_parts_and_combined(store):
         assert not context.read("recording-writeup-parts/" + job.id, {})
 
 
+async def test_a_part_that_is_only_a_refusal_fails_the_write_up_whatever_its_shape(store):
+    async with Service() as service:
+        context, job = await transcribed(store, service, turns(300, 40), limit=6000)
+
+        async def write_text(connection, key, limits, system, evidence, **kwargs):
+            return "- I could not produce a note for this recording.", {}
+
+        context.provider.write_text = write_text
+        await context.recordings.tick()
+        job = context.recordings.load(job.id)
+        assert job.state == "failed" and job.error_rule == "writeup-invalid"
+        assert not job.note_id and await count_notes(store) == 0
+
+
 async def test_a_retry_after_failure_does_not_write_the_finished_parts_again(store):
     async with Service() as service:
         context, job = await transcribed(store, service, turns(60, 40), limit=6000)
@@ -461,7 +477,7 @@ async def test_a_loose_reply_still_files_the_note(store):
                 "Sure, here is the note:\n\n```markdown\n# "
                 + title
                 + "\n\n## Top line\nShip it \u2014 if QA agrees.\n\n---\n\n## Executive summary\n"
-                "Calls <10 minutes.\n```"
+                "Calls <9 minutes.\n```"
             ), {}
 
         context.provider.write_text = write_text
@@ -469,7 +485,7 @@ async def test_a_loose_reply_still_files_the_note(store):
         job = context.recordings.load(job.id)
         assert job.state == "succeeded", job.error
         note = await store.get_note(job.note_id)
-        assert "\u2014" not in note.body and "```" not in note.body and "<10 minutes" in note.body
+        assert "\u2014" not in note.body and "```" not in note.body and "<9 minutes" in note.body
         saved = context.read("recording-writeups/" + job.id, {})
         assert "replaced em-dashes" in saved["repairs"]
         status = await context.recording_status({"id": job.id})
@@ -531,6 +547,69 @@ async def test_a_note_refused_twice_says_what_was_wrong_without_repeating_the_mo
         assert status["state"] == "failed"
 
 
+async def test_a_reply_that_is_not_a_note_fails_with_try_again_and_is_never_filed(store):
+    async with Service() as service:
+        context, job = await transcribed(store, service, turns(3))
+        asked = []
+
+        async def refuse(connection, key, limits, system, evidence, **kwargs):
+            asked.append(kwargs.get("correction"))
+            return "I could not produce a note for this recording.", {}
+
+        context.provider.write_text = refuse
+        await context.recordings.tick()
+        job = context.recordings.load(job.id)
+        assert job.state == "failed" and job.error_rule == "writeup-invalid"
+        assert len(asked) == 2 and asked[0] is None
+        assert asked[1] is not None and "not a note" in asked[1][1]
+        assert not job.note_id and await count_notes(store) == 0
+        assert not context.read("recording-writeups/" + job.id, {}).get("body")
+        status = await context.recording_status({"id": job.id})
+        assert status["summary_state"] == "failed" and status["state"] == "failed"
+        failed = (await context.recordings.waiting())["failed"]
+        assert failed[0]["can_retry"] is True and "could not produce" not in failed[0]["message"]
+
+        async def good(connection, key, limits, system, evidence, **kwargs):
+            return (
+                "# " + evidence["resolved_title"] + "\n\n## Top line\nDone.\n" + BOUNDARY_BLOCK
+            ), {}
+
+        context.provider.write_text = good
+        await context.recordings.retry({"id": job.id})
+        await context.recordings.tick()
+        job = context.recordings.load(job.id)
+        assert job.state == "succeeded", job.error
+        assert "Done." in (await store.get_note(job.note_id)).body
+
+
+async def test_what_the_recording_does_not_say_is_marked_in_the_filed_note(store):
+    segments = [
+        {"speaker": "Speaker 1", "start": 0, "end": 9, "text": "We run vSphere 7 on forty hosts."},
+        {"speaker": "Speaker 1", "start": 10, "end": 19, "text": "Half are reimaged already."},
+    ]
+    async with Service() as service:
+        context, job = await transcribed(store, service, segments)
+
+        async def write_text(connection, key, limits, system, evidence, **kwargs):
+            return (
+                "# " + evidence["resolved_title"] + "\n\n## Top line\n"
+                "About 40 hosts, and a $250,000 budget agreed with Contoso.\n" + BOUNDARY_BLOCK
+            ), {}
+
+        context.provider.write_text = write_text
+        await context.recordings.tick()
+        job = context.recordings.load(job.id)
+        assert job.state == "succeeded", job.error
+        body = (await store.get_note(job.note_id)).body
+        assert "About 40 hosts, and a $250,000 (not in the recording) budget" in body
+        assert "agreed with Contoso (not in the recording)." in body
+        assert "About 40 (not in the recording)" not in body
+        saved = context.read("recording-writeups/" + job.id, {})
+        assert saved["unsupported"] == ["$250,000", "Contoso"]
+        # The reply as the model wrote it is kept as it was.
+        assert "$250,000 budget" in saved["document"]
+
+
 async def test_naming_during_review_finishes_then_relabels_generated_lines(store):
     from coppermind.entities import EntityInput
 
@@ -550,7 +629,7 @@ async def test_naming_during_review_finishes_then_relabels_generated_lines(store
 
         async def writer(connection, key, limits, system, evidence):
             return (
-                "# " + evidence["resolved_title"] + "\n\nUnknown voice 1 said hello.\n"
+                "# " + evidence["resolved_title"] + "\n\n## Top line\nUnknown voice 1 said hello.\n"
                 "Unknown voice 2 (recording-local) answered.\n"
                 "<<<RECORDING_BOUNDARIES>>>\n[]\n<<<END_RECORDING_BOUNDARIES>>>"
             ), {}

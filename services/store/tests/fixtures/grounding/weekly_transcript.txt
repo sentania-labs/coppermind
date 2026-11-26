@@ -1,0 +1,5 @@
+[00:00:03] Scott: Quick weekly. Marcus, where are we on the lab rebuild?
+[00:00:10] Marcus Hale: Half the hosts are reimaged. The rest wait on firmware.
+[00:00:21] Scott: Any blockers I can help with?
+[00:00:26] Marcus Hale: Not really. Maybe a second pair of hands on Thursday.
+[00:00:34] Scott: I can do Thursday afternoon.
