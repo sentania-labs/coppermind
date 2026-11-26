@@ -77,10 +77,26 @@ test('the only meeting that could match can be chosen on the note, and one alrea
   const meeting={calendar_hash:'calendar',suggested_event_id:null,selected_event_id:null,candidates:[{event_id:'a',title:'Pipeline review',people:[{name:'Alex'}]}]};
   const f=await fixture(undefined,{recording_meeting:meeting});
   assert.ok(f.view.contentEl.all().some(e=>e.text==='Which meeting was this?'));
+  const radio=f.view.contentEl.all().find(e=>e.tag==='input'&&e.value==='a');radio.checked=true;radio.onchange();
   await f.view.contentEl.all().find(e=>e.text==='Use selected meeting').onclick();
   assert.equal(JSON.parse(f.requests.find(r=>r.url.endsWith('/recording-meeting')).body).event_id,'a');
   const chosen=await fixture(undefined,{recording_meeting:{...meeting,selected_event_id:'a'}});
   assert.ok(!chosen.view.contentEl.all().some(e=>e.text==='Which meeting was this?'));
+});
+
+test('a lone meeting from the day, not from an overlap, is neither claimed as on at the time nor preselected, and its suggestion stays',async()=>{
+  // A recording at 10:00 and a calendar whose only event that day is at 15:00.
+  const afternoon={event_id:'a',title:'Dentist',start:'2026-11-26T15:00:00-06:00',people:[]};
+  const suggestion={kind:'event',field:'meeting',index:0,value:'a',display_value:'Dentist',confidence:.9,reason:'Calendar.',quote:'',contact_ids:[],candidates:[]};
+  const f=await fixture(undefined,{recording_meeting:{calendar_hash:'calendar',suggested_event_id:null,selected_event_id:null,matched_event_id:null,candidates:[afternoon]},suggestions:[suggestion],job_id:'job'});
+  const texts=f.view.contentEl.all().map(e=>e.text).filter(Boolean);
+  assert.ok(texts.includes('Which meeting was this?'));
+  assert.ok(!texts.some(t=>t.includes('was on at the time')));
+  assert.equal(f.view.contentEl.all().find(e=>e.tag==='input'&&e.value==='a').checked,false);
+  await f.view.contentEl.all().find(e=>e.text==='Use selected meeting').onclick();
+  assert.ok(f.notices.includes('Choose a meeting first.'));
+  assert.equal(f.requests.filter(r=>r.url.endsWith('/recording-meeting')).length,0);
+  assert.ok(texts.includes('Dentist'));
 });
 
 test('the only meeting, when the recording named it, is shown as the meeting and not asked about',async()=>{

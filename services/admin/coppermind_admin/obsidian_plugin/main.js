@@ -72,8 +72,8 @@ class ReviewView extends ItemView {
       const pickMeeting=!!meeting&&(meeting.candidates?.length>1||(meeting.candidates?.length===1&&![meeting.selected_event_id,meeting.matched_event_id].includes(meeting.candidates[0].event_id)));
       if(pickMeeting){
         const box=el.createDiv({cls:'coppermind-card'});box.createEl('h3',{text:'Which meeting was this?'});
-        box.createEl('p',{text:meeting.suggested_event_id?'Suggested from the conversation. Please check the choice.':meeting.candidates.length>1?'Several meetings could match. Choose one to use its context.':'This meeting was on at the time. Use it if it is the one.'});
-        let choice=meeting.selected_event_id||meeting.suggested_event_id||(meeting.candidates.length===1?meeting.candidates[0].event_id:'');
+        box.createEl('p',{text:meeting.suggested_event_id?'Suggested from the conversation. Please check the choice.':meeting.candidates.length>1?'Several meetings could match. Choose one to use its context.':'Use this meeting if it is the one.'});
+        let choice=meeting.selected_event_id||meeting.suggested_event_id||'';
         for(const event of meeting.candidates){
           const row=box.createEl('label',{cls:'coppermind-meeting-option'});
           const radio=row.createEl('input',{attr:{type:'radio',name:'coppermind-meeting-'+id},value:event.event_id});
@@ -217,7 +217,7 @@ class ReviewView extends ItemView {
       const typedNames=Object.fromEntries((data.named_in_note||[]).map(t=>[t.label,t.name]));
       if(data.speakers_in_note)el.createEl('p',{text:'Name a voice in the Speakers section at the top of the note: type the name after "Name this voice:", then mark the note reviewed here.',cls:'coppermind-notice'});
       for(const s of data.suggestions){
-        if(s.kind==='event'&&pickMeeting)continue;
+        if(s.kind==='event'&&meeting?.candidates?.length>1)continue;
         if(s.kind==='speaker'&&(!ready||typedNames[s.field]||data.speakers_in_note))continue;
         const card=el.createDiv({cls:'coppermind-card'});let toggle;
         const voice=s.kind==='speaker'?voicePlan(s.field,s):null;
