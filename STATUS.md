@@ -97,8 +97,8 @@ the Obsidian side is proved only through the plugin harness, as there is no Obsi
   search entry and archive (`deleted in Obsidian`); a copy merely absent (not synced yet, or at a rebuild)
   is reported `missing` and the archive stays. Moving or renaming the file in
   Obsidian returns it to its filed place and leaves a notice (what moved, from
-  where, where it went back, why, and that nothing needs doing) on Admin's
-  Home and at `GET /v1/notices` for the companion
+  where, where it went back, why, and that nothing needs doing) at
+  `GET /v1/notices` for the companion
   plugin or an agent, dismissable without moving anything. One edited on a
   device is reported as a problem and never rewritten. `DELETE
   /v1/artifacts/{id}` (`artifacts:delete`) removes one for an agent; Admin's
@@ -356,8 +356,9 @@ the Obsidian side is proved only through the plugin harness, as there is no Obsi
   only Markdown files are adoption candidates. Settings changes take effect on
   the next pass without restart, including removal of a rule for an unchanged
   file. Excluded files are reread each pass to keep this true.
-  Admin's Notes, Left alone on purpose tab lists each skipped path with its
-  first matching rule (folder, then pattern, then plugin marker).
+  The Notes page's Left alone on purpose tab (registered, not linked from
+  Admin's menu) lists each skipped path with its first matching rule (folder,
+  then pattern, then plugin marker).
   One atomic state snapshot records the last completed pass, survives a
   restart, and is rebuilt by reconciliation. Verification for this change uses
   rendered Admin tests and PostgreSQL reconciliation tests; Compose was not

@@ -444,8 +444,9 @@ Nothing of yours is sent.</p>
             else:
                 offer = ui.banner(
                     "warn",
-                    f'"{e(service["name"])}" cannot {JOB[need] if going["for"] != "ai" else "transcribe or summarize"}, '
-                    f'so {feature["lower"]} cannot use it. '
+                    f'"{e(service["name"])}" cannot '
+                    f"{JOB[need] if going['for'] != 'ai' else 'transcribe or summarize'}, "
+                    f"so {feature['lower']} cannot use it. "
                     + ui.go("Back to " + feature["name"], feature["to"]),
                 )
         test = ui.btn(

@@ -310,7 +310,7 @@ Problems lists each current notice, beside the path notices, with the reason
 (`returned_note`, `folder_kept`); the operator can dismiss a returned-note
 notice. The list holds only what is current: a notice is dropped when its note
 is gone or has moved on from the returned path, and a kept-folder notice clears
-itself when the folder empties or goes away. Home lists the returned notes under Recent activity.
+itself when the folder empties or goes away. `GET /v1/notices` returns the returned notes; Admin no longer lists them.
 
 ## The PostgreSQL mirror
 

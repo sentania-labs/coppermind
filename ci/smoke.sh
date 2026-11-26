@@ -225,7 +225,7 @@ step "sign out, be refused with a wrong password, and sign in again"
     || fail "signing out did not return to the sign-in page"
 has_session_cookie && fail "signing out left the session cookie in the browser"
 [ "$(admin "$ADMIN/admin")" = "$ADMIN/admin/signin" ] \
-    || fail "Home was reachable without signing in"
+    || fail "Admin was reachable without signing in"
 # Setup cannot be run a second time, even by someone holding the old code.
 [ "$(admin "$ADMIN/admin/welcome")" = "$ADMIN/admin/signin" ] \
     || fail "the Welcome page was offered again after setup"
@@ -305,8 +305,8 @@ ok "the history wait saved through Admin and was read back from the state file"
     || fail "signing out did not return to the sign-in page"
 has_session_cookie && fail "signing out left the session cookie in the browser"
 [ "$(admin "$ADMIN/admin")" = "$ADMIN/admin/signin" ] \
-    || fail "Home was still reachable after signing out"
-ok "the operator signed in, saw Home, signed out and lost Home again"
+    || fail "Admin was still reachable after signing out"
+ok "the operator signed in, saw Admin, signed out and lost Admin again"
 
 step "the bootstrapped default key is usable without a setup step"
 default_key="$(compose run --rm --no-deps --entrypoint cat bootstrap \
