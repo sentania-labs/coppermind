@@ -130,7 +130,7 @@ def set_up(client: TestClient, code: str = SETUP_CODE, password: str = PASSWORD)
 def post(client: TestClient, path: str, data: dict[str, Any] | None = None, page: str = "") -> Any:
     """Press a button on `page` (the form's own page when not given)."""
     fields = dict(data or {})
-    fields["csrf"] = token(client, page or "/admin/suggestions/fill")
+    fields["csrf"] = token(client, page or "/admin")
     return client.post(path, data=fields, follow_redirects=False)
 
 

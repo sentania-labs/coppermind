@@ -24,8 +24,7 @@ from coppermind.settings import Wiring
 from coppermind.statefiles import RevisionConflict
 from coppermind.store_protocol import StoreError
 from coppermind_admin import model, ui
-from coppermind_admin.pages.common import setup_strip
-from coppermind_admin.pages.home import companion_needs_update
+from coppermind_admin.pages.companion import companion_needs_update
 from coppermind_admin.pages.settings import folder_dialog
 from coppermind_admin.shell import Ctx, not_saved
 from coppermind_admin.ui import e, segment
@@ -286,7 +285,9 @@ def router(wiring: Wiring) -> APIRouter:
 <div class="actions">
 <button class="lat-btn" formaction="/admin/sync/back" name="to" value="2">Back</button>
 {ui.submit("Connect and start syncing", busy="Connecting…")}</div></form>"""
-        page = f"""{ui.head("Obsidian Sync", LEDE)}<div class="stack">{ctx.flash()}
+        page = f"""{ui.head("Obsidian Sync", LEDE, ("/admin", "Coppermind"))}<div class="stack">{
+            ctx.flash()
+        }
 {
             ui.status(
                 "off",
@@ -462,7 +463,6 @@ aria-label="Name for this server" autofocus>{ui.submit("Save", busy="Saving…")
                 "Open the vault in Obsidian on your phone or computer and change a note. It "
                 "shows here within a minute or two.",
             )
-        auto = ctx.settings().sync.companion_auto_update
         devices = ui.card(
             f'<p class="muted">Phones and computers that open the vault "{vault}". A device '
             f"shows here the first time it changes a note.</p>{listed}"
@@ -487,24 +487,7 @@ aria-label="Name for this server" autofocus>{ui.submit("Save", busy="Saving…")
                 {"again": "1", "back": "/admin/sync"},
                 busy="Adding…",
             )
-            + '</div><div class="item" style="margin-top:12px"><div class="item-b">'
-            + (
-                "Update the companion by itself when Coppermind starts on a new version. "
-                "It is <b>on</b>. Coppermind only replaces a companion that is already in "
-                "your vault and keeps its pairing and settings."
-                if auto
-                else "Updating the companion by itself is <b>off</b>. Use the buttons above "
-                "when an update is available."
-            )
-            + '</div><div class="item-a">'
-            + ui.btn(
-                "Turn off" if auto else "Turn on",
-                "/admin/sync/companion-auto",
-                "",
-                {"on": "" if auto else "1"},
-                busy="Saving…",
-            )
-            + '</div></div><p class="lat-hint" style="margin-top:8px">To add a device, install '
+            + '</div><p class="lat-hint" style="margin-top:8px">To add a device, install '
             "Obsidian on it and open the vault. A lost or sold device: unpair its companion "
             "here, which cuts it off from Coppermind. To stop it syncing the vault as well, "
             "sign it out in your Obsidian account. That part only Obsidian can do.</p>",
@@ -548,8 +531,8 @@ aria-label="Name for this server" autofocus>{ui.submit("Save", busy="Saving…")
                     danger=True,
                     fields={"id": app["id"]},
                 )
-        page = f"""{ui.head("Obsidian Sync", LEDE)}<div class="stack">
-{setup_strip(view, "sync")}{ctx.flash()}{top}{again}{ui.card(ui.rows(*rows))}{devices}
+        page = f"""{ui.head("Obsidian Sync", LEDE, ("/admin", "Coppermind"))}<div class="stack">
+{ctx.flash()}{top}{again}{ui.card(ui.rows(*rows))}{devices}
 <p>{ui.go("Disconnect from Obsidian Sync…", "/admin/sync?ask=off", "ghost")}</p></div>"""
         return await ctx.page("Obsidian Sync", page, "sync", dialog=dialog)
 

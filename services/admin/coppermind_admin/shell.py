@@ -21,7 +21,7 @@ from coppermind.settings import ProductSettings, Wiring, read_settings
 from coppermind.statefiles import RevisionConflict, StateStore
 from coppermind.store_client import HttpStoreClient
 from coppermind.store_protocol import StoreError, ValidationFailed
-from coppermind_admin import layout, model, ui
+from coppermind_admin import layout, ui
 
 COOKIE = "coppermind_admin_session"
 csrf_token: ContextVar[str] = ContextVar("csrf_token", default="")
@@ -230,7 +230,6 @@ class Ctx:
             title,
             warning + body,
             active,
-            model.menu(view),
             dialog=dialog,
             refresh=refresh,
         )

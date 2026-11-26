@@ -384,25 +384,14 @@ def test_a_note_gone_on_purpose_can_be_said_to_be(admin):
 # -- a feature whose AI service is gone -------------------------------------------------------
 
 
-def test_a_feature_whose_service_was_removed_outside_admin_says_so_on_its_page_and_on_home(admin):
+def test_a_feature_whose_service_was_removed_outside_admin_says_so_on_the_coppermind_page(admin):
     client, _, store = admin
-    for name, view in (("sugg", "suggestions"), ("trans", "transcription")):
-        store.views[view].update(service=None, state="failing")
-        store.views["overview"][name].update(service=None, state="failing")
-    for path, words in (
-        ("/admin/suggestions", "Suggestions have stopped"),
-        ("/admin/transcription", "Transcription has stopped"),
-    ):
-        response = client.get(path)
-        assert response.status_code == 200
-        assert words in response.text
-        assert "no longer in your list" in response.text
-        assert "Use a different service" in response.text
-    home = client.get("/admin")
-    assert home.status_code == 200
-    assert "Suggestions have stopped" in home.text
-    assert "Transcription has stopped" in home.text
-    assert "/admin/suggestions?change=service" in home.text
+    store.views["transcription"].update(service=None, state="failing")
+    store.views["overview"]["trans"].update(service=None, state="failing")
+    page = client.get("/admin").text
+    assert "AI server that transcribes recordings is not answering" in page
+    assert "Nothing is lost." in page
+    assert 'href="/admin/ai"' in page
 
 
 # -- adding the companion -----------------------------------------------------------------------
@@ -886,21 +875,6 @@ def test_changing_the_model_of_a_paused_service_says_it_is_still_paused(admin):
     assert "still paused" not in running
 
 
-def test_changing_the_service_of_paused_transcription_says_it_is_still_paused(admin):
-    client, _, store = admin
-    store.views["transcription"]["state"] = "paused"
-    store.answers["transcription-save"] = {
-        "was": "paused",
-        "service": "Home transcription",
-        "resumed": {},
-    }
-    form = {"svc": store.views["services"]["services"][1]["id"], "wait_s": "3600"}
-    paused = follow(
-        client, post(client, "/admin/transcription/save", form, page="/admin/transcription")
-    )
-    assert "still paused" in paused
-
-
 def selected(page, name):
     block = re.search(rf'<select[^>]*name="{name}".*?</select>', page, re.S)
     assert block is not None
@@ -911,7 +885,7 @@ def test_a_wait_the_store_would_refuse_is_shown_as_the_next_listed_one(admin):
     client, _, store = admin
     store.views["transcription"]["wait_s"] = 5400
     store.views["suggestions"]["wait_s"] = 90
-    trans = selected(client.get("/admin/transcription").text, "seconds")
+    trans = selected(client.get("/admin/settings/advanced").text, "seconds")
     assert [value for value, _ in trans] == ["1800", "3600", "7200", "14400"]
     assert [value for value, mark in trans if mark] == ["7200"]
     sugg = selected(client.get("/admin/suggestions").text, "seconds")
@@ -1043,14 +1017,6 @@ def test_a_refused_drop_opens_with_a_plain_sentence_and_remove(admin):
         ).status_code
         == 200
     )
-
-
-def test_home_lists_a_refused_drop_without_the_raw_error_or_try_again(admin):
-    client, _, store = admin
-    refused_drop(store)
-    home = client.get("/admin").text
-    assert "standup.m4a" in home
-    assert RAW_DROP_ERROR not in home
 
 
 def test_a_key_with_access_no_box_covers_says_so_on_its_page(admin):

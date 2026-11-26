@@ -17,19 +17,27 @@ reviewed-note extraction and dossier-aware blank-field enrichment in the existin
 optional worker, with no additional acceptance step. Phone synchronization
 has not been exercised by this slice.
 
+## Admin is two pages (November 26, 2026)
+
+Admin's menu is Coppermind and Advanced. Coppermind (`/admin`) holds one card for each
+thing to connect once (Obsidian Sync with the companion, the AI server, the calendar),
+each with one plain line that says whether it is working and, when it is not, the one
+button that helps. The AI card chooses what transcribes and what summarizes together
+(`/admin/ai`). Advanced (`/admin/advanced`) opens every page that was kept, unchanged.
+Home's list of findings, tiles and feed, the setup guide, the Suggestions and
+Transcription pages, the Settings index, Colours and the calendar's meeting list are gone.
+The companion auto-update switch is on Advanced, and the note that Coppermind updated the
+companion is part of the Companion line. The Notes pages and the Suggestions pages stay
+registered but are not linked from anywhere, until the work that replaces them lands.
+
 ## Admin redesign (November 12, 2026)
 
 Admin was rebuilt from scratch to the approved redesign; the old pages and
 their addresses are gone. First start prints a setup link
 (`{COPPERMIND_ADMIN_URL}/admin/welcome?code=XXXX-XXXX-XXXX`); choosing the
-password there signs the owner in and opens a six-step setup guide at
-`/admin/setup`. Sign in and sign out are `/admin/signin` and `/admin/signout`;
+password there signs the owner in and opens the Coppermind page. Sign in and sign out are `/admin/signin` and `/admin/signout`;
 a forgotten password is replaced through a new setup link printed when the
-stack starts once with `COPPERMIND_ADMIN_NEW_SETUP_LINK=1`. The menu is Home,
-Setup guide, Notes (Need you, Waiting for review, Left alone on purpose,
-and a find box), Recordings and imports, Calendar, People and voices,
-Obsidian Sync, AI services, Suggestions, Transcription, Connected apps,
-Storage and Settings. Where the old pages went: Problems and Note recovery
+stack starts once with `COPPERMIND_ADMIN_NEW_SETUP_LINK=1`. The menu then had thirteen entries; it is now two (see above). Where the old pages went: Problems and Note recovery
 are the Notes tabs and Home's list of what needs you; API Keys is Connected
 apps; Model connections and Transcription setup are AI services and
 Transcription; Fields and tags is Settings, Properties and Tags; Search index
@@ -111,7 +119,7 @@ the Obsidian side is proved only through the plugin harness, as there is no Obsi
 - A recording can be handed in on its own. Store it through the staged upload,
   then `POST /v1/recordings` (`sources:write`, `notes:write`, `artifacts:read`) names it; a worker
   loop of its own sends it, streamed from disk, to the transcription service
-  chosen on Admin's Transcription page from the AI services whose test showed they
+  chosen on Admin's Coppermind page (the AI card) from the AI services whose test showed they
   can write up recordings (OpenAI-compatible `/audio/transcriptions`, with
   `diarized_json` or `verbose_json` as the test found), waiting on
   silence rather than total time and backing off after a timeout. A busy
@@ -142,11 +150,11 @@ the Obsidian side is proved only through the plugin harness, as there is no Obsi
   restarts. A successful setup accepts the code (dashes, spaces and letter case
   do not count), writes the Argon2 password hash, setup time and a random
   session signing secret to mode 0600 `admin.json`, removes the code, signs the
-  owner in and opens the setup guide. Later setup attempts are sent to Sign in,
+  owner in and opens the Coppermind page. Later setup attempts are sent to Sign in,
   and a sign-in on a system that is not set up returns to Welcome rather than
   reporting a bad password. Password sign-in creates an expiring HMAC-signed
   cookie with the shipped 12-hour default and no database session state. The
-  protected Home page opens with what needs you, or a plain notice when the
+  protected Coppermind page opens with a line for each connection, or a plain notice when the
   store cannot answer. Sign out clears the cookie from that browser and the
   protected page redirects to Sign in again; because the session is the signed
   cookie and not a row, an issued token stays valid until its expiry no matter
@@ -332,7 +340,7 @@ the Obsidian side is proved only through the plugin harness, as there is no Obsi
   files are still read, so a known note moved into one of those folders is
   followed there rather than reported gone; they are only never given an
   identity. Adoption exclusions are now built and remove the adoption
-  prerequisite for migration. Admin's Notes, Left alone on purpose
+  prerequisite for migration. Admin's Advanced, Files left alone
   (`/admin/notes/leave-alone`) edits `reconcile.excluded_folders` and
   `reconcile.excluded_patterns` with ticks for the shipped ones and the
   existing revision check. Default folders are `Templates/` and `_Templates/`
@@ -642,7 +650,7 @@ the Obsidian side is proved only through the plugin harness, as there is no Obsi
   projection deleted by hand stays in the index until the next rebuild, because
   nothing mirrors projections. Bodies are indexed up to their first 250,000
   characters.
-  Admin's Settings, Search page (`/admin/settings/search`) says whether the
+  Admin's Advanced, Search page (`/admin/settings/search`) says whether the
   index is up to date and how many notes and files can be searched, has a
   try-a-search box, and a Rebuild search button that also rebuilds the
   property index behind declared frontmatter filters. The rebuild runs in the store's
@@ -748,13 +756,12 @@ in the tree, so do not read the absence as a decision to leave it out.
   Deleted-note recovery is available through Admin and the API as described below.
 - **Remaining Admin pages.** Filing rules, jobs and a general jobs page with
   history are not built; the one job with a button is the search rebuild on
-  Settings, Search. Connected apps (`/admin/apps`), Settings
-  (`/admin/settings`) and Obsidian Sync (`/admin/sync`) exist: signed-in
+  Advanced, Search. Connected apps (`/admin/apps`), the Advanced page
+  (`/admin/advanced`) and Obsidian Sync (`/admin/sync`) exist: signed-in
   owners can add and remove keys, edit the settings a person needs with
   revision checks, and connect the sync client step by step. Note properties
-  and tags are under Settings (`/admin/settings/properties`,
-  `/admin/settings/tags`), and what needs attention is on Home and the Notes
-  tabs. `python3 -m coppermind_store.keys` remains a recovery path when Admin
+  and tags are under Advanced (`/admin/settings/properties`,
+  `/admin/settings/tags`). `python3 -m coppermind_store.keys` remains a recovery path when Admin
   is unavailable.
 - **Helm packaging and lab deployment.** The Helm chart and the lab handoff
   are not built. Publishing the existing service images and a release from a

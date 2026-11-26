@@ -245,7 +245,7 @@ the audio is removed (see [Recordings](api.md#recordings-audio-on-its-own)). Rev
 handles frontmatter suggestions separately and never accepts or appends the body. See
 [Recording summaries](note-workflow.md#recording-summaries) and
 [write-up limits](calendar-enrichment.md) for long transcripts.
-A failure appears with its reason on Admin's Recordings and imports page (and under Problems), the
+A failure appears with its reason on Admin's Advanced, Recordings and imports page (and under Problems), the
 recording stays stored, and a person can press Try again there. See
 [Recordings](api.md#recordings-audio-on-its-own) for every field and failure.
 
