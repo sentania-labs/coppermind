@@ -81,6 +81,7 @@ def build(tmp_path, *, body=OLD, baseline=OLD, mode="markdown-v1"):
     note.path = "Review/Call.md"
     memory.store = SimpleNamespace(
         control=SimpleNamespace(schema=default_schema),
+        entities=SimpleNamespace(load=lambda: SimpleNamespace(entities={})),
         get_note=lambda _: asyncio.sleep(0, note),
         get_source=lambda _: asyncio.sleep(0, SimpleNamespace(projection_path="Sources/call.md")),
         replace_note=replace_note,
