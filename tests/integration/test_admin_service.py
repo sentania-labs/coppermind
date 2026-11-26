@@ -150,15 +150,12 @@ async def test_a_note_just_gone_is_not_called_missing_until_time_has_passed(stor
 
 
 def test_why_a_note_was_not_filed_is_said_in_plain_words():
-    assert (
-        why_not_filed("ValueError: confirm the meeting time, or select Time unknown")[0] == "time"
-    )
     assert why_not_filed("ValueError: a note date is required in date")[0] == "date"
     assert why_not_filed("SourceRevisionNeedsReview")[0] == "source"
     assert why_not_filed("PermissionError")[0] == "disk"
     code, words = why_not_filed("SomethingElse")
     assert (code, words) == ("other", "Coppermind keeps trying by itself.")
-    for error in ("ValueError: confirm the meeting time", "PermissionError", "Odd"):
+    for error in ("ValueError: a note date is required in date", "PermissionError", "Odd"):
         assert "store logs" not in why_not_filed(error)[1]
     assert SETTLING == "waiting for the reviewed file to remain stable"
 
@@ -177,7 +174,7 @@ def test_what_is_recalled_on_home_for_each_change():
     )
     assert said("calendar-add", {"state": "failed", "name": "a.ics"}) == ""
     filed = {"filed": True, "path": "work/2026/2026-11/Budget.md", "name": "Budget"}
-    assert said("note-keep-both", filed) == '"Budget" was filed in work/2026/2026-11.'
+    assert said("note-check", filed) == '"Budget" was filed in work/2026/2026-11.'
     assert said("note-check", filed | {"reviewed": True}) == (
         'You reviewed "Budget". Filed in work/2026/2026-11.'
     )
@@ -281,13 +278,12 @@ async def test_the_same_server_entered_twice_at_once_is_kept_once(store, monkeyp
     assert [s["name"] for s in store.context.services.listing()].count("Twice") == 1
 
 
-@pytest.mark.parametrize("action", ["note-check", "note-no-time", "note-keep-both", "note-replace"])
-async def test_a_note_id_that_is_not_an_id_never_reaches_a_file_path(store, action):
+async def test_a_note_id_that_is_not_an_id_never_reaches_a_file_path(store):
     context = store.context
     context.write("credentials", {"conn": "secret"})
     (context.root / "meeting-summaries-earlier").mkdir(parents=True, exist_ok=True)
     with pytest.raises(ValidationFailed):
-        await store.admin.act(action, {"id": "../credentials", "reviewed": True})
+        await store.admin.act("note-check", {"id": "../credentials", "reviewed": True})
     assert context.read("credentials", {}) == {"conn": "secret"}
     assert not (store.control.store.state_dir / "credentials.json").exists()
 
@@ -313,9 +309,8 @@ async def test_checking_a_note_that_is_not_reviewed_does_not_say_it_was_filed(st
     note = await store.create_note(
         CreateNote(title="Draft", body="Words.\n", frontmatter={"date": "2026-10-14"})
     )
-    for action in ("note-check", "note-no-time", "note-keep-both", "note-replace"):
-        result = await store.admin.act(action, {"id": note.id})
-        assert result["filed"] is False, action
+    result = await store.admin.act("note-check", {"id": note.id})
+    assert result["filed"] is False
     recent = [item["text"] for item in (await store.admin.act("overview", {}))["recent"]]
     assert not [text for text in recent if "was filed" in text]
 

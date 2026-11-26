@@ -15,7 +15,6 @@ from coppermind.schema import (
     field_suggestion_changes,
     note_date,
     note_start_time,
-    parse_note_time,
 )
 from coppermind.store_protocol import (
     ArtifactsFilesystemUnavailable,
@@ -46,31 +45,19 @@ if TYPE_CHECKING:
 def validate_review(
     note: NoteDocument, schema: Any, default_timezone: str = "America/Chicago"
 ) -> None:
-    """Validate a note's date and start time for review completion and filing.
+    """Validate the day a note is filed under.
 
     `date` carries the day, and the local start time too when it is a
     date-and-time (`YYYY-MM-DDTHH:MM:SS`, no UTC offset, in the configured
-    timezone). A `date` carrying a UTC offset is rejected. A work note needs a
-    start time, from `date` or from a legacy `HH:MM` `time`, unless
-    `time_unknown: true`, which needs only a valid day. A legacy `timezone` on
-    the note is ignored. `default_timezone` is kept for callers that still pass
-    it.
+    timezone). A `date` carrying a UTC offset is rejected. Filing needs only the
+    day, so no type of note needs a start time. `default_timezone` is kept for
+    callers that still pass it.
     """
-    values = note.frontmatter
-    problem = date_field_problem(values, schema)
+    problem = date_field_problem(note.frontmatter, schema)
     if problem:
         raise ValueError(problem)
-    if note_date(values, schema) is None:
+    if note_date(note.frontmatter, schema) is None:
         raise ValueError("a note date is required in date")
-    if values.get(schema.role("type_key")) != "work":
-        return
-    legacy = parse_note_time(values.get("time"))
-    if legacy.present and not legacy.valid:
-        raise ValueError("enter a valid local meeting time")
-    if values.get("time_unknown") is True:
-        return
-    if note_start_time(values, schema) is None:
-        raise ValueError("confirm the meeting time, or select Time unknown")
 
 
 # A reviewed note is filed once its file has stopped changing, so an edit still arriving from

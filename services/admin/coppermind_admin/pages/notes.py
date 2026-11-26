@@ -372,12 +372,7 @@ def router(wiring: Wiring) -> APIRouter:
                     ui.go("Compare", link, "primary"),
                 )
             if note["kind"] == "notfiled":
-                detail = (
-                    f"You marked it reviewed on {ui.date_only(note['when'], ctx.zone)}, but a "
-                    "file with its name is already in the folder."
-                    if note.get("name_taken")
-                    else "You marked it reviewed, but it could not be filed. " + e(note["reason"])
-                )
+                detail = "You marked it reviewed, but it could not be filed. " + e(note["reason"])
                 return ui.item(title, detail, ui.go("Fix it", link, "primary"))
             if note["kind"] == "missing":
                 return ui.item(
@@ -756,61 +751,6 @@ name="csrf" value="{{csrf}}">Save</button>
 <h3 style="margin-top:12px">Choose what to do</h3>{choose}''')
             }</div>"""
             return await ctx.page(data["title"], body, "notes", dialog=dialog)
-        if stuck == "notfiled" and data.get("name_taken"):
-            mine, taken = data["mine"], data["taken"]
-            if ctx.q("ask") == "replace":
-                dialog = ui.dialog(
-                    "Replace the older file?",
-                    f'"{e(taken["name"])}" (edited {ui.date_only(taken["edited"], ctx.zone)}, '
-                    f"{plural(taken['words'], 'word')}) is deleted and this note is filed in its "
-                    f"place. {FINAL}",
-                    f"{here}/replace",
-                    "Replace it",
-                    here,
-                    danger=True,
-                    busy="Filing…",
-                    fields={"seen": taken.get("hash", "")},
-                )
-            body = f"""{head}<div class="stack">{ctx.flash()}
-{
-                ui.status(
-                    "bad",
-                    "Not filed",
-                    "You marked this note reviewed, so it should move to its folder. A different "
-                    f'file with exactly its name, "{e(taken["name"])}", is already in the folder.',
-                )
-            }
-{
-                ui.card(f'''<div class="two">
-{file_card(view, "This note (waiting to move)", mine, ctx)}
-{file_card(view, "Already in the folder", taken, ctx)}</div>
-<h3 style="margin-top:12px">Choose what to do</h3>
-{
-                    ui.item(
-                        "Keep both",
-                        f'File this note next to the other one as "{e(data["both_as"])}". '
-                        "Nothing is lost.",
-                        ui.btn("Keep both", f"{here}/keep-both", "primary", busy="Filing…"),
-                    )
-                }
-{
-                    ui.item(
-                        "Replace the older file",
-                        "The file already in the folder is deleted. This note takes its place.",
-                        ui.go("Replace it", ui.url(here, ask="replace")),
-                    )
-                }
-{
-                    ui.item(
-                        "Sort it out in Obsidian",
-                        "Rename or move one of the two files yourself. Coppermind files the note "
-                        "within a minute once the name is free.",
-                        ui.btn("Check again now", f"{here}/check", busy="Checking…"),
-                    )
-                }''')
-            }
-<div class="hide-narrow">{history}</div></div>"""
-            return await ctx.page(data["title"], body, "notes", dialog=dialog)
         if data.get("settling"):
             top = ui.status(
                 "ok",
@@ -823,8 +763,6 @@ name="csrf" value="{{csrf}}">Save</button>
         elif stuck == "notfiled":
             why = data.get("why", "other")
             fix = {
-                "time": " If there was no set time, say so here. If there was, add it to the "
-                "note in Obsidian and Coppermind files it within a minute.",
                 "date": " Add the date to the note in Obsidian and Coppermind files it within "
                 "a minute.",
                 "source": " Open the note in Obsidian, check it against the new version, then "
@@ -832,23 +770,12 @@ name="csrf" value="{{csrf}}">Save</button>
                 "disk": " Whoever runs the server should check that the notes folder has free "
                 "space and can be written to. Coppermind keeps trying by itself.",
             }.get(why, "")
-            no_time = (
-                ui.btn("There was no set time", f"{here}/no-time", "primary", busy="Filing…")
-                if why == "time"
-                else ""
-            )
             top = ui.status(
                 "bad",
                 "Not filed",
                 "You marked this note reviewed, so it should move to its folder, but it could "
                 "not be filed. " + e(data.get("reason", "")) + fix,
-                no_time
-                + ui.btn(
-                    "Check again now",
-                    f"{here}/check",
-                    "" if no_time else "primary",
-                    busy="Checking…",
-                )
+                ui.btn("Check again now", f"{here}/check", "primary", busy="Checking…")
                 + obsidian(view, data["path"]),
             ) + ui.tech(data.get("filing_error", ""))
         elif stuck == "missing" and data.get("gone"):
@@ -953,12 +880,6 @@ name="csrf" value="{{csrf}}">Save</button>
         if result.get("filed"):
             where = folder_words(str(result["path"]).rsplit("/", 1)[0])
             return "ok", (f'Filed. "{e(title)}" is now in {where} as "{e(result["name"])}". {tail}')
-        if result.get("error") == "PathCollision":
-            return "warn", (
-                "Checked just now. The other file is still there, so the note is still "
-                "waiting. Rename or move one of them in Obsidian, or choose Keep both or "
-                "Replace."
-            )
         if result.get("settling"):
             return "info", (
                 "Checked just now. Coppermind is waiting a moment to be sure the file has "
@@ -967,39 +888,6 @@ name="csrf" value="{{csrf}}">Save</button>
         return "warn", "Checked just now. The note still cannot be filed. " + e(
             str(result.get("error", "")).removeprefix("ValueError: ")
         )
-
-    @routes.post("/admin/notes/{identity}/keep-both", include_in_schema=False)
-    async def keep_both(identity: str, request: Request) -> Response:
-        ctx = Ctx(request, wiring)
-        await ctx.form()
-        here = model.note_path(identity)
-        try:
-            title = (await ctx.act("note", {"id": identity}))["title"]
-        except StoreError:
-            return ctx.go("/admin/notes")
-        result = await fix(ctx, identity, "note-keep-both", {})
-        if result is not None:
-            ctx.say(*filed_message(result, title, "The older file was not touched."))
-        return ctx.go(here)
-
-    @routes.post("/admin/notes/{identity}/replace", include_in_schema=False)
-    async def replace(identity: str, request: Request) -> Response:
-        ctx = Ctx(request, wiring)
-        await ctx.form()
-        here = model.note_path(identity)
-        try:
-            title = (await ctx.act("note", {"id": identity}))["title"]
-        except StoreError:
-            return ctx.go("/admin/notes")
-        result = await fix(
-            ctx, identity, "note-replace", {"seen": (await ctx.form()).get("seen", "")}
-        )
-        if result is not None and "refused" in result:
-            ctx.say("warn", e(result["refused"]["message"]))
-            return ctx.go(here)
-        if result is not None:
-            ctx.say(*filed_message(result, title, "The older file was deleted."))
-        return ctx.go(here)
 
     @routes.post("/admin/notes/{identity}/check", include_in_schema=False)
     async def check(identity: str, request: Request) -> Response:
@@ -1026,19 +914,6 @@ name="csrf" value="{{csrf}}">Save</button>
                 "deleted by this.",
             )
             return ctx.go("/admin/notes")
-        return ctx.go(model.note_path(identity))
-
-    @routes.post("/admin/notes/{identity}/no-time", include_in_schema=False)
-    async def no_time(identity: str, request: Request) -> Response:
-        ctx = Ctx(request, wiring)
-        await ctx.form()
-        try:
-            title = (await ctx.act("note", {"id": identity}))["title"]
-        except StoreError:
-            return ctx.go("/admin/notes")
-        result = await fix(ctx, identity, "note-no-time", {})
-        if result is not None:
-            ctx.say(*filed_message(result, title, "It is marked as having no set time."))
         return ctx.go(model.note_path(identity))
 
     @routes.post("/admin/notes/{identity}/copy", include_in_schema=False)
@@ -1397,8 +1272,6 @@ name="csrf" value="{{csrf}}">Save</button>
             unset_default.append(roles["context_key"])
         if "attendees" in form:
             changes["attendees"] = split(form["attendees"])
-        if form.get("type") == "work":
-            changes["time_unknown"] = not form.get("time")
         current_day, current_start = note_date(front, schema), note_start_time(front, schema)
         same_time = (
             current_day is not None

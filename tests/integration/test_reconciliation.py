@@ -193,7 +193,9 @@ async def test_adoption_rechecks_requirements_activated_by_applied_defaults(
         if definition["name"] == roles["type_key"]:
             definition["default"] = "work"
         if definition["name"] == roles["context_key"]:
+            # An operator's own rule: nothing is required by default, so this one is written.
             definition["default"] = "external"
+            definition["required"] = True
         if definition["name"] == roles["account_key"]:
             definition["default"] = "Default account"
             definition["required_when"] = roles["context_key"]

@@ -107,8 +107,7 @@ async def test_a_multi_account_note_is_found_by_each_entry_in_listing_and_search
     assert await listed(store, filter=flt) == {several}
 
 
-async def test_external_with_an_empty_account_fails_with_the_missing_account_message(store):
-    messages = []
+async def test_external_with_an_empty_or_missing_account_is_taken_like_any_other_note(store):
     for account in (None, [], "", [""]):
         front: dict[str, object] = {
             "type": "reference",
@@ -117,11 +116,7 @@ async def test_external_with_an_empty_account_fails_with_the_missing_account_mes
         }
         if account is not None:
             front["account"] = account
-        with pytest.raises(ValidationFailed) as raised:
-            await store.create_note(CreateNote(title="No account", frontmatter=front))
-        messages.append(raised.value.errors)
-    assert messages[0] == ["account: required when context is one of external"]
-    assert all(problems == messages[0] for problems in messages)
+        await store.create_note(CreateNote(title="No account", frontmatter=front))
     for account in ("Xcel", ["Xcel"], ["Xcel", "United"]):
         await store.create_note(
             CreateNote(
@@ -134,7 +129,7 @@ async def test_external_with_an_empty_account_fails_with_the_missing_account_mes
 async def test_date_only_datetime_and_legacy_time_file_to_the_same_month_folder(store, monkeypatch):
     front = "type: work\ncontext: internal\nreviewed: true\n"
     ids = [
-        hand_written(store, "Day only", front + "date: 2026-10-20\ntime_unknown: true\n"),
+        hand_written(store, "Day only", front + "date: 2026-10-20\n"),
         hand_written(store, "Datetime", front + "date: 2026-10-20T12:00:00\n"),
         hand_written(store, "Legacy", front + "date: 2026-10-20\ntime: '09:30'\n"),
     ]

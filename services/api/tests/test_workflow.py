@@ -478,6 +478,26 @@ def test_resummarize_is_scoped_like_the_other_review_writes(scopes, expected):
     )
 
 
+@pytest.mark.parametrize(
+    "scopes,expected",
+    [
+        (["notes:read"], 403),
+        (["notes:write"], 403),
+        (["notes:read", "notes:write"], 200),
+    ],
+)
+def test_trying_to_file_a_note_again_needs_to_read_and_write_notes(scopes, expected):
+    app = FastAPI()
+    fake = Store()
+    app.include_router(router)
+    app.dependency_overrides[store] = lambda: fake
+    app.dependency_overrides[authenticated_key] = lambda: Principal("test", frozenset(scopes))
+    with TestClient(app) as client:
+        result = client.post("/v1/notes/note/file-again")
+    assert result.status_code == expected
+    assert fake.calls == ([("note-file-again", {"id": "note"})] if expected == 200 else [])
+
+
 def test_the_review_list_passes_its_page_and_refuses_a_page_too_large():
     app = FastAPI()
     fake = Store()

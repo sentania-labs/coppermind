@@ -43,8 +43,10 @@ OWNED = (
         "string",
         "The calendar meeting the note belongs to. Filled in by Coppermind.",
     ),
-    ("time_unknown", "bool", "Set when the time of a work meeting is not known."),
 )
+# Properties earlier releases created that nothing writes now. A saved schema may still hold
+# them; they are never offered as something to fill in.
+RETIRED = ("time_unknown",)
 WAITS_S = (60, 120, 300, 600)
 WAITS_TRANSCRIPTION_S = (1800, 3600, 7200, 14400)
 WEEK = timedelta(days=7)
@@ -105,7 +107,7 @@ class Features:
         options = []
         own = []
         for key in schema.keys:
-            if key.name in system or key.name in {name for name, _, _ in OWNED}:
+            if key.name in system or key.name in {name for name, _, _ in OWNED} | set(RETIRED):
                 continue
             role = roles.get(key.name)
             if role in named:

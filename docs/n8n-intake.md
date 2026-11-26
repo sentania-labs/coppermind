@@ -135,19 +135,18 @@ Current replay behavior matters:
 
 New-install defaults suggest types `work`, `personal`, `reference`, and `journal`
 (default `reference`; any other type text is accepted and files under its own folder), and, for work notes only, contexts `internal` and `external`
-(default `internal`). `context` is required only when `type` is `work`; any other type
-validates without it, and `personal` is accepted as a context only so older notes still read. Workflow exports using `context: customer` should map
-that to `external`, retaining the customer name in `account`, which is required
-when context is `external`. `account` is a list of customer names. A plain
+(default `internal`). `context` is never required, and `personal` is accepted as a context only so older notes still read. Workflow exports using `context: customer` should map
+that to `external`, retaining the customer name in `account`, which is never
+required. `account` is a list of customer names. A plain
 string is read as a one-item list, so `account: Acme` and `account: [Acme]`
 are the same note, and an empty list counts as no account. `date` is
 `YYYY-MM-DD` or a local date-and-time `YYYY-MM-DDTHH:MM:SS` with no UTC offset,
 in the configured timezone; ingest writes the start time into `date` and never
 writes `time` or `timezone`.
-Existing installations keep their saved schema, except that an `account`, `date`,
-`time` or `timezone` definition still equal to the one earlier releases wrote is
-upgraded at startup (`time` stays declared as legacy and `timezone` is dropped); a
-customised definition is left alone.
+Existing installations keep their saved schema, except that a `context`, `account`,
+`date`, `time` or `timezone` definition still equal to the one earlier releases wrote is
+upgraded at startup (`context` and `account` lose their "required when" rules, `time`
+stays declared as legacy and `timezone` is dropped); a customised definition is left alone.
 
 The currently configured frontmatter schema still applies. Keep workflow
 metadata on the source unless its corresponding note field is declared.
@@ -168,15 +167,21 @@ its audio with it once Git records the deletion; other source audio remains in t
 Audio that another unfinished recording still uses, or that any other note links to, is
 never removed by this clean-up. A removal that keeps failing becomes one Problems entry with a Retry action.
 Filing errors are Problems entries
-and retry automatically. Human edits of a filed note retain review and update search.
+and retry automatically; on the companion a reviewed note that could not be filed is a row on
+Notes in Review with one sentence and Try again. Human edits of a filed note retain review and
+update search.
 
 A changed payload under the same external ID creates an archive revision and
 preserves the existing note. It does not silently publish the new source text.
 To approve a revision, review the current source page and explicitly PATCH the
-note's reviewed field to true again. In Obsidian, change reviewed to false,
-allow it to sync and reconcile, then change it to true. Ordinary body, date,
-and association edits never approve a newer source revision. New associations
-on an already reviewed note also require that deliberate review action.
+note's reviewed field to true again. A note that is not yet filed when its source
+changes has its reviewed mark cleared by Coppermind (the note and its review receipt), so
+it is an ordinary note waiting for review: tick reviewed and it files. A note that is already
+filed is not pulled back: in Obsidian, change reviewed to false, allow it to sync and
+reconcile, then change it to true. Ordinary body, date, and association edits never approve a
+newer source revision. New associations on an already reviewed note also require that
+deliberate review action; a filed note that gains one keeps its mark and shows as a filing
+error until it is reviewed again.
 Approval records pin the exact source revisions; restore cannot advance them.
 Use a distinct submission ID for new material that needs its own reviewable note.
 

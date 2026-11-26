@@ -57,6 +57,10 @@ def edited_schema() -> SchemaDocument:
     context = next(definition for definition in schema.keys if definition.name == "context")
     context.vocabulary_meanings = {"external": "Work for a paying customer."}
     context.guidance = "Pick where the note files."
+    # A schema an operator wrote can still make one key depend on another.
+    context.required_when, context.required_when_values = "type", ["work"]
+    account = next(definition for definition in schema.keys if definition.name == "account")
+    account.required_when, account.required_when_values = "context", ["external"]
     schema.tags = {"architecture": "System design decisions.", "runbook": ""}
     schema.tag_aliases = {"arch": "architecture", "design": "architecture"}
     schema.tag_mode = "closed"
@@ -218,7 +222,9 @@ def test_a_fresh_install_serves_account_as_a_list_and_date_as_a_day_or_datetime(
         assert response.status_code == 200
         fields = {field["name"]: field for field in response.json()["fields"]}
         assert fields["account"]["kind"] == "list"
-        assert fields["account"]["required_when"] == {"key": "context", "values": ["external"]}
+        # Nothing about a note's account or context holds it back by default.
+        assert fields["account"]["required_when"] is None
+        assert fields["context"]["required_when"] is None
         assert "one-item list" in fields["account"]["description"]
         assert fields["date"]["kind"] == "date"
         assert fields["date"]["required"] is False

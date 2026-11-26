@@ -61,7 +61,7 @@ PAIRING_ATTEMPTS_IN_ALL = 100
 PAIRING_QUEUE_SECONDS = 10
 NEW_DROP_FOLDER = "To Coppermind"
 # Problems that are not anybody's to fix: they are told once and can be put away.
-FILING_ACTIONS = {"note-check", "note-keep-both", "note-replace", "note-no-time"}
+FILING_ACTIONS = {"note-check"}
 NOTICE_KINDS = {"returned_note", "folder_kept", "reserved_type", "date_mismatch", "path_notice"}
 FOLDER_SETTINGS = {
     "review": "review_folder",
@@ -974,11 +974,8 @@ class AdminService:
             "notes-find": lambda payload: notes.find(str(payload.get("q", ""))),
             "note": notes.detail,
             "note-check": notes.check_again,
-            "note-no-time": notes.no_set_time,
             "note-gone": notes.gone_on_purpose,
-            "note-keep-both": notes.keep_both,
             "note-restore": notes.restore,
-            "note-replace": notes.replace,
             "note-copy": notes.resolve_copy,
             "incoming": plain(incoming.listing),
             "incoming-item": incoming.detail,

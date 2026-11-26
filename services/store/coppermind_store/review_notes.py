@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import json
 import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -25,6 +26,7 @@ from coppermind.ids import is_valid_id
 from coppermind.naming import sanitize_folder
 from coppermind.recording_writeup import failure_reason
 from coppermind.store_protocol import NotFound, ReplaceNote, StoreError
+from coppermind_store.note_lifecycle import SETTLING
 
 if TYPE_CHECKING:
     from coppermind_store.context_service import ContextService
@@ -60,6 +62,28 @@ def _now() -> str:
 
 def _step(state: str, reason: str = "", when: str = "", **more: Any) -> dict[str, Any]:
     return {"state": state, "reason": reason, "when": when, **more}
+
+
+# What earlier releases recorded when a work note had no start time. Nothing holds a note back
+# for that now, so a journal that still says it is waiting for the next pass, not a failure.
+RETIRED_REASONS = ("confirm the meeting time", "enter a valid local meeting time")
+
+
+def filing_sentence(error: str) -> str:
+    """One plain sentence for a reviewed note that could not be filed, from the recorded error."""
+    cause = error.split(":", 1)[0]
+    if cause == "ValueError" and any(
+        text in error
+        for text in ("a note date is required", "expected a valid date", "without a UTC offset")
+    ):
+        return "This note could not be filed because it has no date Coppermind can read."
+    if cause in {"NoteUnparseable", "FrontmatterError"}:
+        return "This note could not be filed because Coppermind could not read it."
+    if cause.endswith("FilesystemUnavailable") or cause in {"OSError", "PermissionError"}:
+        return "This note could not be filed because its folder could not be written to."
+    if cause in {"MetadataUnavailable", "StoreUnavailable", "VersionConflict"}:
+        return "This note could not be filed because Coppermind's records were busy."
+    return "This note could not be filed."
 
 
 class Unwritable(Exception):
@@ -150,6 +174,8 @@ class ReviewNotes:
             and (writeup_on if job.generation_mode == "markdown-v1" else suggestions_on),
             "can_enrich": suggestions_on and not row.reviewed,
         }
+        if row.reviewed and (problem := self.filing_problem(row.id)):
+            item["filing"] = {"problem": problem}
         item["writeup"] = self.writeup_step(row.id, job, enrichment)
         item["suggestions"] = self.suggestions_step(row.id, job, enrichment, suggestions_on)
         kept = self.context.read(STATE + row.id, {})
@@ -160,6 +186,40 @@ class ReviewNotes:
                 "if_match": kept.get("if_match", ""),
             }
         return item
+
+    def filing_problem(self, note_id: str) -> str:
+        """What stopped a reviewed note from being filed, in a sentence, or nothing.
+
+        A short wait for the file to stop changing is not a problem, and a note that has not
+        failed is never listed."""
+        journal = self.context.store.control.store.state_dir / "filing" / f"{note_id}.json"
+        try:
+            error = str(json.loads(journal.read_bytes()).get("error") or "")
+        except (OSError, ValueError):
+            return ""
+        if (
+            not error
+            or error.startswith("SourceRevisionNeedsReview")
+            or SETTLING in error
+            or any(old in error for old in RETIRED_REASONS)
+        ):
+            return ""
+        return filing_sentence(error)
+
+    async def file_again(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """File a reviewed note straight away, and say what became of it."""
+        note_id = str(payload.get("id", ""))
+        if not is_valid_id(note_id):
+            raise ValueError("That note is no longer listed.")
+        async with self.context.store.session_factory() as session:
+            row = await session.get(Note, note_id)
+        if row is None or row.state != "ok":
+            raise NotFound(note_id)
+        result = await self.context.store.admin.notes.check_again({"id": note_id})
+        return {
+            "filed": bool(result.get("filed")),
+            "problem": "" if result.get("filed") else self.filing_problem(note_id),
+        }
 
     def writeup_step(self, note_id: str, job: Any, enrichment: Any) -> dict[str, Any]:
         if job is None:

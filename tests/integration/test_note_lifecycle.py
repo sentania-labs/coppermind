@@ -10,7 +10,7 @@ async def enable(store):
     await store.context.setup_lifecycle({"revision": 0})
 
 
-async def test_review_requires_meeting_time_and_records_final_human_metadata(store):
+async def test_review_needs_no_meeting_time_and_records_final_human_metadata(store):
     await enable(store)
     note = await store.create_note(
         CreateNote(
@@ -19,19 +19,9 @@ async def test_review_requires_meeting_time_and_records_final_human_metadata(sto
             frontmatter={"type": "work", "date": "2026-10-16"},
         )
     )
-    with pytest.raises(ValueError, match="meeting time"):
-        await store.context.complete_review(
-            {"note_id": note.id, "if_match": note.content_hash, "confirmation": "Complete review"}
-        )
     note = await store.patch_frontmatter(
         note.id,
-        PatchFrontmatter(
-            set={
-                "time_unknown": True,
-                "attendees": ["alex@example.com"],
-                "tags": ["human-choice"],
-            }
-        ),
+        PatchFrontmatter(set={"attendees": ["alex@example.com"], "tags": ["human-choice"]}),
         if_match=note.content_hash,
     )
     payload = {"note_id": note.id, "if_match": note.content_hash, "confirmation": "Complete review"}
@@ -66,17 +56,19 @@ async def test_nonwork_needs_no_time_and_stale_completion_does_not_overwrite(sto
     assert (await store.get_note(note.id)).frontmatter["tags"] == ["changed"]
 
 
-async def test_direct_review_with_missing_meeting_time_blocks_filing(store):
+async def test_a_reviewed_work_note_with_only_a_day_files(store):
     await enable(store)
     note = await store.create_note(CreateNote(title="Meeting", frontmatter={"type": "work"}))
-    await store.patch_frontmatter(
+    note = await store.patch_frontmatter(
         note.id,
-        PatchFrontmatter(set={"reviewed": True, "date": "2026-10-16"}, unset=["time"]),
+        PatchFrontmatter(set={"date": "2026-10-16"}, unset=["time"]),
         if_match=note.content_hash,
     )
-    with pytest.raises(ValueError, match="meeting time"):
-        await file_note(store, note.id)
-    assert (await store.get_note(note.id)).path.startswith("Review/")
+    await store.context.complete_review(
+        {"note_id": note.id, "if_match": note.content_hash, "confirmation": "Complete review"}
+    )
+    assert await file_note(store, note.id) is True
+    assert (await store.get_note(note.id)).path.startswith("work/2026/2026-10/")
 
 
 async def test_dropbox_exchange_export_imports_without_choice(store):
@@ -691,7 +683,7 @@ async def test_persisted_schema_requiring_date_accepts_time_only_notes(store):
     assert (await store.get_note(ingested_note.id)).path.startswith("work/2026/2026-10/")
 
 
-def test_validate_review_rejects_offset_on_any_type_but_malformed_time_only_on_work(store):
+def test_validate_review_rejects_an_offset_on_any_type_and_asks_no_type_for_a_time(store):
     from datetime import UTC, datetime
 
     from coppermind_store.note_lifecycle import validate_review
@@ -712,9 +704,10 @@ def test_validate_review_rejects_offset_on_any_type_but_malformed_time_only_on_w
             updated_at=datetime.now(UTC),
         )
 
-    validate_review(note(type="personal", date="2026-10-20", time="TBD"), schema)
-    with pytest.raises(ValueError, match="valid local meeting time"):
-        validate_review(note(type="work", date="2026-10-20", time="TBD"), schema)
+    # Filing needs only the day, so no type of note is held for its start time.
+    for kind in ("personal", "work"):
+        validate_review(note(type=kind, date="2026-10-20", time="TBD"), schema)
+        validate_review(note(type=kind, date="2026-10-20"), schema)
     for kind in ("personal", "work"):
         with pytest.raises(ValueError, match="UTC offset"):
             validate_review(note(type=kind, time="2026-10-20T12:00:00-05:00"), schema)

@@ -97,8 +97,28 @@ def test_a_type_vocabulary_an_owner_closes_is_enforced():
     assert "type: 'podcast' is not one of work, personal, reference, journal" in problems
 
 
-def test_default_schema_requires_account_for_external_notes():
+def test_default_schema_asks_nothing_of_account_or_context():
     schema = default_schema()
+    base = {
+        "schema_version": 1,
+        "id": "x",
+        "date": "2026-09-08",
+        "type": "work",
+        "reviewed": True,
+        "sources": [],
+    }
+    # No context, and a customer note with no account, are both valid: a reviewed note files.
+    assert schema.validate_frontmatter(base) == []
+    assert schema.validate_frontmatter({**base, "context": "external"}) == []
+    assert schema.validate_frontmatter({**base, "context": "external", "account": "Acme"}) == []
+    keys = {key.name: key for key in schema.keys}
+    assert keys["context"].required_when is None and keys["account"].required_when is None
+
+
+def test_a_schema_an_operator_wrote_can_still_require_one_key_when_another_has_a_value():
+    schema = default_schema()
+    account = next(key for key in schema.keys if key.name == "account")
+    account.required_when, account.required_when_values = "context", ["external"]
     base = {
         "schema_version": 1,
         "id": "x",
@@ -208,8 +228,17 @@ def test_account_string_and_one_item_list_validate_the_same():
     assert schema.validate_frontmatter(external(["Xcel", "United"])) == []
 
 
-def test_external_note_with_an_empty_account_fails_like_a_missing_one():
+def test_external_note_needs_no_account_so_an_empty_one_is_as_good_as_none():
     schema = default_schema()
+    for empty in ([], "", "  ", [""], None):
+        assert schema.validate_frontmatter(external(empty)) == []
+    assert schema.invalid_keys(external([])) == []
+
+
+def test_an_empty_account_fails_like_a_missing_one_under_a_rule_an_operator_wrote():
+    schema = default_schema()
+    account = next(key for key in schema.keys if key.name == "account")
+    account.required_when, account.required_when_values = "context", ["external"]
     missing = external("Xcel")
     del missing["account"]
     expected = schema.validate_frontmatter(missing)

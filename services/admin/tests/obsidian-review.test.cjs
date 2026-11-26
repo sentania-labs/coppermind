@@ -37,7 +37,7 @@ async function fixture(local, overrides={}){
   class Plugin {registerView(type,fn){factory=fn;factories[type]=fn;}addSettingTab(tab){this.settingTab=tab;}addCommand(command){(this.commands??={})[command.id]=command;}async saveData(data){(this.saved??=[]).push(JSON.parse(JSON.stringify(data)));}addRibbonIcon(icon,title){(this.ribbons??=[]).push(title);}registerEvent(){}async loadData(){return {url:'https://coppermind.example',secret:'local-secret-name'};}}
   class ItemView {constructor(leaf){this.app=leaf.app;this.contentEl=new El();}}
   const app={metadataCache:{getFileCache:()=>({frontmatter:{id:'test-note'}})},secretStorage:{getSecret:()=> 'synthetic-credential'},vault:{read:async()=>local??raw,getAbstractFileByPath:path=>({path})},workspace:{getActiveFile:()=>file,on:()=>null,getActiveViewOfType:()=>null,openLinkText:()=>{}}};
-  const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,Modal:class{constructor(app){this.app=app;this.contentEl=new El();}open(){modals.push(this);this.onOpen();}close(){this.onClose();}},PluginSettingTab:class{constructor(){this.containerEl=new El();}},SecretComponent:class{setValue(){return this;}onChange(){return this;}},Notice:class{constructor(text){notices.push(text);}},MarkdownView:class{},requestUrl:async req=>{requests.push(req);if(req.url.endsWith('/v1/pair')&&overrides.pair)return overrides.pair(req);if(req.url.endsWith('/v1/anything')&&overrides.page)return overrides.page(req);if(req.url.endsWith('/v1/recordings/waiting'))return overrides.waitingFail?{status:overrides.waitingFail===true?500:overrides.waitingFail,json:{message:'down'}}:overrides.waitingHang?new Promise(()=>{}):{status:200,json:overrides.waiting};if(req.url.endsWith('/v1/dropbox'))return overrides.dropboxFail?{status:overrides.dropboxFail===true?500:overrides.dropboxFail,json:{message:'down'}}:{status:200,json:overrides.dropbox??{folder:'Dropbox',items:[]}};if(req.url.includes('/v1/dropbox/')&&req.url.endsWith('/dismiss'))return overrides.dismissDropFail?{status:500,json:{}}:{status:200,json:{dismissed:'x'}};if(req.url.endsWith('/v1/recordings/summaries-again'))return overrides.summariesAgain?overrides.summariesAgain(req):{status:200,json:{queued:2,already:0,skipped:0}};if(new URL(req.url).pathname==='/v1/review/notes')return overrides.reviewNotesFail?{status:overrides.reviewNotesFail===true?500:overrides.reviewNotesFail,json:{message:'down'}}:{status:200,json:typeof overrides.reviewNotes==='function'?overrides.reviewNotes(req):overrides.reviewNotes};if(req.url.endsWith('/resummarize')&&req.method==='POST')return overrides.resummarize?overrides.resummarize(req):{status:200,json:{started:true,already:false}};if(req.url.endsWith('/suggestions')&&req.method==='POST')return overrides.suggestionsRequest?overrides.suggestionsRequest(req):{status:200,json:{jobs:['j']}};if(req.url.endsWith('/summary-again'))return overrides.summaryAgain?overrides.summaryAgain(req):{status:200,json:{title:'Planning',already:false}};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/dismiss'))return overrides.dismissFail?{status:500,json:{}}:{status:200,json:{}};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/retry'))return overrides.retryFail?{status:overrides.retryFail===true?500:overrides.retryFail,json:{}}:(overrides.onRetry?.(),{status:200,json:{}});if(req.url.endsWith('/v1/schema'))return {status:200,json:{roles:{id_key:'id'}}};if(req.url.endsWith('/v1/entities/voice/recognition'))return {status:200,json:overrides.recognition||{enabled:true,attendees_field:'attendees'}};if(req.url.endsWith('/v1/entities/voice/unknowns'))return {status:200,json:overrides.unknownVoices||{}};if(req.url.endsWith('/v1/entities/voice/people'))return {status:200,json:overrides.savedPeople||{}};if(req.url.includes('/v1/entities?'))return overrides.rejectPeople?{status:overrides.rejectPeople===true?403:overrides.rejectPeople,json:{error:'forbidden'}}:{status:200,json:typeof overrides.peopleResults==='function'?await overrides.peopleResults(req):overrides.peopleResults||{items:[],next_cursor:null}};if(req.url.endsWith('/review')&&req.method==='POST'&&overrides.rejectReview)return {status:403,json:{error:'forbidden'}};return {status:200,json:{note:{content_hash:digest,frontmatter:{reviewed:false}},roles:{reviewed_key:'reviewed',type_key:'type'},suggestions:[],unresolved:[],stale:false,state:'suggested',suggestions_enabled:true,job_id:null,...overrides}};}}),crypto:webcrypto,TextEncoder,URL,setTimeout,clearTimeout,setInterval,clearInterval};
+  const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,Modal:class{constructor(app){this.app=app;this.contentEl=new El();}open(){modals.push(this);this.onOpen();}close(){this.onClose();}},PluginSettingTab:class{constructor(){this.containerEl=new El();}},SecretComponent:class{setValue(){return this;}onChange(){return this;}},Notice:class{constructor(text){notices.push(text);}},MarkdownView:class{},requestUrl:async req=>{requests.push(req);if(req.url.endsWith('/v1/pair')&&overrides.pair)return overrides.pair(req);if(req.url.endsWith('/v1/anything')&&overrides.page)return overrides.page(req);if(req.url.endsWith('/v1/recordings/waiting'))return overrides.waitingFail?{status:overrides.waitingFail===true?500:overrides.waitingFail,json:{message:'down'}}:overrides.waitingHang?new Promise(()=>{}):{status:200,json:overrides.waiting};if(req.url.endsWith('/v1/dropbox'))return overrides.dropboxFail?{status:overrides.dropboxFail===true?500:overrides.dropboxFail,json:{message:'down'}}:{status:200,json:overrides.dropbox??{folder:'Dropbox',items:[]}};if(req.url.includes('/v1/dropbox/')&&req.url.endsWith('/dismiss'))return overrides.dismissDropFail?{status:500,json:{}}:{status:200,json:{dismissed:'x'}};if(req.url.endsWith('/v1/recordings/summaries-again'))return overrides.summariesAgain?overrides.summariesAgain(req):{status:200,json:{queued:2,already:0,skipped:0}};if(new URL(req.url).pathname==='/v1/review/notes')return overrides.reviewNotesFail?{status:overrides.reviewNotesFail===true?500:overrides.reviewNotesFail,json:{message:'down'}}:{status:200,json:typeof overrides.reviewNotes==='function'?overrides.reviewNotes(req):overrides.reviewNotes};if(req.url.endsWith('/file-again')&&req.method==='POST')return overrides.fileAgain?overrides.fileAgain(req):{status:200,json:{filed:true,problem:''}};if(req.url.endsWith('/resummarize')&&req.method==='POST')return overrides.resummarize?overrides.resummarize(req):{status:200,json:{started:true,already:false}};if(req.url.endsWith('/suggestions')&&req.method==='POST')return overrides.suggestionsRequest?overrides.suggestionsRequest(req):{status:200,json:{jobs:['j']}};if(req.url.endsWith('/summary-again'))return overrides.summaryAgain?overrides.summaryAgain(req):{status:200,json:{title:'Planning',already:false}};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/dismiss'))return overrides.dismissFail?{status:500,json:{}}:{status:200,json:{}};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/retry'))return overrides.retryFail?{status:overrides.retryFail===true?500:overrides.retryFail,json:{}}:(overrides.onRetry?.(),{status:200,json:{}});if(req.url.endsWith('/v1/schema'))return {status:200,json:{roles:{id_key:'id'}}};if(req.url.endsWith('/v1/entities/voice/recognition'))return {status:200,json:overrides.recognition||{enabled:true,attendees_field:'attendees'}};if(req.url.endsWith('/v1/entities/voice/unknowns'))return {status:200,json:overrides.unknownVoices||{}};if(req.url.endsWith('/v1/entities/voice/people'))return {status:200,json:overrides.savedPeople||{}};if(req.url.includes('/v1/entities?'))return overrides.rejectPeople?{status:overrides.rejectPeople===true?403:overrides.rejectPeople,json:{error:'forbidden'}}:{status:200,json:typeof overrides.peopleResults==='function'?await overrides.peopleResults(req):overrides.peopleResults||{items:[],next_cursor:null}};if(req.url.endsWith('/review')&&req.method==='POST'&&overrides.rejectReview)return {status:403,json:{error:'forbidden'}};return {status:200,json:{note:{content_hash:digest,frontmatter:{reviewed:false}},roles:{reviewed_key:'reviewed',type_key:'type'},suggestions:[],unresolved:[],stale:false,state:'suggested',suggestions_enabled:true,job_id:null,...overrides}};}}),crypto:webcrypto,TextEncoder,URL,setTimeout,clearTimeout,setInterval,clearInterval};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../coppermind_admin/obsidian_plugin/main.js'),'utf8'),context);
   const plugin=new context.module.exports();plugin.app=app;await plugin.onload();
   const view=factory({app});await view.refresh();
@@ -120,9 +120,10 @@ test('reviewed flag does not hide interrupted completion recovery',async()=>{
   assert.equal(f.requests.filter(r=>r.method==='POST').length,1);
 });
 
-for(const type of ['work','personal','reference','journal'])test(type+' review shows meeting time only for work',async()=>{
+for(const type of ['work','personal','reference','journal'])test(type+' review asks for no meeting time',async()=>{
   const f=await fixture(undefined,{note:{frontmatter:{type,reviewed:false}}});
-  assert.equal(f.view.contentEl.all().some(e=>e.text==='Meeting time'),type==='work');
+  const texts=f.view.contentEl.all().map(e=>e.text);
+  assert.ok(!texts.includes('Meeting time')&&!texts.includes('Time unknown')&&!texts.includes('Save time'));
 });
 
 test('speaker choice is sent with the selected proposal',async()=>{
@@ -1129,4 +1130,43 @@ test('a long list can be filtered as you type, and rows are compact',async()=>{
   find.value='';find.oninput();
   const card=f.view.contentEl.all().find(e=>e.cls?.includes('coppermind-row'));
   assert.ok(card.children.length<=5);
+});
+
+// A reviewed note that could not be filed is a row on Notes in Review: one sentence and Try again.
+test('a reviewed note that could not be filed is a row with one sentence and Try again',async()=>{
+  const sentence='This note could not be filed because its folder could not be written to.';
+  const f=await notesScreen([
+    reviewNote('n1','Planning'),
+    reviewNote('n2','Hallway chat',{from_recording:true,filing:{problem:sentence}}),
+  ]);
+  const texts=textsOf(f.view);
+  assert.ok(texts.includes(sentence));
+  assert.equal(texts.filter(t=>t==='Try again').length,1);
+  assert.ok(texts.indexOf('Hallway chat')<texts.indexOf('Planning'),'the row that could not be filed comes first');
+  assert.ok(!texts.some(t=>/needs attention|nothing needs you/i.test(t)));
+  assert.ok(!texts.slice(texts.indexOf('Hallway chat'),texts.indexOf('Planning')).some(t=>t.startsWith('Write-up')||t.startsWith('Suggestions')));
+});
+
+test('Try again files the note, and the row goes when it is filed',async()=>{
+  const sentence='This note could not be filed.';
+  const f=await notesScreen([reviewNote('n2','Hallway chat',{filing:{problem:sentence}})],{fileAgain:()=>{f.state.notes=[];return {status:200,json:{filed:true,problem:''}};}});
+  await f.view.contentEl.all().find(e=>e.text==='Try again').onclick();
+  assert.deepEqual(posts(f),['/v1/notes/n2/file-again']);
+  assert.ok(!textsOf(f.view).includes(sentence));
+  assert.ok(!textsOf(f.view).includes('Try again'));
+});
+
+test('Try again that fails says why on the row and offers it again',async()=>{
+  const first='This note could not be filed.',second='This note could not be filed because its folder could not be written to.';
+  const f=await notesScreen([reviewNote('n2','Hallway chat',{filing:{problem:first}})],{fileAgain:()=>{f.state.notes[0].filing={problem:second};return {status:200,json:{filed:false,problem:second}};}});
+  await f.view.contentEl.all().find(e=>e.text==='Try again').onclick();
+  const texts=textsOf(f.view);
+  assert.equal(texts.filter(t=>t===second).length,1,'the reason is said once, on the row');
+  assert.ok(texts.includes('Tried again just now.'));
+  assert.ok(texts.includes('Try again'));
+});
+
+test('a reviewed note that has not failed shows no filing row',async()=>{
+  const f=await notesScreen([reviewNote('n1','Planning')]);
+  assert.ok(!textsOf(f.view).includes('Try again'));
 });

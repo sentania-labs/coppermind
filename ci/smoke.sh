@@ -648,10 +648,10 @@ step "edit the file on the volume behind the store's back, as a device would"
 # From the editor container, never the store: the store is the process under
 # test, so an edit made through it would prove only that it can change its own
 # volume.
-# The note is a work note with a day and no time, so the person ticking Reviewed also says
-# there was no set time: a reviewed work note is filed once its time is known or ruled out.
+# The note is a work note with a day and no time. Ticking Reviewed is all it takes to file it:
+# filing needs only the day.
 compose exec -T editor python3 -c \
-    'import sys; p = sys.argv[1]; t = open(p).read(); open(p, "w").write(t.replace("reviewed: false", "reviewed: true\ntime_unknown: true", 1))' \
+    'import sys; p = sys.argv[1]; t = open(p).read(); open(p, "w").write(t.replace("reviewed: false", "reviewed: true", 1))' \
     "/data/notes/$note_path"
 month_path="work/2026/2026-09/${note_path##*/}"
 wait_for_note_path "$note_id" "$month_path"
