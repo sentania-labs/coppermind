@@ -202,3 +202,30 @@ def test_sync_page_toggle_saves_the_setting(admin, on):
     from coppermind.statefiles import StateStore
 
     assert read_settings(StateStore(wiring.state_dir)).sync.companion_auto_update is bool(on)
+
+
+def test_admin_start_up_builds_its_store_client_when_no_request_has_yet(admin, monkeypatch):
+    """A fresh Admin has no store client until a request makes one; start-up must not give up."""
+    client, wiring, _ = admin
+    built, asked = [], []
+
+    class Client:
+        def __init__(self, url, token, *, timeout):
+            built.append((url, token))
+
+        async def admin_action(self, action, body):
+            asked.append(action)
+            return {"state": "current"}
+
+    async def quick(seconds):
+        return None
+
+    token_file = wiring.state_dir / "token"
+    token_file.write_text("tok\n")
+    wiring.internal_token_file = token_file
+    monkeypatch.setattr("coppermind_admin.main.asyncio.sleep", quick)
+    monkeypatch.setattr("coppermind_admin.shell.HttpStoreClient", Client)
+    del client.app.state.store
+    asyncio.run(update_companion(client.app, wiring))
+    assert asked == ["companion-autoupdate"]
+    assert built == [(wiring.store_url, "tok")]

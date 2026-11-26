@@ -40,7 +40,7 @@ from coppermind_admin.auth import (
     InvalidClaimCode,
     SignedSessions,
 )
-from coppermind_admin.shell import COOKIE, csrf_token, with_csrf
+from coppermind_admin.shell import COOKIE, app_store_client, csrf_token, with_csrf
 
 SERVICE = "coppermind-admin"
 PUBLIC = {"/admin/welcome", "/admin/signin", "/healthz", "/readyz"}
@@ -224,9 +224,9 @@ async def update_companion(app: FastAPI, wiring: Wiring) -> None:
     for wait in (2, 5, 10, 30, 60, 120, 300):
         await asyncio.sleep(wait)
         try:
-            store = getattr(app.state, "store", None)
-            if store is None:
-                return
+            # Admin builds its store client on the first request, and a start-up with no
+            # visitor yet has none, so this builds it the same way a request would.
+            store = app_store_client(app, wiring)
             answer = await store.admin_action("companion-autoupdate", place_payload(wiring))
         except StoreError:
             continue
