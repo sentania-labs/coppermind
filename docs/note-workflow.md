@@ -256,7 +256,7 @@ reviewed, in the companion or by setting `reviewed` yourself. After the same
 voice with a person in People does: the voice is attached to that person, so recordings to
 come recognise it; this note's transcript and every other note's that used the voice have
 the label replaced where the text was not hand-edited; and the person is added to this note's attendees when
-Model connections has an attendees property. The entry in this note becomes
+suggestions point at an attendees property. The entry in this note becomes
 "Name, talk time. Named by you." Typing a name in a note that is already reviewed does the
 same when the note is next saved. Tick "This is me" with your name to make that person the
 owner: they are listed first and marked "(you)" in later notes, and the write-up treats

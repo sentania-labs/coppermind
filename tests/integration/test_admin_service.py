@@ -244,8 +244,9 @@ def test_what_is_recalled_on_home_for_each_change():
     assert said("calendar-add", {"state": "failed", "name": "a.ics"}) == ""
     filed = {"filed": True, "path": "work/2026/2026-11/Budget.md", "name": "Budget"}
     assert said("note-check", filed) == '"Budget" was filed in work/2026/2026-11.'
+    # Filing is said the same way whether or not the owner ticked Reviewed to get there.
     assert said("note-check", filed | {"reviewed": True}) == (
-        'You reviewed "Budget". Filed in work/2026/2026-11.'
+        '"Budget" was filed in work/2026/2026-11.'
     )
     assert said("note-check", {"filed": False, "settling": True}) == ""
     assert said("suggestions-save", {"refused": {"message": "no"}}) == ""

@@ -170,7 +170,7 @@ asks for confirmation. The voice's appearances are
 relabelled in recording transcripts; unchanged generated
 summary lines can also be updated. Owner-edited lines are left alone. When a voice left
 unnamed at review is later attached to a person, that person is also added to the
-attendees of the already reviewed note, if Model connections has an attendees property;
+attendees of the already reviewed note, if suggestions point at an attendees property;
 anyone already listed stays, nobody is removed, and a note still in review is left to its
 review. A wrong match can
 be separated for one recording. A person or unknown voice's saved voice data can be

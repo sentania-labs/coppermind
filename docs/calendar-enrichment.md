@@ -1,8 +1,8 @@
 # Calendar intake and enrichment
 
 Calendar intake and optional enrichment operate independently of note sync.
-Enrichment never writes the note body. Explicit review completion can accept
-selected proposals and mark the note reviewed. See [Note workflow](note-workflow.md)
+Enrichment never writes the note body. Review completion applies the speaker names
+the owner picks and marks the note reviewed. See [Note workflow](note-workflow.md)
 for the shared Dropbox, Obsidian companion and lifecycle setup.
 
 ## One calendar, automatic intake
