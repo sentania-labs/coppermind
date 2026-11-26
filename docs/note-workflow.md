@@ -64,10 +64,13 @@ what Coppermind wrote, the new write-up replaces it and Coppermind keeps the ear
 Getting it back from the companion is not available yet; it arrives with restore from Git
 history. If you edited the body, nothing is overwritten: the row says so and **Compare with my note** shows
 your lines against the new write-up, and the note changes only if you choose **Replace my
-note with the new write-up**. Every note has **Enrich**, which runs the suggestions step
+note with the new write-up**, which says before it happens that your text is replaced and
+afterwards that your earlier version is saved in Coppermind and not shown there. Every note has **Enrich**, which runs the suggestions step
 again (attendees, account, tags, type and the like). **Resummarize all missing** at the top
-writes up every note that has no write-up or whose write-up failed. Clicking a title opens
-the note. Both buttons show that they started, and the row says when each finished or why it
+writes up every note that has no write-up or whose write-up failed. A box above the list finds a note by title as you type. Rows keep their place while the
+screen is open and are put in order again (notes needing you first) when it is opened or
+Refresh is pressed. When write-ups or suggestions are switched off the screen says so once
+and offers no button that cannot work. Clicking a title opens the note. Both buttons show that they started, and the row says when each finished or why it
 failed; a failed rewrite leaves the note as it was. The screen needs `notes:read` and
 `sources:read`, and the buttons need `notes:write` as well; no permission beyond the
 companion's own is added.
@@ -76,7 +79,9 @@ The same list is kept as a note called `Needs attention` in the review folder, w
 a phone with no plugin and goes away when nothing needs attention. The calls are in [the API reference](api.md#recordings-audio-on-its-own).
 
 In the review panel, a note written from a recording points to Notes in Review for writing it
-up again or running its suggestions again; there is no separate button in the panel.
+up again or running its suggestions again; there is no separate button in the panel. If a
+rewrite is being made when you mark the note reviewed, the panel warns that it will be
+discarded.
 
 Open a note and run **Coppermind Review: Review current note**. The panel checks
 that the exact local bytes match the server before permitting completion. Wait

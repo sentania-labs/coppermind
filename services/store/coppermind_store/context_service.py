@@ -434,7 +434,10 @@ class ContextService:
         return await self.lifecycle.resolve_calendar(payload)
 
     async def lifecycle_detail(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return await self.lifecycle.detail(payload)
+        detail = await self.lifecycle.detail(payload)
+        # So the review panel can warn that marking the note reviewed discards a rewrite.
+        detail["rewrite_running"] = str(payload.get("note_id", "")) in self.review_notes.live
+        return detail
 
     async def choose_recording_meeting(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await self.lifecycle.choose_recording_meeting(payload)

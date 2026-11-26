@@ -138,13 +138,11 @@ class ReviewView extends ItemView {
       if(!data.suggestions_enabled)el.createEl('p',{text:'Suggestions are off. You can name speakers below, or turn on enrichment in Model connections.',cls:'coppermind-notice'});
       else if(data.suggestion_error){
         el.createEl('p',{text:'Suggestions could not be completed: '+data.suggestion_error,cls:'coppermind-notice'});
-        const retry=el.createEl('button',{text:'Retry suggestions'});retry.disabled=!synced;retry.onclick=async()=>{
-          try{await this.plugin.call('/v1/notes/'+encodeURIComponent(id)+'/suggestions','POST',{});new Notice('Suggestions queued. Refresh when ready.');}catch(e){new Notice(e.message);}
-        };
+        const again=el.createEl('button',{text:'Open Notes in Review'});again.onclick=()=>this.plugin.openNotesInReview();
       } else if(['queued','running'].includes(data.state))el.createEl('p',{text:'Suggestions are in progress. Refresh this panel when ready.',cls:'coppermind-notice'});
       if(data.speakers_unavailable)el.createEl('p',{text:data.speakers_unavailable,cls:'coppermind-notice'});
       if(data.speaker_notice)el.createEl('p',{text:data.speaker_notice,cls:'coppermind-notice'});
-      if(data.stale)el.createEl('p',{text:'Suggestions are from an earlier version. Keep your edits and finish without them, or request fresh suggestions.',cls:'coppermind-notice'});
+      if(data.stale)el.createEl('p',{text:'Suggestions are from an earlier version. Keep your edits and finish without them, or run Enrich from Notes in Review.',cls:'coppermind-notice'});
       const preview=el.createDiv({cls:'coppermind-card'});
       const updatePreview=()=>{
         preview.empty();preview.createEl('h3',{text:'What will change'});
@@ -279,12 +277,9 @@ class ReviewView extends ItemView {
         }catch(e){new Notice(e.message);}
       };
       if(data.recording_generation_mode!=='markdown-v1'&&(manual||summary)&&['queued','running'].includes(data.state))el.createEl('p',{text:'The summary is still being written. Marking reviewed now files the note without it.',cls:'coppermind-notice'});
+      if(data.rewrite_running)el.createEl('p',{text:'A new write-up is being made for this note. Marking it reviewed now will discard it.',cls:'coppermind-notice'});
       const apply=el.createEl('button',{text:'Apply kept suggestions & mark reviewed',cls:'mod-cta'});apply.disabled=!synced;apply.onclick=()=>finish(true);
       const without=el.createEl('button',{text:'Mark reviewed without changes'});without.disabled=!synced;without.onclick=()=>finish(false);
-      const refresh=el.createEl('button',{text:'Request fresh suggestions'});refresh.disabled=!synced;refresh.onclick=async()=>{
-        try{await this.plugin.call('/v1/notes/'+encodeURIComponent(id)+'/suggestions','POST',{});new Notice('Suggestions queued. Refresh when processing finishes.');}catch(e){new Notice(e.message);}
-      };
-
     }catch(e){el.createEl('p',{text:e.message,cls:'coppermind-notice'});const retry=el.createEl('button',{text:'Retry'});retry.onclick=()=>this.refresh();}
   }
 }
@@ -491,18 +486,20 @@ function stepText(label,step,unavailable){
     case 'working':return label+': being written now'+(at?', started '+at:'')+'.';
     case 'failed':return label+': failed'+(at?' at '+at:'')+'. '+(step.reason||'No reason was given.');
     case 'missing':return label+': missing.'+(step.reason?' '+step.reason:'');
-    case 'off':return label+': suggestions are off. Turn them on in Coppermind Admin.';
+    case 'off':return label+': off.';
     default:return label+': '+(unavailable||'not applicable')+'.';
   }
 }
 // What needs the owner comes first: a held rewrite, a failure or a gap, then work in progress, then the rest.
 const attention=n=>n.kept?0:[n.writeup,n.suggestions].some(x=>x.state==='failed')||(n.can_resummarize&&n.writeup.state==='missing')?1:[n.writeup,n.suggestions].some(x=>x.state==='working')?2:3;
+const WRITEUP_OFF='Write-ups are off, so notes cannot be written up again. Turn them on in Coppermind Admin, under How recordings are written up.';
+const SUGGESTIONS_OFF='Suggestions are off. Turn them on in Coppermind Admin to use Enrich.';
 class NotesView extends ItemView {
-  constructor(leaf,plugin){super(leaf);this.plugin=plugin;this.generation=0;this.local={};this.seen={};}
+  constructor(leaf,plugin){super(leaf);this.plugin=plugin;this.generation=0;this.local={};this.seen={};this.order=[];this.filter='';}
   getViewType(){return NOTES_VIEW;}
   getDisplayText(){return 'Notes in Review';}
   getIcon(){return 'file-text';}
-  async onOpen(){this.schedule();await this.refresh();}
+  async onOpen(){this.schedule();await this.refresh(false,true);}
   async onClose(){clearTimeout(this.timer);this.generation++;}
   schedule(){
     // Look more often while something is being written, so a finish shows up without a click.
@@ -522,30 +519,6 @@ class NotesView extends ItemView {
     ];
   }
   fail(e,fallback){return e.status===403?KEY_MISSING:e.status===422||e.status===404?e.message:fallback;}
-  async refresh(quiet){
-    if(quiet&&(this.refreshing||this.busy))return;
-    const generation=++this.generation, el=this.contentEl;this.refreshing=true;
-    if(!this.loaded){el.empty();el.createEl('h2',{text:'Notes in Review'});el.createEl('p',{text:'Loading the notes in Review…'});}
-    else if(!quiet&&this.stamp)this.stamp.setText('Refreshing…');
-    try{
-      let data;
-      try{data=await this.loadAll();}
-      catch(e){
-        if(generation!==this.generation)return;
-        const problem=e.status===403?KEY_MISSING:NOT_ANSWERING;
-        if(this.loaded){this.problem=problem+' This is what Coppermind last said.';this.showStamp();return;}
-        el.empty();el.createEl('h2',{text:'Notes in Review'});el.createEl('p',{text:problem,cls:'coppermind-notice'});
-        const retry=el.createEl('button',{text:'Retry'});retry.onclick=()=>this.refresh();return;
-      }
-      if(generation!==this.generation)return;
-      if(quiet&&this.busy)return;
-      this.problem='';this.updated=new Date();
-      const fingerprint=JSON.stringify(data)+JSON.stringify(this.local);
-      if(quiet&&this.loaded&&fingerprint===this.fingerprint){this.showStamp();return;}
-      this.noteFinished(data);
-      this.fingerprint=fingerprint;this.data=data;this.loaded=true;this.render();
-    }finally{if(generation===this.generation)this.refreshing=false;}
-  }
   // Every note in Review, a page at a time, so none is left out of the count, the failures or the bulk button.
   async loadAll(){
     let cursor='',data=null;const notes=[];
@@ -556,75 +529,147 @@ class NotesView extends ItemView {
     }
     return {...data,notes};
   }
-  // A step that was being written and no longer is has just finished: say so on its row.
+  // Rows keep their place while the screen is open. They are put in order again only when it is
+  // opened or Refresh is pressed; a note that arrives meanwhile goes to the end.
+  arrange(notes,resort){
+    if(resort||!this.order.length)this.order=[...notes].sort((x,y)=>attention(x)-attention(y)).map(n=>n.id);
+    const known=new Set(this.order);
+    for(const n of notes)if(!known.has(n.id))this.order.push(n.id);
+    const place=new Map(this.order.map((id,i)=>[id,i]));
+    return [...notes].sort((x,y)=>place.get(x.id)-place.get(y.id));
+  }
+  async refresh(quiet,resort){
+    if(quiet&&(this.refreshing||this.busy))return;
+    const generation=++this.generation, el=this.contentEl;this.refreshing=true;
+    if(!this.loaded){el.empty();this.shell=null;el.createEl('h2',{text:'Notes in Review'});el.createEl('p',{text:'Loading the notes in Review…'});}
+    else if(!quiet&&this.stamp)this.stamp.setText('Refreshing…');
+    try{
+      let data;
+      try{data=await this.loadAll();}
+      catch(e){
+        if(generation!==this.generation)return;
+        const problem=e.status===403?KEY_MISSING:NOT_ANSWERING;
+        if(this.loaded){this.problem=problem+' This is what Coppermind last said.';this.showStamp();return;}
+        el.empty();this.shell=null;el.createEl('h2',{text:'Notes in Review'});el.createEl('p',{text:problem,cls:'coppermind-notice'});
+        const retry=el.createEl('button',{text:'Retry'});retry.onclick=()=>this.refresh(false,true);return;
+      }
+      if(generation!==this.generation)return;
+      if(quiet&&this.busy)return;
+      this.problem='';this.updated=new Date();
+      const fingerprint=JSON.stringify(data)+JSON.stringify(this.local)+this.flash;
+      if(quiet&&this.loaded&&fingerprint===this.fingerprint){this.showStamp();return;}
+      if(resort)this.left=[];
+      this.noteFinished(data);
+      data.notes=this.arrange(data.notes||[],resort);
+      this.fingerprint=fingerprint;this.data=data;this.loaded=true;this.render();
+    }finally{if(generation===this.generation)this.refreshing=false;}
+  }
+  // A step that was being written and no longer is has just finished: say so on its row. A note that
+  // left Review while it was being written up is said so at the top.
   noteFinished(data){
+    const present=new Set((data.notes||[]).map(n=>n.id));
+    for(const [id,title] of Object.entries(this.writing||{})){
+      if(!present.has(id)){this.left=[...(this.left||[]),title];delete this.writing[id];}
+    }
+    this.writing=this.writing||{};
     for(const n of data.notes||[]){
+      if(n.writeup.state==='working')this.writing[n.id]=n.title;else delete this.writing[n.id];
       for(const [key,step] of [['writeup',n.writeup],['suggestions',n.suggestions]]){
         const id=n.id+':'+key, before=this.seen[id];
         if(before==='working'&&step.state!=='working')(this.local[n.id]??={}).finished=Object.assign(this.local[n.id].finished||{},{[key]:true});
         this.seen[id]=step.state;
       }
-      if(this.local[n.id]?.message&&!this.local[n.id].problem&&(n.writeup.state==='working'||n.suggestions.state==='working'))delete this.local[n.id].message;
+      if(this.local[n.id]?.message&&!this.local[n.id].problem&&!this.local[n.id].keep&&(n.writeup.state==='working'||n.suggestions.state==='working'))delete this.local[n.id].message;
     }
   }
   showStamp(){
     if(!this.stamp)return;
     this.stamp.setText((this.problem?this.problem+' ':'')+'Last updated '+this.updated.toLocaleTimeString([],{timeStyle:'short'})+'.');
   }
-  render(){
-    const el=this.contentEl, notes=[...(this.data.notes||[])].sort((x,y)=>attention(x)-attention(y));el.empty();this.busy=false;
+  // The parts that stay put while typing in the filter box or while the list redraws.
+  build(){
+    const el=this.contentEl;el.empty();
+    const shell=this.shell={};
     el.createEl('h2',{text:'Notes in Review'});
+    shell.summary=el.createEl('p');
+    const bar=el.createDiv();
+    const refresh=bar.createEl('button',{text:'Refresh'});refresh.onclick=()=>this.refresh(false,true);
+    shell.stamp=this.stamp=bar.createEl('span',{cls:'coppermind-stamp'});
+    shell.notices=el.createDiv();
+    shell.bulk=el.createDiv();
+    shell.flash=el.createDiv();
+    shell.find=el.createEl('input',{attr:{type:'search',placeholder:'Find a note by title'},cls:'coppermind-find'});
+    shell.find.value=this.filter;
+    shell.find.oninput=()=>{this.filter=shell.find.value;this.renderList();};
+    shell.list=el.createDiv();
+  }
+  render(){
+    const data=this.data, notes=data.notes;this.busy=false;
+    if(!this.shell)this.build();
+    const shell=this.shell;
     const missing=notes.filter(n=>n.can_resummarize&&['missing','failed'].includes(n.writeup.state));
     const working=notes.filter(n=>n.writeup.state==='working'||n.suggestions.state==='working');
-    const parts=[plural(notes.length,'note')+' in Review'];
+    const parts=[plural(data.total??notes.length,'note')+' in Review'];
     if(missing.length)parts.push(missing.length+' without a write-up');
     if(working.length)parts.push(working.length+' in progress');
-    el.createEl('p',{text:parts.join(' · ')+'.'});
-    const bar=el.createDiv();
-    const refresh=bar.createEl('button',{text:'Refresh'});refresh.onclick=()=>this.refresh();
-    this.stamp=bar.createEl('span',{cls:'coppermind-stamp'});this.showStamp();
+    shell.summary.setText(parts.join(' · ')+'.');
+    this.showStamp();
+    shell.notices.empty();
+    shell.notices.createEl('p',{text:'Resummarize writes a note up again from its saved transcript and never overwrites what you edited. Enrich runs its suggestions again.',cls:'coppermind-hint'});
+    if(data.writeup_on===false)shell.notices.createEl('p',{text:WRITEUP_OFF,cls:'coppermind-notice'});
+    if(data.suggestions_on===false)shell.notices.createEl('p',{text:SUGGESTIONS_OFF,cls:'coppermind-notice'});
+    for(const title of this.left||[])shell.notices.createEl('p',{text:'"'+title+'" left Review while it was being written up. A write-up that finishes after that is not applied.',cls:'coppermind-notice'});
+    shell.bulk.empty();
     if(missing.length){
-      const all=el.createDiv();
-      const button=all.createEl('button',{text:'Resummarize all missing ('+missing.length+')',cls:'mod-cta'});
-      all.createEl('p',{text:'Writes up again every note above that has no write-up or whose write-up failed. Notes you edited are never overwritten.',cls:'coppermind-hint'});
+      const button=shell.bulk.createEl('button',{text:'Resummarize all missing ('+missing.length+')',cls:'mod-cta'});
       button.onclick=()=>this.resummarizeAll(button,missing);
     }
-    if(this.flash)el.createEl('p',{text:this.flash,cls:'coppermind-notice'});
-    if(!notes.length){el.createEl('p',{text:'No notes are waiting in Review. Notes from new recordings appear here.'});return;}
-    for(const note of notes)this.row(note);
+    shell.flash.empty();if(this.flash)shell.flash.createEl('p',{text:this.flash,cls:'coppermind-notice'});
+    this.renderList();
+  }
+  renderList(){
+    const shell=this.shell, notes=this.data.notes, needle=this.filter.trim().toLowerCase();
+    shell.list.empty();this.feedback={};
+    const shown=notes.filter(n=>!needle||n.title.toLowerCase().includes(needle));
+    if(!notes.length){shell.list.createEl('p',{text:'No notes are waiting in Review. Notes from new recordings appear here.'});return;}
+    if(!shown.length){shell.list.createEl('p',{text:'No note in Review has "'+this.filter.trim()+'" in its title.'});return;}
+    if(needle)shell.list.createEl('p',{text:'Showing '+shown.length+' of '+notes.length+'.',cls:'coppermind-hint'});
+    for(const note of shown)this.row(note,shell.list);
   }
   async resummarizeAll(button,missing){
-    button.disabled=true;this.flash='Starting '+plural(missing.length,'note')+'…';this.render();
-    let started=0;const problems=[];
+    button.disabled=true;this.flash='Starting '+plural(missing.length,'note')+'…';this.shell.flash.empty();this.shell.flash.createEl('p',{text:this.flash,cls:'coppermind-notice'});
+    let started=0;const problems=new Map();
     for(const n of missing){
       try{await this.plugin.call('/v1/notes/'+encodeURIComponent(n.id)+'/resummarize','POST',{});started++;}
-      catch(e){problems.push(n.title+': '+this.fail(e,'Could not start. Check your connection.'));}
+      catch(e){const why=this.fail(e,'Could not start. Check your connection.');problems.set(why,[...(problems.get(why)||[]),n.title]);}
     }
-    this.flash=(started?'Started '+plural(started,'note')+'. Each shows when it finishes.':'No note could be started.')+(problems.length?' Not started: '+problems.join(' '):'');
+    const failed=[...problems].map(([why,titles])=>plural(titles.length,'note')+' not started ('+titles.join(', ')+'): '+why);
+    this.flash=(started?'Started '+plural(started,'note')+'. Each shows when it finishes.':'No note could be started.')+(failed.length?' '+failed.join(' '):'');
     await this.refresh();
   }
-  row(note){
-    const card=this.contentEl.createDiv({cls:'coppermind-card'});
-    const open=card.createEl('button',{text:note.title,cls:'coppermind-title'});
+  row(note,list){
+    const card=list.createDiv({cls:'coppermind-card coppermind-row'});
+    const head=card.createDiv({cls:'coppermind-head'});
+    const open=head.createEl('button',{text:note.title,cls:'coppermind-title'});
     open.onclick=async()=>{
       const file=this.app.vault.getAbstractFileByPath(note.path);
       if(!file){this.say(note.id,'That note is not in this vault yet. Wait for sync, then refresh.',true);return;}
       await this.app.workspace.getLeaf(false).openFile(file);
     };
     const day=note.date&&new Date(note.date);
-    if(day&&!isNaN(day))card.createEl('p',{text:day.toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'}),cls:'coppermind-hint'});
-    card.createEl('p',{text:stepText('Write-up',note.writeup,'this note is not from a recording')});
-    card.createEl('p',{text:stepText('Suggestions',note.suggestions)});
+    if(day&&!isNaN(day))head.createEl('span',{text:day.toLocaleDateString([],{month:'short',day:'numeric'}),cls:'coppermind-hint'});
+    // A rewrite held back for an edited note is one plain status, not "written" and "not changed" together.
+    const writeup=note.kept?'Write-up: a new write-up is ready. Your note has not been changed yet.':stepText('Write-up',note.writeup,'this note is not from a recording');
+    card.createEl('p',{text:writeup,cls:'coppermind-status'});
+    card.createEl('p',{text:stepText('Suggestions',note.suggestions),cls:'coppermind-status'});
     const done=this.local[note.id]?.finished||{};
-    if(done.writeup&&note.writeup.state==='written')card.createEl('p',{text:'The write-up has finished.',cls:'coppermind-notice'});
+    if(!note.kept&&done.writeup&&note.writeup.state==='written')card.createEl('p',{text:'The write-up has finished.',cls:'coppermind-notice'});
     if(done.suggestions&&note.suggestions.state==='written')card.createEl('p',{text:'The suggestions have finished.',cls:'coppermind-notice'});
+    const bar=card.createDiv({cls:'coppermind-actions'});
     if(note.kept){
-      const kept=card.createDiv();
-      kept.createEl('p',{text:'You edited this note, so it was not changed. A new write-up is ready to compare.',cls:'coppermind-notice'});
-      const compare=kept.createEl('button',{text:'Compare with my note'});
-      compare.onclick=()=>{this.busy=true;new KeptRewriteModal(this.app,this.plugin,note,async message=>{this.busy=false;this.flash=message;await this.refresh();},()=>{this.busy=false;}).open();};
+      const compare=bar.createEl('button',{text:'Compare with my note',cls:'mod-cta'});
+      compare.onclick=()=>{this.busy=true;new KeptRewriteModal(this.app,this.plugin,note,async message=>{this.busy=false;this.local[note.id]={...this.local[note.id],message,keep:true};await this.refresh();},()=>{this.busy=false;}).open();};
     }
-    const bar=card.createDiv();
     for(const action of this.actions()){
       if(!action.offered(note))continue;
       const working=action.working(note);
@@ -636,7 +681,6 @@ class NotesView extends ItemView {
       };
     }
     const message=this.local[note.id]?.message;
-    this.feedback=this.feedback||{};
     const line=card.createEl('p',{text:message||'',cls:message?'coppermind-notice':''});this.feedback[note.id]=line;
   }
   say(id,text,problem){
@@ -651,6 +695,7 @@ class KeptRewriteModal extends Modal {
     const el=this.contentEl, kept=this.note.kept;el.empty();
     el.createEl('h3',{text:this.note.title});
     el.createEl('p',{text:'You edited this note, so Coppermind did not change it. Red lines (-) are in your note. Green lines (+) are in the new write-up.'});
+    el.createEl('p',{text:'Replace swaps your text for the new write-up. Your earlier version is saved in Coppermind and is not shown here.',cls:'coppermind-notice'});
     const box=el.createEl('pre',{cls:'coppermind-diff'});
     for(const line of (kept.difference||[]).filter(l=>!/^(---|\+\+\+|@@)/.test(l)))box.createEl('div',{text:line||' ',cls:line.startsWith('+')&&!line.startsWith('+++')?'coppermind-added':line.startsWith('-')&&!line.startsWith('---')?'coppermind-removed':''});
     if(!(kept.difference||[]).length)box.createEl('div',{text:'The two are the same.'});
@@ -659,7 +704,7 @@ class KeptRewriteModal extends Modal {
     const keep=el.createEl('button',{text:'Keep my note'});
     replace.onclick=async()=>{
       replace.disabled=true;keep.disabled=true;status.setText('Replacing…');
-      try{await this.plugin.call('/v1/notes/'+encodeURIComponent(this.note.id)+'/resummarize','POST',{replace:true,if_match:kept.if_match});this.replaced=true;this.close();await this.done('Replaced your note "'+this.note.title+'" with the new write-up. Coppermind keeps the earlier text. Getting it back from the companion is not available yet and arrives with restore from Git history.');}
+      try{await this.plugin.call('/v1/notes/'+encodeURIComponent(this.note.id)+'/resummarize','POST',{replace:true,if_match:kept.if_match});this.replaced=true;this.close();await this.done('Replaced with the new write-up. Your earlier version is saved in Coppermind and is not shown here.');}
       catch(e){status.setText(e.status===403?KEY_MISSING:e.status===422||e.status===404?e.message:'Could not replace the note. Check your connection, then try again.');replace.disabled=false;keep.disabled=false;}
     };
     keep.onclick=()=>this.close();

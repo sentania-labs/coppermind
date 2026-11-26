@@ -112,17 +112,18 @@ class ReviewNotes:
         }
         latest = context.recordings.latest_enrichment()
         suggestions_on = bool(context.config().assignments["enrichment"].enabled)
+        writeup_on = self.writeup_ready()
         notes = []
         for row in rows:
             job = recordings.get(row.id)
-            notes.append(await self.row(row, job, latest.get(row.id), suggestions_on))
+            notes.append(await self.row(row, job, latest.get(row.id), suggestions_on, writeup_on))
         following = int(start) + len(rows)
         return {
             "notes": notes,
             "total": total or 0,
             "next_cursor": str(following) if following < (total or 0) and rows else None,
             "suggestions_on": suggestions_on,
-            "writeup_on": self.writeup_ready(),
+            "writeup_on": writeup_on,
         }
 
     def writeup_ready(self) -> bool:
@@ -135,7 +136,7 @@ class ReviewNotes:
         return bool(limits.enabled and not limits.paused and limits.connection)
 
     async def row(
-        self, row: Note, job: Any, enrichment: Any, suggestions_on: bool
+        self, row: Note, job: Any, enrichment: Any, suggestions_on: bool, writeup_on: bool = True
     ) -> dict[str, Any]:
         item: dict[str, Any] = {
             "id": row.id,
@@ -144,7 +145,9 @@ class ReviewNotes:
             "date": (job.captured_at if job and job.captured_at else "")
             or (row.date.isoformat() if row.date else ""),
             "from_recording": job is not None,
-            "can_resummarize": job is not None and not row.reviewed,
+            "can_resummarize": job is not None
+            and not row.reviewed
+            and (writeup_on if job.generation_mode == "markdown-v1" else suggestions_on),
             "can_enrich": suggestions_on and not row.reviewed,
         }
         item["writeup"] = self.writeup_step(row.id, job, enrichment)

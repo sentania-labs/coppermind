@@ -168,10 +168,10 @@ test('select all suggested names selects low confidence names explicitly',async(
   await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
   assert.deepEqual(JSON.parse(f.requests.find(r=>r.method==='POST').body).selected,[0,1]);
 });
-test('failed suggestions show cause and retry and still permit manual speaker selection',async()=>{
+test('failed suggestions show the cause, point to Notes in Review, and still permit manual speaker selection',async()=>{
   const f=await fixture(undefined,{state:'failed',suggestion_error:'The model timed out.',manual_speaker_review:{revision:2,speakers:['Speaker 1'],candidates:[{id:'person:a',name:'Alex'}]}});
   assert.ok(f.view.contentEl.all().some(e=>e.text?.includes('The model timed out.')));
-  assert.ok(f.view.contentEl.all().some(e=>e.text==='Retry suggestions'));
+  assert.ok(f.view.contentEl.all().some(e=>e.text==='Open Notes in Review')&&!f.view.contentEl.all().some(e=>e.text==='Retry suggestions'||e.text==='Request fresh suggestions'));
   const select=f.view.contentEl.all().find(e=>e.tag==='select');select.value='person:a';select.onchange();
   await f.view.contentEl.all().find(e=>e.text==='Apply kept suggestions & mark reviewed').onclick();
   const body=JSON.parse(f.requests.find(r=>r.method==='POST').body);
@@ -878,7 +878,7 @@ test('Enrich runs the suggestion step on that note and shows it working, then fi
 test('Enrich is not offered when suggestions are off, and a refused one says why',async()=>{
   const off=await notesScreen([reviewNote('n1','Planning',{can_enrich:false,suggestions:step('off')})]);
   assert.ok(!off.view.contentEl.all().some(e=>e.text==='Enrich'));
-  assert.ok(textsOf(off.view).some(t=>t.startsWith('Suggestions: suggestions are off.')));
+  assert.ok(textsOf(off.view).includes('Suggestions: off.'));
   const f=await notesScreen([reviewNote('n1','Planning')],{suggestionsRequest:()=>({status:422,json:{message:'Suggestions are paused.'}})});
   await f.view.contentEl.all().find(e=>e.text==='Enrich').onclick();
   assert.ok(textsOf(f.view).includes('Suggestions are paused.'));
@@ -913,9 +913,11 @@ test('clicking a title opens the note, and a note not yet in the vault says so',
 test('a rewrite held back because the note was edited is compared, and replaces only on request',async()=>{
   const kept={when:'2026-11-25T15:14:00+00:00',if_match:'sha256:1',difference:['--- your note','+++ new write-up','-My own line','+Better body']};
   const f=await notesScreen([reviewNote('n1','Planning',{kept})]);
-  assert.ok(textsOf(f.view).includes('You edited this note, so it was not changed. A new write-up is ready to compare.'));
+  assert.ok(textsOf(f.view).includes('Write-up: a new write-up is ready. Your note has not been changed yet.'));
+  assert.ok(!textsOf(f.view).some(t=>t.startsWith('Write-up: written')));
   await f.view.contentEl.all().find(e=>e.text==='Compare with my note').onclick();
   const modal=f.modals[0];
+  assert.ok(modal.contentEl.all().some(e=>e.text==='Replace swaps your text for the new write-up. Your earlier version is saved in Coppermind and is not shown here.'));
   assert.ok(modal.contentEl.all().some(e=>e.text==='+Better body'&&e.cls==='coppermind-added'));
   assert.ok(modal.contentEl.all().some(e=>e.text==='-My own line'&&e.cls==='coppermind-removed'));
   modal.contentEl.all().find(e=>e.text==='Keep my note').onclick();
@@ -924,7 +926,7 @@ test('a rewrite held back because the note was edited is compared, and replaces 
   await f.modals[1].contentEl.all().find(e=>e.text==='Replace my note with the new write-up').onclick();
   const request=f.requests.find(r=>r.url.endsWith('/resummarize'));
   assert.deepEqual(JSON.parse(request.body),{replace:true,if_match:'sha256:1'});
-  assert.ok(f.view.flash.startsWith('Replaced your note "Planning"'));
+  assert.ok(textsOf(f.view).includes('Replaced with the new write-up. Your earlier version is saved in Coppermind and is not shown here.'));
 });
 
 test('a server that stops answering, or a key without permission, is said plainly',async()=>{
@@ -972,4 +974,72 @@ test('more notes in Review than one page are all loaded, counted and offered to 
   for(let i=0;i<5;i++)assert.ok(texts.includes('Note '+i));
   await view.contentEl.all().find(e=>e.text==='Resummarize all missing (2)').onclick();
   assert.deepEqual(posts(f),['/v1/notes/n3/resummarize','/v1/notes/n4/resummarize']);
+});
+
+test('the review panel has no second Enrich, and warns when a rewrite would be discarded',async()=>{
+  const f=await fixture(undefined,{rewrite_running:true,suggestions:[{kind:'tags',field:'tags',value:['a'],confidence:1,reason:'',candidates:[],contact_ids:[]}]});
+  const texts=textsOf(f.view);
+  assert.ok(!f.view.contentEl.all().some(e=>e.text==='Request fresh suggestions'));
+  assert.ok(texts.includes('A new write-up is being made for this note. Marking it reviewed now will discard it.'));
+  const calm=await fixture(undefined,{});
+  assert.ok(!textsOf(calm.view).includes('A new write-up is being made for this note. Marking it reviewed now will discard it.'));
+});
+
+test('rows keep their place while the screen is open and re-sort only on Refresh',async()=>{
+  const f=await notesScreen([reviewNote('n1','Alpha'),reviewNote('n2','Beta'),reviewNote('n3','Gamma',{writeup:step('missing')})]);
+  const titles=()=>f.view.contentEl.all().filter(e=>e.tag==='button'&&e.cls==='coppermind-title').map(b=>b.text);
+  assert.deepEqual(titles(),['Gamma','Alpha','Beta']);
+  f.state.notes[1].writeup=step('failed','It failed.');
+  await f.view.refresh(true);
+  assert.deepEqual(titles(),['Gamma','Alpha','Beta']);
+  assert.ok(textsOf(f.view).some(t=>t.startsWith('Write-up: failed at')||t.startsWith('Write-up: failed')));
+  await f.view.contentEl.all().find(e=>e.text==='Resummarize'&&true).onclick();
+  assert.deepEqual(titles(),['Gamma','Alpha','Beta']);
+  await f.view.contentEl.all().find(e=>e.text==='Refresh').onclick();
+  assert.deepEqual(titles(),['Beta','Gamma','Alpha']);
+});
+
+test('when write-ups or suggestions are off, no button that cannot work is offered and it is said once',async()=>{
+  const f=await notesScreen([reviewNote('n1','Alpha',{can_resummarize:false,can_enrich:false,writeup:step('missing')}),reviewNote('n2','Beta',{can_resummarize:false,can_enrich:false,writeup:step('failed','x')})],{});
+  f.state.writeup_on=false;f.state.suggestions_on=false;await f.view.refresh(false,true);
+  const texts=textsOf(f.view);
+  assert.equal(texts.filter(t=>t.startsWith('Write-ups are off')).length,1);
+  assert.equal(texts.filter(t=>t.startsWith('Suggestions are off')).length,1);
+  const buttons=f.view.contentEl.all().filter(e=>e.tag==='button').map(b=>b.text);
+  assert.ok(!buttons.includes('Resummarize')&&!buttons.includes('Enrich')&&!buttons.some(t=>t.startsWith('Resummarize all')));
+});
+
+test('failures starting the bulk run are grouped by reason, not repeated per note',async()=>{
+  const why='Recordings are not set up to be written up.';
+  const f=await notesScreen([reviewNote('n1','Alpha',{writeup:step('missing')}),reviewNote('n2','Beta',{writeup:step('missing')}),reviewNote('n3','Gamma',{writeup:step('missing')})],{resummarize:()=>({status:422,json:{message:why}})});
+  await f.view.contentEl.all().find(e=>e.text?.startsWith('Resummarize all missing')).onclick();
+  const flash=textsOf(f.view).find(t=>t.startsWith('No note could be started.'));
+  assert.equal(flash.split(why).length-1,1);
+  assert.ok(flash.includes('3 notes not started (Alpha, Beta, Gamma)'));
+});
+
+test('a note that leaves Review while it was being written is said at the top',async()=>{
+  const f=await notesScreen([reviewNote('n1','Retro',{writeup:step('working','',new Date().toISOString())}),reviewNote('n2','Other')]);
+  f.state.notes=f.state.notes.filter(n=>n.id!=='n1');
+  await f.view.refresh(true);
+  assert.ok(textsOf(f.view).includes('"Retro" left Review while it was being written up. A write-up that finishes after that is not applied.'));
+});
+
+test('a long list can be filtered as you type, and rows are compact',async()=>{
+  const many=Array.from({length:33},(_,i)=>reviewNote('n'+i,i===20?'Vendor call':'Meeting '+i));
+  const f=await notesScreen(many);
+  const find=f.view.contentEl.all().find(e=>e.tag==='input');
+  assert.equal(find.attr.placeholder,'Find a note by title');
+  find.value='vendor';find.oninput();
+  const titles=f.view.contentEl.all().filter(e=>e.tag==='button'&&e.cls==='coppermind-title').map(b=>b.text);
+  assert.deepEqual(titles,['Vendor call']);
+  assert.ok(textsOf(f.view).includes('Showing 1 of 33.'));
+  find.value='zzz';find.oninput();
+  assert.ok(textsOf(f.view).includes('No note in Review has "zzz" in its title.'));
+  // The box keeps what was typed when the list redraws.
+  f.state.notes[0].writeup=step('failed','x');await f.view.refresh(true);
+  assert.equal(f.view.contentEl.all().find(e=>e.tag==='input'),find);
+  find.value='';find.oninput();
+  const card=f.view.contentEl.all().find(e=>e.cls?.includes('coppermind-row'));
+  assert.ok(card.children.length<=5);
 });

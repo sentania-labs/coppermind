@@ -63,6 +63,11 @@ def build(tmp_path, *, body=OLD, baseline=OLD, mode="markdown-v1"):
         save=lambda _: None,
         with_references=references,
         jobs=lambda: [job],
+        summary_of=lambda *_: {
+            "summary_state": "succeeded",
+            "summary_error": "",
+            "summary_finished_at": "",
+        },
     )
     memory.in_review_folder = lambda path: path.startswith("Review/")
     note.path = "Review/Call.md"
@@ -292,3 +297,22 @@ async def test_a_held_rewrite_is_not_applied_to_a_note_reviewed_since(tmp_path, 
     with pytest.raises(ValueError, match="reviewed or moved"):
         await reviewer.replace(SimpleNamespace(id=NOTE, reviewed=True), job, outcome["if_match"])
     assert replaced == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mode,suggestions_on,writeup_on,offered",
+    [
+        ("markdown-v1", True, False, False),
+        ("markdown-v1", False, True, True),
+        ("legacy", False, True, False),
+        ("legacy", True, False, True),
+    ],
+)
+async def test_resummarize_is_offered_only_when_the_service_that_does_it_is_on(
+    tmp_path, mode, suggestions_on, writeup_on, offered
+):
+    reviewer, memory, job, _, _ = build(tmp_path, mode=mode)
+    row = SimpleNamespace(id=NOTE, title="Call", path="Review/Call.md", date=None, reviewed=False)
+    item = await reviewer.row(row, job, None, suggestions_on, writeup_on)
+    assert item["can_resummarize"] is offered
