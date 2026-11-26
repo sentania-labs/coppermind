@@ -453,18 +453,12 @@ wrong; only a note that fails twice is refused, and `error` then says what was w
 ### Telling the owner when something fails
 
 Nothing needs opening Admin to find out. A recording that failed, a recording that has
-been waiting too long and a note whose summary could not be written appear in four places
+been waiting too long and a note whose summary could not be written appear in three places
 that all read the same records, and each item leaves them when it is resolved:
 
 - the companion's **Needs you** screen (counts, a list that opens each note, Retry on a
   failed recording, and a button to Notes in Review, where a note without a summary is
   written up again);
-- a note named `Needs attention` in the review folder, kept current by Coppermind, that
-  says for each item what failed, why and what to do, and works on a phone with no plugin.
-  Coppermind rewrites it when something changes and removes it when nothing needs
-  attention. It carries `coppermind-generated: needs-attention` in its frontmatter, so it
-  is never adopted as a note, never counted as awaiting review, and a note of the same name
-  that is not Coppermind's is left alone. While it exists it counts once in `excluded_count`;
 - `recordings_failed` and `notes_without_summary` in `GET /v1/status`;
 - an optional outbound webhook.
 

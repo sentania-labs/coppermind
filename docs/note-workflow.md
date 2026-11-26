@@ -74,8 +74,7 @@ failed; a failed rewrite leaves the note as it was. The screen needs `notes:read
 `sources:read`, and the buttons need `notes:write` as well; no permission beyond the
 companion's own is added.
 
-The same list is kept as a note called `Needs attention` in the review folder, which reads on
-a phone with no plugin and goes away when nothing needs attention. The calls are in [the API reference](api.md#recordings-audio-on-its-own).
+The calls are in [the API reference](api.md#recordings-audio-on-its-own).
 
 In the review panel, a note written from a recording points to Notes in Review for writing it
 up again or running its suggestions again; there is no separate button in the panel. If a
