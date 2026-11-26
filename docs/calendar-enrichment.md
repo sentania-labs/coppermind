@@ -290,8 +290,9 @@ speaker who was not supplied, HTML, YAML, a code block or an empty note are stil
 A note that is refused is asked for once more, with what was wrong; if the second answer
 fails too, `error` on the recording says what was wrong in plain words, without repeating
 the model's text, and the start of the answer is kept on the job for support. A reply
-that declines, apologises or says there was nothing to write is a note that is refused in
-the same way, so it is never saved as the note and the recording shows Try again.
+that is not a note is refused in the same way: one with no `##` section, bullet or
+timestamp, or a short one that declines, apologises or says there was nothing to write.
+It is never saved as the note and the recording shows Try again.
 
 Once a note is accepted, its numbers, amounts, dates and proper names are checked against the
 transcript in code, never by asking a model again. Each one that cannot be found is followed
