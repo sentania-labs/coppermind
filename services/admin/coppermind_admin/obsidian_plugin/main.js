@@ -145,9 +145,7 @@ class ReviewView extends ItemView {
         for(const [label,name] of typed)preview.createEl('p',{text:label+' → '+name+' (typed in the note)'});
         if(typed.length)preview.createEl('p',{text:'Marking the note reviewed names these voices in this note, in other notes that used them, and in recordings to come.'});
         for(const c of changes){const person=c.people.find(p=>p.id===c.chooser.value);if(person){preview.createEl('p',{text:c.label+' → '+person.name});const count=manual?.voice_appearances?.[c.label];if(count!==undefined)preview.createEl('p',{text:'Also name this voice in '+Math.max(0,count-1)+' earlier recordings. Transcripts and unchanged generated labels will change; your own writing in reviewed notes stays intact.'});}}
-        const attendeesNotice=cards.length&&data.speaker_attendees_notice;
-        if(attendeesNotice)preview.createEl('p',{text:data.speaker_attendees_notice});
-        if(!data.speakers_in_note||changes.length||typed.length)preview.createEl('p',{text:attendeesNotice?'Marking reviewed updates transcript labels for the people chosen. Unnamed speakers stay as they are.':'Marking reviewed updates transcript labels, note attendees and links to the people chosen. Unnamed speakers stay as they are.'});
+        if(!data.speakers_in_note||changes.length||typed.length)preview.createEl('p',{text:'Marking reviewed updates transcript labels, note attendees and links to the people chosen. Unnamed speakers stay as they are.'});
       };
       const makeChooser=(card,label,people,initial,onSelect,disabled,voice=[])=>{
         const chooser=card.createEl('select');

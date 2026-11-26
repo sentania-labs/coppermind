@@ -189,7 +189,7 @@ async def upgrade(context: Any) -> int:
             )
         newest: dict[str, Any] = {}
         for job in sorted(context.jobs(), key=lambda j: j.created_at):
-            if job.purpose != "dossier" and job.result:
+            if job.purpose != "dossier" and job.state == "suggested" and job.result:
                 newest[job.note_id] = job
         written = {
             r.note_id: r

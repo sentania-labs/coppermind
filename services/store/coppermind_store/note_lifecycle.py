@@ -769,7 +769,7 @@ class NoteLifecycle:
                     else "",
                     "recording_generation_mode": recording.generation_mode if recording else None,
                     "meeting_summary": job.result.meeting_summary.model_dump()
-                    if job and job.result and job.result.meeting_summary
+                    if job and job.result and job.result.meeting_summary and not stale
                     else None,
                     # Only voices are still offered for a choice, and only while the note is as
                     # the suggestions were made for; every other answer is already in the note.

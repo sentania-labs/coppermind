@@ -147,7 +147,6 @@ async def test_upgrade_fills_what_was_waiting_once(store):
         saved["suggestions"] = [
             {"field": "account", "value": ["Acme"], "confidence": 0.9},
             {"field": "type", "value": "work", "confidence": 0.9},
-            {"field": "tags", "value": ["vsphere"], "confidence": 0.9},
         ]
         context.write(key, saved)
         context.write("filled-in-upgrade", None)
@@ -162,7 +161,7 @@ async def test_upgrade_fills_what_was_waiting_once(store):
             schema_hash="s",
             path=note.path,
             created_at="2026-11-20T10:00:00+00:00",
-            state="stale",
+            state="rejected",
             result=Suggestions(
                 suggestions=[
                     Suggestion(
@@ -180,7 +179,13 @@ async def test_upgrade_fills_what_was_waiting_once(store):
         filled = await store.get_note(note.id)
         assert filled.frontmatter["type"] == "work"
         assert filled.frontmatter["account"] == ["Acme"]
-        assert filled.frontmatter["tags"] == ["vsphere"]
+        # The owner closed that job with "reject remaining": nothing from it is written.
+        assert not filled.frontmatter.get("tags")
+        context.write("filled-in-upgrade", None)
+        context.save_job(pending.model_copy(update={"state": "suggested"}))
+        assert await filled_in.upgrade(context) == 1
+        filled = await store.get_note(note.id)
+        assert filled.frontmatter["tags"] == ["from-second-step"]
         # Once: a value the owner then clears is not put back.
         await store.patch_frontmatter(
             note.id, PatchFrontmatter(set={"account": [], "tags": []}), filled.content_hash
