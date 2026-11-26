@@ -567,7 +567,11 @@ class EntityService:
         wanted = properties(entity, ledger)
         # A property Coppermind wrote earlier that it no longer writes (a person's `company`
         # link, now that company pages are gone) leaves with it, unless the owner changed it.
-        gone = [key for key in prior if key not in wanted and key in fields and fields[key] == prior[key]]
+        gone = [
+            key
+            for key in prior
+            if key not in wanted and key in fields and fields[key] == prior[key]
+        ]
         if gone:
             head = fm.patch(head, {}, unset=gone)
             fields, _ = fm.parse(head)

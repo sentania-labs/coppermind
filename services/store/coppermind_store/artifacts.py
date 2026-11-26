@@ -1594,9 +1594,9 @@ def _filed_transcript_data(store: LocalStore, manifest: dict[str, Any]) -> bool:
     it was filed under), and the browsable copy is still exactly what it wrote. A copy the owner
     changed, or anything they stored themselves under that name, is never matched.
     """
-    if manifest.get("source_name") != TRANSCRIPT_DATA or not str(manifest.get("origin", "")).startswith(
-        "source:"
-    ):
+    if manifest.get("source_name") != TRANSCRIPT_DATA or not str(
+        manifest.get("origin", "")
+    ).startswith("source:"):
         return False
     current = _current_revision(manifest)
     recorded = manifest.get("path")
