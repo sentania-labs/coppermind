@@ -92,7 +92,19 @@ def test_respects_the_setting(tmp_path):
     assert (folder / "main.js").read_bytes() == b"old"
 
 
-def test_a_failed_install_is_recorded_not_raised(tmp_path, monkeypatch):
+@pytest.mark.parametrize("vault", ["99.0.0", "0.10.0"])
+def test_a_newer_companion_in_the_vault_is_never_downgraded(tmp_path, vault):
+    bundled = json.loads(home.companion_files()["manifest.json"])["version"]
+    assert tuple(map(int, vault.split("."))) > tuple(map(int, bundled.split(".")))
+    folder = place(tmp_path, version=vault)
+    stub = service(tmp_path)
+    assert run(stub) == {"state": "newer"}
+    assert (folder / "main.js").read_bytes() == b"old"
+    assert json.loads((folder / "manifest.json").read_text())["version"] == vault
+    assert "companion-updated" not in stub.context.saved
+
+
+def test_a_failed_install_is_logged_not_raised(tmp_path, monkeypatch):
     place(tmp_path)
     stub = service(tmp_path)
 
@@ -101,7 +113,6 @@ def test_a_failed_install_is_recorded_not_raised(tmp_path, monkeypatch):
 
     monkeypatch.setattr(AdminService, "companion_install", broken)
     assert run(stub) == {"state": "failed"}
-    assert stub.context.saved["companion-update-failed"]["error"] == "disk full"
     assert "companion-updated" not in stub.context.saved
 
 

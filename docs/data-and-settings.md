@@ -157,7 +157,7 @@ in Admin. Nothing here needs to be set before the system runs.
 | sync | `mode` | `bidirectional` |
 | sync | `conflict_strategy` | `merge` |
 | sync | `excluded_folders` | `[_Trash]` |
-| sync | `companion_auto_update` | `true`. When Coppermind starts and the companion in the vault is out of date, it is replaced; pairing and the companion's own settings are kept. Never adds a companion where none exists |
+| sync | `companion_auto_update` | `true`. When Coppermind starts and the companion in the vault is out of date, it is replaced; pairing and the companion's own settings are kept. Never adds a companion where none exists, and never replaces one with a newer version than the bundled one |
 | sync | `file_types` | `[image, audio, video, pdf, unsupported]` |
 | sync | `sync_configs` | `[]` |
 | curator | `enabled` | true |

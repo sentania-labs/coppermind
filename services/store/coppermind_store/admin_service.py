@@ -78,6 +78,10 @@ def now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _version_tuple(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in version.split("."))
+
+
 class AdminService:
     def __init__(self, store: LocalStore) -> None:
         self.store = store
@@ -262,7 +266,7 @@ class AdminService:
         """At start-up, replace a companion that is in the vault but out of date.
 
         Uses the same install as the Update button. It never adds a companion where none
-        exists, leaves one that already matches alone, and a failure is recorded, not raised.
+        exists, leaves one that already matches or is newer alone, and logs a failure, not raises.
         """
         if not self.store.control.settings().sync.companion_auto_update:
             return {"state": "off"}
@@ -275,6 +279,9 @@ class AdminService:
                 if not await asyncio.to_thread(self.companion_placed):
                     return {"state": "absent"}
                 old = await asyncio.to_thread(self.companion_version)
+                if old and _version_tuple(old) > _version_tuple(new):
+                    log.info("companion in the vault is newer; left alone", vault=old, bundled=new)
+                    return {"state": "newer"}
                 if old and await asyncio.to_thread(self.companion_fingerprint) == wanted:
                     return {"state": "current"}
                 await self.companion_install(payload)
@@ -284,8 +291,6 @@ class AdminService:
                 )
         except Exception as exc:  # noqa: BLE001 - a failed update leaves the Update button working
             log.warning("companion auto-update failed", error=str(exc))
-            with contextlib.suppress(Exception):
-                self.context.write("companion-update-failed", {"error": str(exc), "at": now()})
             return {"state": "failed"}
         log.info("companion updated automatically", old=old or "", new=new)
         return {"state": "updated", "from": old or "", "to": new}
