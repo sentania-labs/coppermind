@@ -214,7 +214,7 @@ def test_each_failure_is_one_plain_sentence(error, sentence):
     assert filing_sentence(transient) == "This note could not be filed."
 
 
-async def test_a_recording_that_changed_after_review_waits_for_review_again_with_no_failure_row(
+async def test_a_recording_that_changed_after_review_is_unticked_and_files_when_ticked_again(
     store, monkeypatch
 ):
     from coppermind.store_protocol import PatchFrontmatter
@@ -226,22 +226,23 @@ async def test_a_recording_that_changed_after_review_waits_for_review_again_with
     await store.patch_frontmatter(
         note.id, PatchFrontmatter(set={"reviewed": True}), note.content_hash
     )
-    note = await store.get_note(note.id)
-    filing.record_review(store, note.id, note.frontmatter)
 
     changed = ingest_request()
     changed.source.artifacts[0].content = "Dana: the recording was processed again."
     assert (await store.ingest(changed)).source.revision == 2
 
-    assert await file_everything(store, monkeypatch) == {"filed": 0, "filing_failed": 1}
+    assert await file_everything(store, monkeypatch) == {"filed": 0, "filing_failed": 0}
+    note = await store.get_note(note.id)
+    assert note.frontmatter["reviewed"] is False
+    assert note.path.startswith("Review/")
     listed = {n["id"]: n for n in (await review.listing({}))["notes"]}
     assert note.id in listed
     assert "filing" not in listed[note.id]
-    assert review.filing_problem(note.id) == ""
-    assert (await path_of(store, note.id)).startswith("Review/")
+    assert await file_everything(store, monkeypatch) == {"filed": 0, "filing_failed": 0}
 
-    note = await store.get_note(note.id)
-    filing.record_review(store, note.id, note.frontmatter)
+    await store.patch_frontmatter(
+        note.id, PatchFrontmatter(set={"reviewed": True}), note.content_hash
+    )
     assert await file_everything(store, monkeypatch) == {"filed": 1, "filing_failed": 0}
     assert not (await path_of(store, note.id)).startswith("Review/")
     assert note.id not in {n["id"] for n in (await review.listing({}))["notes"]}

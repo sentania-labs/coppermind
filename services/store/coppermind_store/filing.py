@@ -29,6 +29,7 @@ from coppermind.naming import unique_stem
 from coppermind.schema import date_field_problem, note_date
 from coppermind.store_protocol import (
     MoveNote,
+    PatchFrontmatter,
     RenameNote,
     ReplaceNote,
     StoreError,
@@ -280,7 +281,14 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         review["sources"].get(source_id) != manifest["current_revision"]
         for source_id, manifest in manifests.items()
     ):
-        if same_filing and review.get("reviewed"):
+        if not same_filing:
+            await store.patch_frontmatter(
+                note_id,
+                PatchFrontmatter(set={schema.role("reviewed_key"): False}),
+                if_match=note.content_hash,
+            )
+            return False
+        if review.get("reviewed"):
             # A pending source revision does not revoke the human note's review.
             # Its source association still authorizes only the earlier revision.
             await _publish(store, note)
