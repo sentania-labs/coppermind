@@ -45,11 +45,10 @@ async def test_a_note_without_a_summary_is_counted_listed_and_cleared_without_to
     counters = (await store.get_status()).counters
     assert counters.notes_without_summary == 1 and counters.recordings_failed == 0
 
-    # The problems note says so in plain words and is never mistaken for a note of the owner's.
-    await context.alerts.keep_problems_note()
+    # No note is written into the vault for it.
     problems = store.notes_root / "Review" / "Needs attention.md"
-    text = problems.read_text()
-    assert "## Notes without a summary (1)" in text and "Why and what to do" in text
+    await context.alerts.tick()
+    assert not problems.exists()
     kept = {path: (store.notes_root / path).read_bytes() for path in [edited.path]}
     for _ in range(2):
         counts = await reconcile_once(store, unidentified={})
@@ -57,9 +56,8 @@ async def test_a_note_without_a_summary_is_counted_listed_and_cleared_without_to
     async with store.session_factory() as session:
         paths = [row.path for row in (await session.scalars(sa.select(Note))).all()]
     assert paths == [edited.path]
-    assert (await store.get_status()).counters.excluded_count == 1
+    assert (await store.get_status()).counters.excluded_count == 0
     assert (await store.get_status()).counters.notes_awaiting_review == 1
-    assert problems.exists()
 
     # One step writes up every note without a summary; no note body is written.
     standin["handler"] = answers_well
@@ -71,12 +69,10 @@ async def test_a_note_without_a_summary_is_counted_listed_and_cleared_without_to
     assert context.load_job(queued.id).state == "suggested"
     assert (await store.get_note(note.id)).body == "My own meeting notes, edited.\n"
 
-    # The item has left every list, so the problems note goes and the counters fall to zero.
+    # The item has left every list, so the counters fall to zero.
     assert (await context.recordings.waiting())["missing_summaries"] == []
     counters = (await store.get_status()).counters
     assert counters.notes_without_summary == 0 and counters.recordings_failed == 0
-    await context.alerts.keep_problems_note()
-    assert not problems.exists()
     assert (await reconcile_once(store, unidentified={}))["excluded"] == 0
 
 

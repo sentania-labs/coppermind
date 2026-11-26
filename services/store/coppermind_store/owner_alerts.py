@@ -2,11 +2,10 @@
 
 Nothing here keeps a list of its own. What needs the owner is what the recording records
 already say: `Recordings.waiting()` names the failed recordings, the ones still on their way
-and the notes whose summary could not be written. This module keeps three outward copies of
-that one answer current, so the owner finds problems where they already are:
+and the notes whose summary could not be written. This module keeps two outward copies of
+that one answer current, so the owner finds problems where they already are (a note in the
+vault is not one of them):
 
-* a note in the review folder (`Needs attention.md`) that reads on a phone with no plugin and
-  is removed as soon as nothing needs attention;
 * an optional outbound webhook for the three events an automation cares about: a recording
   failed for good, a summary failed for good, and a recording has been stuck too long;
 * the counters in `GET /v1/status`.
@@ -24,14 +23,12 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
-from zoneinfo import ZoneInfo
 
 import httpx
 
 from coppermind import frontmatter as fm
-from coppermind.atomicio import atomic_write_bytes
 from coppermind.naming import sanitize_folder
-from coppermind.store_protocol import NotesFilesystemUnavailable, StoreError
+from coppermind.store_protocol import StoreError
 from coppermind_store.fs import resolve
 
 if TYPE_CHECKING:
@@ -98,7 +95,6 @@ def shown_address(address: str) -> str:
 class OwnerAlerts:
     def __init__(self, context: ContextService) -> None:
         self.context = context
-        self._written = ""
 
     # -- setup ---------------------------------------------------------------------------
 
@@ -157,21 +153,6 @@ class OwnerAlerts:
 
     # -- the one list --------------------------------------------------------------------
 
-    async def snapshot(self) -> dict[str, Any]:
-        """What needs the owner now, from the same answer the companion reads."""
-        waiting = await self.context.recordings.waiting()
-        cutoff = _now() - timedelta(hours=self.config()["stuck_hours"])
-        stuck = [
-            line
-            for line in waiting["processing"]
-            if (moment := _moment(line.get("since", ""))) is not None and moment < cutoff
-        ]
-        return {
-            "failed": waiting["failed"],
-            "stuck": stuck,
-            "missing_summaries": waiting["missing_summaries"],
-        }
-
     async def counts(self) -> dict[str, int]:
         waiting = await self.context.recordings.waiting()
         return {
@@ -208,97 +189,31 @@ class OwnerAlerts:
                 queued += 1
         return {"queued": queued, "already": already, "skipped": skipped}
 
-    # -- the problems note ---------------------------------------------------------------
+    # -- the old problems note ----------------------------------------------------------
 
-    def items(self, snapshot: dict[str, Any]) -> list[tuple[str, str, list[str]]]:
-        """Sections of the problems note: a heading and one block of lines for each item."""
-        sections: list[tuple[str, str, list[str]]] = []
-        for line in snapshot["failed"]:
-            sections.append(
-                (
-                    "Recordings that failed",
-                    str(line["title"]),
-                    [
-                        f"What failed: this recording stopped while it was "
-                        f"{str(line.get('stage') or 'being processed').lower()}.",
-                        f"Why and what to do: {line['message']}",
-                    ],
-                )
-            )
-        for line in snapshot["stuck"]:
-            since = _moment(line.get("since", ""))
-            when = (
-                f" since {since.astimezone(self.zone()).strftime('%b %d, %H:%M')}" if since else ""
-            )
-            sections.append(
-                (
-                    "Recordings that are taking too long",
-                    str(line["title"]),
-                    [
-                        f"What is wrong: it has been waiting{when}, longer than expected.",
-                        f"Why and what to do: {line['message']}",
-                    ],
-                )
-            )
-        for line in snapshot["missing_summaries"]:
-            link = f"[[{line['path'].removesuffix('.md')}|{line['title']}]]"
-            sections.append(
-                (
-                    "Notes without a summary",
-                    link,
-                    [
-                        "What failed: the summary of this note could not be written.",
-                        f"Why and what to do: {line['message']} In Obsidian, open "
-                        "Coppermind Review: Notes in Review and press Resummarize.",
-                    ],
-                )
-            )
-        return sections
+    def remove_old_note(self) -> None:
+        """Remove a `Needs attention` note an earlier version wrote; never one the owner wrote.
 
-    def render(self, sections: list[tuple[str, str, list[str]]], stamp: str) -> str:
-        lines = [
-            "# Needs attention",
-            "",
-            "Coppermind keeps this note up to date and removes it when nothing needs "
-            "attention. Changes you make here are overwritten.",
-            "",
-            stamp,
-        ]
-        heading = ""
-        for group, title, details in sections:
-            if group != heading:
-                heading = group
-                count = sum(1 for item in sections if item[0] == group)
-                lines += ["", f"## {group} ({count})"]
-            lines += ["", f"### {title}", ""]
-            lines += [f"- {detail}" for detail in details]
-        return "\n".join(lines) + "\n"
-
-    def zone(self) -> ZoneInfo:
-        return ZoneInfo(self.context.store.control.settings().general.timezone)
-
-    def note_relative(self) -> str:
+        Only a file that carries Coppermind's own marker is removed, in the review folder as
+        it is now and where it was last written.
+        """
         settings = self.context.store.control.settings()
         folder = sanitize_folder(settings.notes.review_folder)
-        return f"{folder}/{PROBLEMS_NOTE}"
-
-    def note_path(self):
-        return resolve(self.context.store.notes_root, self.note_relative())
-
-    def _retire_old_note(self, current: str) -> None:
-        """Remove the note we wrote where the review folder used to be, once it has moved."""
-        before = self.context.read(NOTE_AT, {}).get("path", "")
-        if not before or before == current:
-            return
-        try:
-            old = resolve(self.context.store.notes_root, before)
-            if old.exists() and self._ours(old.read_bytes()):
-                old.unlink()
-        except (OSError, ValueError):
-            log.warning("the problems note at its old folder could not be removed")
-            return
-        self._written = ""
-        self.context.write(NOTE_AT, {})
+        places = {f"{folder}/{PROBLEMS_NOTE}", self.context.read(NOTE_AT, {}).get("path", "")}
+        removed = True
+        for relative in sorted(place for place in places if place):
+            try:
+                path = resolve(self.context.store.notes_root, relative)
+                if path.is_file() and self._ours(path.read_bytes()):
+                    path.unlink()
+                    log.info("removed the generated %s", PROBLEMS_NOTE)
+            except ValueError:
+                continue
+            except OSError:
+                removed = False
+                log.warning("the generated %s could not be removed", PROBLEMS_NOTE)
+        if removed:
+            self.context.write(NOTE_AT, {})
 
     def _ours(self, data: bytes) -> bool:
         try:
@@ -306,39 +221,6 @@ class OwnerAlerts:
         except (UnicodeDecodeError, fm.FrontmatterError):
             return False
         return frontmatter.get(GENERATED_KEY) == GENERATED_VALUE
-
-    async def keep_problems_note(self, snapshot: dict[str, Any] | None = None) -> None:
-        """Write the problems note for what needs attention now, or remove it when nothing does."""
-        snapshot = snapshot or await self.snapshot()
-        sections = self.items(snapshot)
-        relative = self.note_relative()
-        self._retire_old_note(relative)
-        path = self.note_path()
-        try:
-            existing = path.read_bytes() if path.exists() else None
-        except OSError as exc:
-            raise NotesFilesystemUnavailable(str(exc)) from exc
-        if existing is not None and not self._ours(existing):
-            log.warning("a note named %s is not Coppermind's, so it is left alone", PROBLEMS_NOTE)
-            return
-        if not sections:
-            self._written = ""
-            if existing is not None:
-                path.unlink(missing_ok=True)
-            self.context.write(NOTE_AT, {})
-            return
-        body = self.render(sections, "")
-        digest = hashlib.sha256(body.encode()).hexdigest()
-        if existing is not None and digest == self._written:
-            return
-        stamp = f"Updated {_now().astimezone(self.zone()).strftime('%A %b %d, %H:%M')}."
-        header = f"---\n{GENERATED_KEY}: {GENERATED_VALUE}\n---\n"
-        try:
-            atomic_write_bytes(path, (header + self.render(sections, stamp)).encode())
-        except OSError as exc:
-            raise NotesFilesystemUnavailable(str(exc)) from exc
-        self._written = digest
-        self.context.write(NOTE_AT, {"path": relative})
 
     # -- the webhook ---------------------------------------------------------------------
 
@@ -483,15 +365,13 @@ class OwnerAlerts:
     # -- the worker ----------------------------------------------------------------------
 
     async def tick(self) -> None:
-        try:
-            await self.keep_problems_note()
-        except NotesFilesystemUnavailable:
-            pass
-        except Exception:
-            log.exception("keeping the problems note failed")
         await self.send_events()
 
     async def run(self) -> None:
+        try:
+            self.remove_old_note()
+        except Exception:
+            log.exception("removing the old problems note failed")
         while True:
             try:
                 await self.tick()

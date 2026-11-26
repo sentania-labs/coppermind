@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -232,30 +233,19 @@ async def test_nothing_to_write_up_is_a_calm_zero(tmp_path):
     }
 
 
+OLD = "---\ncoppermind-generated: needs-attention\n---\n# Needs attention\n"
+
+
 @pytest.mark.asyncio
-async def test_the_problems_note_names_what_failed_and_goes_away_when_it_is_fixed(tmp_path):
-    jobs = [failed(1), job(2), job(3, state="running", started_at=stamp(hours=9))]
-    fixture = Fixture(tmp_path, jobs)
-    fixture.summary_failed(jobs[1], "n1")
-    await fixture.alerts.keep_problems_note()
+async def test_no_problems_note_is_written_and_an_old_generated_one_is_removed(tmp_path):
+    fixture = Fixture(tmp_path, [failed(1)])
     path = tmp_path / "Review" / "Needs attention.md"
-    text = path.read_text()
-    assert text.startswith("---\ncoppermind-generated: needs-attention\n---\n")
-    assert "## Recordings that failed (1)" in text and "### Call 1" in text
-    assert "## Recordings that are taking too long (1)" in text and "### Call 3" in text
-    assert "## Notes without a summary (1)" in text and "[[Review/Call 2|Call 2]]" in text
-    assert "What failed:" in text and "Why and what to do:" in text
-    # Nothing changed, so nothing is rewritten and the phone does not sync it again.
-    first = path.stat().st_mtime_ns
-    await fixture.alerts.keep_problems_note()
-    assert path.stat().st_mtime_ns == first
-    # The recording is retried and the summary written: both leave the note, and then the note goes.
-    jobs[0].state = "queued"
-    jobs[0].attempts = 0
-    fixture.summaries.clear()
-    jobs[2].started_at = stamp(minutes=2)
-    await fixture.alerts.keep_problems_note()
+    path.parent.mkdir()
+    path.write_text(OLD)
+    fixture.alerts.remove_old_note()
     assert not path.exists()
+    await fixture.alerts.tick()
+    assert not list(tmp_path.rglob("Needs attention.md"))
 
 
 @pytest.mark.asyncio
@@ -264,22 +254,38 @@ async def test_a_note_that_is_not_coppermind_s_is_left_alone(tmp_path):
     path = tmp_path / "Review" / "Needs attention.md"
     path.parent.mkdir()
     path.write_text("my own thoughts\n")
-    await fixture.alerts.keep_problems_note()
-    assert path.read_text() == "my own thoughts\n"
-    fixture.jobs.clear()
-    await fixture.alerts.keep_problems_note()
+    fixture.alerts.remove_old_note()
+    await fixture.alerts.tick()
     assert path.read_text() == "my own thoughts\n"
 
 
 @pytest.mark.asyncio
-async def test_a_dismissed_failure_leaves_the_note(tmp_path):
-    jobs = [failed(1)]
-    fixture = Fixture(tmp_path, jobs)
-    await fixture.alerts.keep_problems_note()
-    assert (tmp_path / "Review" / "Needs attention.md").exists()
-    jobs[0].dismissed = True
-    await fixture.alerts.keep_problems_note()
-    assert not (tmp_path / "Review" / "Needs attention.md").exists()
+async def test_an_old_note_is_removed_where_it_was_last_written(tmp_path):
+    fixture = Fixture(tmp_path, [failed(1)])
+    old = tmp_path / "Inbox" / "Needs attention.md"
+    old.parent.mkdir()
+    old.write_text(OLD)
+    fixture.saved["attention-note"] = {"path": "Inbox/Needs attention.md"}
+    fixture.alerts.remove_old_note()
+    assert not old.exists()
+
+
+@pytest.mark.asyncio
+async def test_an_old_note_that_cannot_be_removed_keeps_its_place_for_the_next_try(
+    tmp_path, monkeypatch
+):
+    fixture = Fixture(tmp_path, [failed(1)])
+    old = tmp_path / "Inbox" / "Needs attention.md"
+    old.parent.mkdir()
+    old.write_text(OLD)
+    fixture.saved["attention-note"] = {"path": "Inbox/Needs attention.md"}
+    with monkeypatch.context() as broken:
+        broken.setattr(Path, "unlink", lambda self: (_ for _ in ()).throw(PermissionError()))
+        fixture.alerts.remove_old_note()
+    assert old.exists()
+    assert fixture.saved["attention-note"] == {"path": "Inbox/Needs attention.md"}
+    fixture.alerts.remove_old_note()
+    assert not old.exists()
 
 
 def webhook(fixture: Fixture, monkeypatch, answers: list[int]) -> list[dict[str, Any]]:
@@ -328,12 +334,9 @@ async def test_a_final_failure_is_sent_once_with_its_provider_and_external_id(
 
 
 @pytest.mark.asyncio
-async def test_a_problems_note_that_cannot_be_written_does_not_stop_the_webhook(
-    tmp_path, monkeypatch
-):
+async def test_a_failure_is_sent_by_the_regular_check(tmp_path, monkeypatch):
     fixture = Fixture(tmp_path, [failed(1)])
     received = webhook(fixture, monkeypatch, [])
-    fixture.context.store.control.settings().notes.review_folder = "///"
     await fixture.alerts.tick()
     assert len(received) == 1
 
@@ -432,32 +435,3 @@ async def test_markers_of_events_that_are_gone_are_still_cut_to_the_bound(tmp_pa
     await fixture.alerts.send_events()
     assert len(received) == 1
     assert len(fixture.saved["attention-events"]) == owner_alerts.EVENTS_KEPT + 1
-
-
-@pytest.mark.asyncio
-async def test_changing_the_review_folder_moves_the_problems_note_with_it(tmp_path):
-    fixture = Fixture(tmp_path, [failed(1)])
-    await fixture.alerts.keep_problems_note()
-    old = tmp_path / "Review" / "Needs attention.md"
-    assert old.exists()
-    fixture.context.store.control.settings().notes.review_folder = "Inbox"
-    await fixture.alerts.keep_problems_note()
-    assert not old.exists()
-    assert (tmp_path / "Inbox" / "Needs attention.md").exists()
-    # The old folder holds a note of the owner's own with that name: it is never touched.
-    fixture.context.store.control.settings().notes.review_folder = "Review"
-    old.write_text("mine\n")
-    await fixture.alerts.keep_problems_note()
-    assert not (tmp_path / "Inbox" / "Needs attention.md").exists()
-    assert old.read_text() == "mine\n"
-
-
-@pytest.mark.asyncio
-async def test_a_folder_change_while_nothing_is_wrong_leaves_nothing_behind(tmp_path):
-    jobs = [failed(1)]
-    fixture = Fixture(tmp_path, jobs)
-    await fixture.alerts.keep_problems_note()
-    jobs[0].dismissed = True
-    fixture.context.store.control.settings().notes.review_folder = "Inbox"
-    await fixture.alerts.keep_problems_note()
-    assert not list(tmp_path.rglob("Needs attention.md"))
