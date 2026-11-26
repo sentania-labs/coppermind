@@ -133,6 +133,15 @@ def card(ai: dict[str, Any]) -> str:
     return ui.card(ui.rows(*rows), "AI")
 
 
+def setting_value(service: dict[str, Any] | None, model: str, kind: str) -> str:
+    """An assignment as a form value. A blank model means the server's own default, so it is
+    written as that default and compares equal to the same choice made from the list."""
+    if service is None:
+        return ""
+    default = service[kind].get("model" if kind == "speech" else "best", "")
+    return f"{service['id']}|{model or default}"
+
+
 def transcribing_options(services: list[dict[str, Any]]) -> list[tuple[str, str, bool]]:
     """(value, label, outside) for each model that can transcribe, on each answering server."""
     out = []
@@ -162,16 +171,32 @@ def summarizing_options(services: list[dict[str, Any]]) -> list[tuple[str, str, 
 
 
 def preselect(options: list[tuple[str, str, bool]], current: str, use: str) -> str:
-    """What to show chosen: the server just added, else what is in use, else a server on
-    your own network. A server outside your network is never chosen for you."""
+    """What to show chosen: the server just added, else what is in use. Only when nothing is
+    set yet is a server on your own network offered; one outside your network is never chosen
+    for you, and an assignment that is set is never swapped for another."""
     values = [value for value, _, _ in options]
     if use:
         picked = next((value for value in values if value.startswith(use + "|")), "")
         if picked:
             return picked
-    if current in values:
+    if current:
         return current
     return next((value for value, _, outside in options if not outside), "")
+
+
+def keep_option(
+    options: list[tuple[str, str, bool]], current: str, service: dict[str, Any] | None
+) -> list[tuple[str, str, bool]]:
+    """The assignment that is set, listed even when the list does not offer it (its server is
+    not answering just now), so a save leaves it as it is."""
+    if not current or service is None or current in {value for value, _, _ in options}:
+        return options
+    model = current.partition("|")[2] or "its own model"
+    why = "" if service["answering"] else ", not answering just now"
+    return [
+        (current, f"{model} on {service['name']} (as it is now{why})", bool(service["outside"])),
+        *options,
+    ]
 
 
 def router(wiring: Wiring) -> APIRouter:
@@ -192,9 +217,11 @@ def router(wiring: Wiring) -> APIRouter:
         service = ai["trans"].get("service")
         heard = transcribing_options(listed)
         written = summarizing_options(listed)
-        now_heard = f"{service['id']}|{ai['trans'].get('model', '')}" if service else ""
         sent = ai["summary_service"]
-        now_written = f"{sent['id']}|{ai['writeup'].get('model', '')}" if sent else ""
+        now_heard = setting_value(service, ai["trans"].get("model", ""), "speech")
+        now_written = setting_value(sent, ai["writeup"].get("model", ""), "text")
+        heard = keep_option(heard, now_heard, service)
+        written = keep_option(written, now_written, sent)
         if not heard and not written:
             options = ui.empty(
                 "No AI server yet",
@@ -246,22 +273,51 @@ def router(wiring: Wiring) -> APIRouter:
         if heard is None and written is None:
             ctx.say("bad", "Choose what transcribes and what summarizes, then save.")
             return ctx.go("/admin/ai")
+
+        def refused(result: dict[str, Any], lead: str = "") -> Response | None:
+            if "refused" not in result:
+                return None
+            ctx.say("bad", lead + e(result["refused"]["message"]))
+            return ctx.go("/admin/ai")
+
         try:
-            if heard is not None:
-                current = await ctx.act("transcription", {})
+            listed = (await ctx.act("services", {}))["services"]
+            by_id = {item["id"]: item for item in listed}
+            current = await ctx.act("transcription", {})
+            writeup = (await ctx.act("writeup-settings", {}))["assignment"]
+            # A job whose choice the owner left as it is is not saved again, so a server that
+            # is not answering just now cannot make the other job's change fail or alter it.
+            was_heard = setting_value(current.get("service"), current.get("model", ""), "speech")
+            was_written = (
+                setting_value(by_id.get(writeup.get("connection", "")), writeup["model"], "text")
+                if writeup.get("enabled")
+                else ""
+            )
+            if heard is not None and "|".join(heard) != was_heard:
                 payload: dict[str, Any] = {"connection": heard[0], "model": heard[1]}
                 if str(current.get("wait_s", "")) in dict(WAITS):
                     payload["wait_s"] = current["wait_s"]
-                await ctx.act("transcription-save", payload)
-            if written is not None:
-                await ctx.act(
-                    "writeup-save",
-                    {"connection": written[0], "model": written[1], "enabled": True},
-                )
-                if (await ctx.act("suggestions", {}))["state"] == "none":
+                stopped = refused(await ctx.act("transcription-save", payload))
+                if stopped is not None:
+                    return stopped
+            if written is not None and "|".join(written) != was_written:
+                stopped = refused(
                     await ctx.act(
-                        "suggestions-save", {"connection": written[0], "model": written[1]}
+                        "writeup-save",
+                        {"connection": written[0], "model": written[1], "enabled": True},
                     )
+                )
+                if stopped is not None:
+                    return stopped
+                if (await ctx.act("suggestions", {}))["state"] == "none":
+                    stopped = refused(
+                        await ctx.act(
+                            "suggestions-save", {"connection": written[0], "model": written[1]}
+                        ),
+                        "The summary choice was saved, but suggestions could not be turned on. ",
+                    )
+                    if stopped is not None:
+                        return stopped
         except StoreError as exc:
             return await ctx.refused(exc, "/admin/ai")
         ctx.say("ok", "Saved.")

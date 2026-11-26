@@ -544,3 +544,101 @@ def test_the_page_says_when_the_store_is_silent(admin):
     assert "Coppermind is not answering." in page
     for word in SYSTEM_WORDS:
         assert word not in page
+
+
+# -- a save the store refuses, and a choice left as it is ----------------------------------------
+
+
+def selected_in(page: str, name: str) -> list[str]:
+    found = re.search(rf'<select[^>]*name="{name}".*?</select>', page, re.S)
+    assert found is not None
+    return re.findall(r'<option value="([^"]*)" selected>', found[0])
+
+
+def choose(client, **fields):
+    return post(client, "/admin/ai/save", fields, "/admin/ai")
+
+
+def test_a_refused_transcription_save_is_said_and_stops_the_rest(admin):
+    client, _, store = admin
+    store.views["transcription"].update(state="none", service=None)
+    store.refuse("transcription-save", "Home transcription is not answering right now.")
+    response = choose(client, heard=f"{SPEECH['id']}|", written=f"{TEXT['id']}|llama-3.1-8b")
+    assert response.headers["location"] == "/admin/ai"
+    said = follow(client, response)
+    assert "Home transcription is not answering right now." in said
+    assert "Saved." not in said
+    assert store.asked("writeup-save") == []
+    assert store.asked("suggestions-save") == []
+
+
+def test_a_refused_summary_save_is_said_and_suggestions_stay_as_they_were(admin):
+    client, _, store = admin
+    store.views["suggestions"]["state"] = "none"
+    store.refuse("writeup-save", "Home AI server cannot write summaries.", "model")
+    response = choose(client, heard=f"{SPEECH['id']}|", written=f"{TEXT['id']}|llama-3.1-8b")
+    said = follow(client, response)
+    assert "Home AI server cannot write summaries." in said
+    assert "Saved." not in said
+    assert store.asked("suggestions-save") == []
+
+
+def test_refused_suggestions_say_the_summary_was_kept_and_what_was_not_done(admin):
+    client, _, store = admin
+    store.views["suggestions"]["state"] = "none"
+    store.refuse("suggestions-save", "Choose one of the models that worked in the test.", "model")
+    response = choose(client, written=f"{TEXT['id']}|llama-3.1-8b")
+    assert response.headers["location"] == "/admin/ai"
+    said = follow(client, response)
+    assert "The summary choice was saved, but suggestions could not be turned on." in said
+    assert "Choose one of the models that worked in the test." in said
+    assert "Saved." not in said
+    assert len(store.asked("writeup-save")) == 1
+
+
+def test_a_server_that_is_not_answering_stays_chosen_and_is_not_saved_over(admin):
+    client, _, store = admin
+    summarizing(store)
+    down = {**SPEECH, "answering": False, "down_since": "2026-11-12T17:00:00+00:00"}
+    store.views["services"]["services"] = [TEXT, down]
+    store.views["overview"]["trans"]["service"] = down
+    store.views["transcription"].update(service=down, model="")
+    page = client.get("/admin/ai").text
+    assert selected_in(page, "heard") == [f"{SPEECH['id']}|"]
+    assert "not answering just now" in page
+    # The owner changes only the summary; the transcription choice is sent back as it was.
+    response = choose(client, heard=f"{SPEECH['id']}|", written=f"{TEXT['id']}|qwen2.5-14b")
+    assert response.headers["location"] == "/admin"
+    assert store.asked("transcription-save") == []
+    assert store.asked("writeup-save") == [
+        {"connection": TEXT["id"], "model": "qwen2.5-14b", "enabled": True}
+    ]
+
+
+def test_a_summary_on_the_servers_own_default_model_stays_chosen_and_is_not_changed(admin):
+    client, _, store = admin
+    store.views["writeup-settings"]["assignment"].update(
+        connection=TEXT["id"], model="", enabled=True
+    )
+    page = client.get("/admin/ai").text
+    assert selected_in(page, "written") == [f"{TEXT['id']}|llama-3.1-8b"]
+    # Only transcription is touched; the summary choice, sent back as shown, is not saved again.
+    response = choose(client, heard=f"{SPEECH['id']}|", written=f"{TEXT['id']}|llama-3.1-8b")
+    assert response.headers["location"] == "/admin"
+    assert store.asked("writeup-save") == []
+    assert store.asked("suggestions-save") == []
+
+
+def test_a_summary_server_that_is_down_is_not_swapped_for_the_first_local_one(admin):
+    client, _, store = admin
+    other = {**TEXT, "id": "other", "name": "Other"}
+    down = {**TEXT, "answering": False, "down_since": "2026-11-12T17:00:00+00:00"}
+    store.views["services"]["services"] = [other, down, SPEECH]
+    store.views["overview"]["services"] = [other, down, SPEECH]
+    store.views["writeup-settings"]["assignment"].update(
+        connection=TEXT["id"], model="qwen2.5-14b", enabled=True
+    )
+    page = client.get("/admin/ai").text
+    assert selected_in(page, "written") == [f"{TEXT['id']}|qwen2.5-14b"]
+    choose(client, heard=f"{SPEECH['id']}|", written=f"{TEXT['id']}|qwen2.5-14b")
+    assert store.asked("writeup-save") == []

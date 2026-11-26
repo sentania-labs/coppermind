@@ -54,6 +54,10 @@ class FakeStore:
         self.answers: dict[str, Any] = {}
         self.down = False
 
+    def refuse(self, action: str, message: str, field: str = "service") -> None:
+        """Make `action` come back refused, the way the store answers: as data, status 200."""
+        self.answers[action] = {"refused": {"field": field, "message": message}}
+
     def asked(self, action: str) -> list[dict[str, Any]]:
         return [payload for name, payload in self.calls if name == action]
 
