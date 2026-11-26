@@ -331,8 +331,9 @@ Do not restore old note files over newer reviewed content.
   `speakers_unavailable` explains that and the rest of the review is unchanged.
   The calendar's part (the staleness check, the recording's candidate meetings, the
   calendar update) gets 8 seconds; if the calendar is still being read, the review
-  comes back without it (`recording_meeting` and `calendar_update` null, `stale` not
-  checked) instead of failing, and a reload a moment later has them.
+  comes back without it (`recording_meeting` and `calendar_update` null, `stale` true
+  because the suggestions could not be checked) instead of failing, and a reload a moment
+  later has them.
 - `POST /v1/notes/{id}/review`: explicit completion with `if_match`, selected
   proposal indexes and optional filename-risk acknowledgement. Also requires
   `notes:write`. Confirming a speaker also requires `sources:write` and `entities:read`.

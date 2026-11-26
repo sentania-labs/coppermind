@@ -9,7 +9,7 @@ NOTE = "01HZ" + "0" * 22
 RECEIPT = {"state": "failed", "error": "The note was edited meanwhile.", "target_id": "target"}
 
 
-def _context(calendar_answers: bool):
+def _context(calendar_answers: bool, suggested_against: str | None = None):
     note = SimpleNamespace(
         id=NOTE,
         body="# Call\n",
@@ -35,7 +35,25 @@ def _context(calendar_answers: bool):
         return [{"event_id": "event"}]
 
     async def hash_of(_):
+        if not calendar_answers:
+            raise calendar_lookup.CalendarUnavailable("slow")
         return "calendar"
+
+    # Suggestions written for this very text of the note, against the calendar it named.
+    job = SimpleNamespace(
+        id="job",
+        note_id=NOTE,
+        purpose="suggestions",
+        created_at="2026-11-26T00:00:00Z",
+        note_hash="sha256:1",
+        evidence_hash=suggested_against,
+        result=None,
+        state="succeeded",
+        error="",
+        plain="",
+        notice="",
+        evidence={},
+    )
 
     schema = SimpleNamespace(role=lambda name: name, roles={})
     enrichment = SimpleNamespace(enabled=True, attendees_field="attendees")
@@ -48,17 +66,18 @@ def _context(calendar_answers: bool):
                 settings=lambda: SimpleNamespace(general=SimpleNamespace(timezone="UTC")),
             ),
         ),
-        jobs=lambda: [],
+        jobs=lambda: [job] if suggested_against else [],
         recordings=SimpleNamespace(jobs=lambda: [recording]),
         read=lambda name, default: state.get(name, default),
         config=lambda: SimpleNamespace(assignments={"enrichment": enrichment}),
         calendar_candidates=candidates,
         recording_calendar_candidates=candidates,
         calendar_evidence_hash=hash_of,
+        note_evidence_hash=hash_of,
     )
 
 
-async def _detail(monkeypatch, calendar_answers: bool):
+async def _detail(monkeypatch, calendar_answers: bool, suggested_against: str | None = None):
     async def evidence(*_):
         return None
 
@@ -72,7 +91,8 @@ async def _detail(monkeypatch, calendar_answers: bool):
         "coppermind_store.voice_store.VoiceStore",
         lambda _: SimpleNamespace(unknown_for_note=lambda _id: []),
     )
-    return await NoteLifecycle(_context(calendar_answers)).detail({"note_id": NOTE})
+    context = _context(calendar_answers, suggested_against)
+    return await NoteLifecycle(context).detail({"note_id": NOTE})
 
 
 @pytest.mark.asyncio
@@ -94,3 +114,24 @@ async def test_the_meeting_and_update_come_back_when_the_calendar_answers(monkey
     assert detail["recording_merge"]["state"] == "failed"
     assert detail["recording_meeting"]["candidates"] == [{"event_id": "event"}]
     assert detail["calendar_update"]["candidates"] == [{"event_id": "event"}]
+
+
+@pytest.mark.asyncio
+async def test_suggestions_are_not_called_current_when_the_calendar_could_not_be_checked(
+    monkeypatch,
+):
+    # The note is unchanged, so only the calendar could say the suggestions are out of date.
+    detail = await _detail(monkeypatch, calendar_answers=False, suggested_against="calendar")
+    assert detail["stale"] is True
+
+
+@pytest.mark.asyncio
+async def test_suggestions_stay_current_when_the_calendar_confirms_them(monkeypatch):
+    detail = await _detail(monkeypatch, calendar_answers=True, suggested_against="calendar")
+    assert detail["stale"] is False
+
+
+@pytest.mark.asyncio
+async def test_suggestions_are_stale_when_the_calendar_has_changed_since(monkeypatch):
+    detail = await _detail(monkeypatch, calendar_answers=True, suggested_against="older")
+    assert detail["stale"] is True

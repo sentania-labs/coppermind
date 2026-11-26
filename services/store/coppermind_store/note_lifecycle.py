@@ -589,10 +589,13 @@ class NoteLifecycle:
                 stale = bool(job and job.note_hash != note.content_hash)
                 if job and not stale:
                     try:
-                        with calendar_lookup.degrading(CALENDAR_SECONDS):
+                        with calendar_lookup.degrading(CALENDAR_SECONDS) as checked:
                             stale = job.evidence_hash != await self.context.note_evidence_hash(note)
                     except ValueError:
                         stale = True
+                    # Evidence that could not be checked is not evidence that it is current:
+                    # hold the suggestions back, as for any other out-of-date set.
+                    stale = stale or checked.unavailable
             with timing.step("validation"):
                 problem = ""
                 try:
