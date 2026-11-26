@@ -171,7 +171,10 @@ def tiles(view: dict[str, Any], ctx: Ctx) -> str:
     }[trans["state"]]
     calendar = view["calendar"]
     to_check = len(calendar["conflicts"]) + len(calendar["bad_files"])
-    if not calendar["files"]:
+    if calendar.get("unavailable"):
+        # The calendar was slow to read; the rest of the page is still true.
+        cal_tile = ("warn", "Not read just now", "Reload in a moment")
+    elif not calendar["files"]:
         cal_tile = (
             ("warn", f"{to_check} to check", "No calendar yet")
             if to_check
@@ -254,8 +257,10 @@ def router(wiring: Wiring) -> APIRouter:
                 ("Something has stopped. " if bad else "")
                 + "The list is in order of urgency: start at the top.",
             )
-        else:
+        elif not view["calendar"].get("unavailable"):
             headline = ("ok", "Everything is working", "Nothing needs you right now.")
+        else:
+            headline = None
         listed = ""
         for index, item in enumerate(items):
             kind = "primary" if index == 0 else ""
@@ -319,11 +324,16 @@ def router(wiring: Wiring) -> APIRouter:
                 )
                 + "</div>"
             )
-        body = f"""{ui.head("Home", HOME_LEDE)}<div class="stack">{ctx.flash()}
-<section class="lat-card"><div class="status">{ui.dot(headline[0])}<div>
+        status = (
+            f"""<section class="lat-card"><div class="status">{ui.dot(headline[0])}<div>
 <div class="status-t">{headline[1]}</div><div class="muted">{headline[2]}</div></div></div>
 {f'<div class="status-list">{listed}</div>' if listed else ""}
-</section>{setup_card}{tiles(view, ctx)}{also}{notices}{recent}</div>"""
+</section>"""
+            if headline
+            else ""
+        )
+        body = f"""{ui.head("Home", HOME_LEDE)}<div class="stack">{ctx.flash()}
+{status}{setup_card}{tiles(view, ctx)}{also}{notices}{recent}</div>"""
         return await ctx.page("Home", body, "home")
 
     @routes.post("/admin/notices/dismiss", include_in_schema=False)
