@@ -145,6 +145,13 @@ class FeatureAssignment(ContextModel):
     # Maximum audio duration accepted by one transcription job.
     job_limit_s: int = Field(default=14400, ge=2, le=86400)
 
+    @field_validator("invitees_field")
+    @classmethod
+    def invitees_are_not_written(cls, value: str) -> str:
+        # Invitees are in the calendar meeting, so nothing writes them onto a note. Releases
+        # that did mapped the shipped `invitees` property; that mapping reads as unset.
+        return "" if value == "invitees" else value
+
     @field_validator("timeout_s", mode="before")
     @classmethod
     def legacy_default_timeout(cls, value: object) -> object:

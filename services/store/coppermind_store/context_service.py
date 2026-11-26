@@ -482,8 +482,7 @@ class ContextService:
 
         presets = {
             "attendees": ("attendees_field", "list"),
-            "invitees": ("invitees_field", "list"),
-            "calendar_event": ("event_field", "string"),
+            "meeting": ("event_field", "string"),
             "contacts": ("contacts_field", "list"),
         }
         name = str(payload.get("property", ""))
@@ -536,8 +535,7 @@ class ContextService:
             }
             for name, kind, description in [
                 ("attendees", "list", "Email addresses confirmed by the reviewed note"),
-                ("invitees", "list", "Email addresses invited to the meeting"),
-                ("calendar_event", "string", "Confirmed calendar event reference"),
+                ("meeting", "string", "Confirmed calendar event reference"),
             ]:
                 if name in managed:
                     raise ValueError(f"{name} is already a managed system property")
@@ -559,8 +557,7 @@ class ContextService:
             config = ContextConfig.model_validate(config.model_dump())
             assignment = config.assignments["enrichment"]
             assignment.attendees_field = assignment.attendees_field or "attendees"
-            assignment.invitees_field = assignment.invitees_field or "invitees"
-            assignment.event_field = assignment.event_field or "calendar_event"
+            assignment.event_field = assignment.event_field or "meeting"
             self.save_config(config)
             return {"enabled": True}
 

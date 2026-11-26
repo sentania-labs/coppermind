@@ -19,3 +19,8 @@
 .coppermind-actions { display:flex;flex-wrap:wrap;gap:4px; }
 .workspace-leaf-content[data-type="coppermind-notes-in-review"] .coppermind-actions button { margin:4px 4px 2px 0;padding:4px 10px; }
 .coppermind-find { width:100%;margin:8px 0; }
+/* A note shows the properties you would set by hand. These four stay in the file and are never edited. */
+.metadata-property[data-property-key="id"],
+.metadata-property[data-property-key="sources"],
+.metadata-property[data-property-key="artifacts"],
+.metadata-property[data-property-key="schema_version"] { display:none; }

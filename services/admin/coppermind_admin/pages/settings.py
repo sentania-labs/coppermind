@@ -102,6 +102,7 @@ BUILT_ROLES = {
 BUILT_OWNED = {
     "attendees": ("Attendees", "people"),
     "invitees": ("Invitees", "people"),
+    "meeting": ("Meeting", "event"),
     "calendar_event": ("Meeting", "event"),
 }
 HIDDEN_ROLES = ("schema_version_key", "id_key", "reviewed_key", "sources_key")
@@ -825,16 +826,11 @@ edit their descriptions and options.</p></div>"""
             "sensibly.",
         )
         if on and sugg:
-            both = (
-                "Attendees and invitees are filled in together, so this tick covers both. "
-                if label in {"Attendees", "Invitees"}
-                else ""
-            )
             ticked = True if new else bool(sugg["fill"].get(item["fill"] if item else ""))
             fill = ui.check(
                 "fill",
                 "Let suggestions fill this in",
-                both + "The same tick as on the Suggestions page; change it in either place.",
+                "The same tick as on the Suggestions page; change it in either place.",
                 checked=("fill" in values) if values else ticked,
             ) + ui.hidden({"fill_shown": 1})
         else:
