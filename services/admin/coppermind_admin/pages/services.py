@@ -413,6 +413,8 @@ Nothing of yours is sent.</p>
         offer = ""
         if feature and going["pick"]:
             need = feature["need"]
+            if going["for"] == "ai" and not can(service, need) and can(service, "speech"):
+                need = "speech"
             if going["for"] in used:
                 verb = "use" if going["for"] == "sugg" else "uses"
                 offer = ui.banner(
@@ -442,8 +444,10 @@ Nothing of yours is sent.</p>
             else:
                 offer = ui.banner(
                     "warn",
-                    f'"{e(service["name"])}" cannot {JOB[need]}, so {feature["lower"]} cannot '
-                    "use it. " + ui.go("Back to " + feature["name"], feature["to"]),
+                    f'"{e(service["name"])}" cannot '
+                    f"{JOB[need] if going['for'] != 'ai' else 'transcribe or summarize'}, "
+                    f"so {feature['lower']} cannot use it. "
+                    + ui.go("Back to " + feature["name"], feature["to"]),
                 )
         test = ui.btn(
             "Test now",

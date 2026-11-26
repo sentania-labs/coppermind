@@ -1,4 +1,4 @@
-"""The Admin pages, one module for each part of the menu."""
+"""The Admin pages: the Coppermind page and the Advanced page, and what each one opens."""
 
 from fastapi import FastAPI
 
@@ -7,10 +7,13 @@ from coppermind.settings import Wiring
 
 def register(app: FastAPI, wiring: Wiring) -> None:
     from coppermind_admin.pages import (
+        advanced,
+        ai,
         apps,
         calendar,
+        companion,
+        coppermind,
         features,
-        home,
         incoming,
         notes,
         people,
@@ -21,7 +24,10 @@ def register(app: FastAPI, wiring: Wiring) -> None:
     )
 
     for module in (
-        home,
+        coppermind,
+        advanced,
+        ai,
+        companion,
         notes,
         incoming,
         calendar,

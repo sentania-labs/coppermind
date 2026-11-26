@@ -21,7 +21,6 @@ from coppermind_admin.pages.common import (
     health_badge,
     service_choices,
     service_path,
-    setup_strip,
     since,
     stopped_help,
     support_detail,
@@ -36,17 +35,7 @@ SUGG_LEDE = (
     "An AI model reads each new note and fills in blanks such as the date, type, people and "
     "tags. You check everything in Obsidian before a note is filed."
 )
-TRANS_LEDE = (
-    "Turns a recording into a written note with each speaker named. The note then waits for "
-    "your review like any other."
-)
 WAITS_SUGG = (("60", "1 minute"), ("120", "2 minutes"), ("300", "5 minutes"), ("600", "10 minutes"))
-WAITS_TRANS = (
-    ("1800", "30 minutes"),
-    ("3600", "1 hour"),
-    ("7200", "2 hours"),
-    ("14400", "4 hours"),
-)
 
 
 def rounded_wait(choices: tuple[tuple[str, str], ...], seconds: int) -> str:
@@ -264,8 +253,7 @@ touched.</p>
             if use and chosen and step == 2
             else ""
         )
-        strip = setup_strip(await ctx.view(), "sugg")
-        page = f"""{ui.head("Suggestions", SUGG_LEDE)}<div class="stack">{strip}{ctx.flash()}
+        page = f"""{ui.head("Suggestions", SUGG_LEDE)}<div class="stack">{ctx.flash()}
 {picked_note}{top}{ui.card(("" if model_only else ui.stepper(labels, step)) + body)}</div>"""
         return await ctx.page("Suggestions", page, "suggestions")
 
@@ -284,7 +272,6 @@ touched.</p>
     async def suggestions_now(ctx: Ctx, data: dict[str, Any]) -> Response:
         service = data["service"]
         state = data["state"]
-        view = await ctx.view()
         name = e(service["name"]) if service else "the service"
         model = e(data["model"] or "its usual model")
         using = f"Using {model} on {name}."
@@ -467,7 +454,7 @@ touched.</p>
             else ""
         )
         page = f"""{ui.head("Suggestions", SUGG_LEDE)}<div class="stack">
-{setup_strip(view, "sugg")}{ctx.flash()}{cancelled}{top}
+{ctx.flash()}{cancelled}{top}
 {support_detail(service, ctx.zone) if state == "failing" and service else ""}
 {ui.card(ui.rows(*rows))}</div>"""
         return await ctx.page("Suggestions", page, "suggestions", dialog=dialog)
@@ -697,7 +684,7 @@ touched.</p>
         try:
             data = await ctx.act("writeup-settings", {})
         except StoreError:
-            return await ctx.unavailable(WRITEUP_TITLE, "", "transcription")
+            return await ctx.unavailable(WRITEUP_TITLE, "", "advanced")
         chosen = data["assignment"]
         fields = ui.text_area(
             "writeup_prompt", "Directions", data["prompt"], rows=28, maxlength=20000
@@ -748,10 +735,10 @@ Your service, model, glossary and limits stay as set.</p>
         body = ui.head(
             WRITEUP_TITLE,
             "A recording produces a finished note before frontmatter review.",
-            ("/admin/transcription", "Transcription"),
+            ("/admin/advanced", "Advanced"),
         )
         return await ctx.page(
-            WRITEUP_TITLE, body + ctx.flash() + ui.card(form) + ui.card(rules), "transcription"
+            WRITEUP_TITLE, body + ctx.flash() + ui.card(form) + ui.card(rules), "advanced"
         )
 
     @routes.post(WRITEUP_PATH, include_in_schema=False)
@@ -787,427 +774,5 @@ Your service, model, glossary and limits stay as set.</p>
             else "Saved. The next write-up uses these directions.",
         )
         return ctx.go(WRITEUP_PATH)
-
-    # ====================================================================================
-    # Transcription
-    # ====================================================================================
-
-    def heard(speech: dict[str, Any]) -> str:
-        return "<br>".join(
-            f'{e(line["speaker"])}: "{e(line["text"])}"' for line in speech.get("lines", [])
-        )
-
-    def test_summary(service: dict[str, Any]) -> str:
-        speech = service["speech"]
-        apart = (
-            "and told the two speakers apart"
-            if speech.get("speakers", 0) >= 2
-            else "and named the speaker, though it heard one voice where the sample has two"
-        )
-        return (
-            f"{e(service['name'])} wrote up a made-up 10-second recording in "
-            f"{plural(speech.get('secs', 1), 'second')} {apart}."
-        )
-
-    @routes.get("/admin/transcription", include_in_schema=False)
-    async def transcription(request: Request) -> Response:
-        ctx = Ctx(request, wiring)
-        try:
-            data = await ctx.act("transcription", {})
-            listed = await services(ctx)
-        except StoreError:
-            return await ctx.unavailable("Transcription", TRANS_LEDE, "transcription")
-        use = ctx.q("use")
-        changing = data["state"] != "none"
-        wizard = data["state"] == "none" or ctx.q("change") == "service" or bool(use)
-        if not wizard:
-            return await transcription_now(ctx, data)
-        current = data["service"]["id"] if data["service"] else ""
-        chosen_id = use or ctx.q("svc")
-        chosen = find(listed, chosen_id)
-        step = int(ctx.q("step") or (2 if use else 1))
-        error = ""
-        if step > 1 and (chosen is None or not can(chosen, "speech") or not chosen["answering"]):
-            if chosen is None:
-                error = "Choose a service first."
-            elif not chosen["answering"]:
-                error = (
-                    f"{e(chosen['name'])} is not answering right now, so it cannot be used. "
-                    "Open it under Manage services to test or edit it, or choose another."
-                )
-            else:
-                error = f"{e(chosen['name'])} cannot write up recordings. Choose another."
-            step = 1
-        carry = {"change": "service" if changing else ""}
-        cancel = ui.go("Cancel the change", "/admin/transcription?cancelled=1") if changing else ""
-        labels = ["Choose a service", "Check the test", "Turn it on"]
-        if step == 1:
-            body = f"""<form method="get" action="/admin/transcription">
-{ui.hidden({"step": 2, **carry})}
-<h3>Which AI service should write up recordings?</h3>
-<p class="muted">These are your AI services that passed the recording test.</p>
-{
-                service_choices(
-                    "svc",
-                    "speech",
-                    "trans",
-                    listed,
-                    ctx.zone,
-                    current=current,
-                    chosen=chosen_id,
-                    error=error,
-                )
-            }
-<div class="actions">{ui.submit("Continue") if any(can(s, "speech") for s in listed) else ""}
-{cancel}</div></form>"""
-        elif step == 2:
-            assert chosen is not None
-            speech = chosen["speech"]
-            models = speech.get("models", [])
-            named = ctx.q("named") == "1"
-            when = (
-                "Tested again just now"
-                if ctx.q("again")
-                else f"When it was tested ({tested(chosen, ctx.zone)})"
-            )
-            tail = (
-                "Coppermind picked the model below from the service's own list. Leave it "
-                "unless you know you want another."
-                if models
-                else "Nothing needs choosing. The box below is only for naming a particular model."
-                if named
-                else "There are no settings for you to choose."
-            )
-            result = ui.banner(
-                "ok",
-                f"<b>It works.</b> {when}, {test_summary(chosen)}"
-                f'<div class="quote">{heard(speech)}</div>{tail}',
-            )
-            model_field = ""
-            if models:
-                model_field = ui.select(
-                    "model",
-                    "Model",
-                    [(name, name) for name in models],
-                    ctx.q("model") or speech.get("model", ""),
-                    hint="The models on this service that can write up recordings and tell "
-                    "speakers apart.",
-                )
-            elif named:
-                model_field = ui.text_input(
-                    "model",
-                    "Model name (optional)",
-                    ctx.q("model"),
-                    hint="Only if your service runs several models and you want a particular "
-                    "one. Blank is fine.",
-                )
-            here = ui.url("/admin/transcription", step=2, svc=chosen["id"], **carry)
-            particular = (
-                ""
-                if models or named
-                else ui.a(
-                    "My service runs several models and I want a particular one",
-                    ui.url(here, named=1),
-                )
-            )
-            body = f"""<h3>{e(chosen["name"])} can do it</h3>{result}
-<form method="get" action="/admin/transcription" id="next">
-{ui.hidden({"step": 3, "svc": chosen["id"], **carry})}{model_field}</form>
-<div class="actions">{
-                ui.go("Back", ui.url("/admin/transcription", step=1, svc=chosen["id"], **carry))
-            }
-<button class="lat-btn lat-btn--primary" form="next">Continue</button>
-{
-                ui.btn(
-                    "Run the test again",
-                    f"/admin/services/{segment(chosen['id'])}/test",
-                    "",
-                    {"back": ui.url(here, again=1)},
-                    busy="Sending the sample recording…",
-                )
-            }
-<span class="subtle">{particular}</span>{cancel}</div>"""
-        else:
-            assert chosen is not None
-            model = ctx.q("model")
-            back = ui.go(
-                "Back",
-                ui.url("/admin/transcription", step=2, svc=chosen["id"], model=model, **carry),
-            )
-            body = f"""<form method="post" action="/admin/transcription/save">
-{ui.hidden({"svc": chosen["id"], "model": model})}
-<h3>Turn it on</h3>
-<p>Recordings go to {e(chosen["name"])} ({where_words(chosen)}) and nowhere else. Coppermind
-deletes the audio once you have reviewed the note.</p>
-<div class="field"><label class="lat-label" for="wait_s">Longest time to wait for one
-recording</label><select class="lat-select" style="max-width:160px" id="wait_s" name="wait_s">
-{ui.options(WAITS_TRANS, rounded_wait(WAITS_TRANS, data["wait_s"]))}</select>
-<div class="lat-hint">1 hour suits most people: an hour-long recording usually takes 10 to 20
-minutes. Pick more only if your recordings run for several hours.</div></div>
-<div class="actions">{back}
-{ui.submit("Save the change" if changing else "Turn on transcription", busy="Saving…")}
-{cancel}</div></form>"""
-        if not changing:
-            top = ui.status(
-                "off", "Transcription is off", "Optional. Three short steps to turn it on."
-            )
-        else:
-            top = ui.banner(
-                "info",
-                "<b>Changing the transcription service.</b> Nothing changes until you press "
-                "Save the change on the last step. Until then recordings keep going to "
-                f"{e(data['service']['name'] if data['service'] else 'the service in use')}.",
-            )
-        picked_note = (
-            ui.banner("ok", f'"{e(chosen["name"])}" is chosen.')
-            if use and chosen and step == 2
-            else ""
-        )
-        strip = setup_strip(await ctx.view(), "trans")
-        page = f"""{ui.head("Transcription", TRANS_LEDE)}
-{ui.go("How recordings are written up", WRITEUP_PATH)}<div class="stack">{strip}{ctx.flash()}
-{picked_note}{top}{ui.card(ui.stepper(labels, step) + body)}</div>"""
-        return await ctx.page("Transcription", page, "transcription")
-
-    async def transcription_now(ctx: Ctx, data: dict[str, Any]) -> Response:
-        service = data["service"]
-        state = data["state"]
-        view = await ctx.view()
-        name = e(service["name"]) if service else "the service"
-        week = data["week"]
-        here = {"back": "/admin/transcription"}
-        test_action = f"/admin/services/{segment(service['id'])}/test" if service else ""
-        edit = (
-            ui.go("Edit this service", service_path(service, **{"for": "trans"})) if service else ""
-        )
-        different = ui.go("Use a different service", "/admin/transcription?change=service")
-        if state == "on":
-            last = data["last"]
-            if last:
-                length = f", {plural(last['minutes'], 'minute')} long" if last["minutes"] else ""
-                took = (
-                    f", written up in {plural(last['took_minutes'], 'minute')}"
-                    if last["took_minutes"]
-                    else ""
-                )
-                tail = f' Last recording: "{e(last["title"])}"{length}{took}.'
-            else:
-                tail = " No recording has been written up yet. The next one you hand in will be."
-            top = ui.status(
-                "ok",
-                "Transcription is on",
-                f"Using {name} ({where_words(service) if service else ''})." + tail,
-                ui.btn("Pause", "/admin/transcription/pause", "", {"paused": "1"}),
-            )
-        elif state == "paused":
-            top = ui.status(
-                "warn",
-                "Transcription is paused",
-                "Recordings are kept and wait until you resume.",
-                ui.btn("Resume", "/admin/transcription/pause", "primary", {"paused": ""}),
-            )
-        else:
-            waiting = week["waiting"]
-            if service is None:
-                top = ui.status(
-                    "bad",
-                    "Transcription has stopped",
-                    "The AI service it used is no longer in your list. "
-                    f"{plural(waiting, 'recording is', 'recordings are')} waiting. The "
-                    "recordings are safe. Choose another service.",
-                    ui.go(
-                        "Use a different service", "/admin/transcription?change=service", "primary"
-                    ),
-                )
-            else:
-                top = ui.status(
-                    "bad",
-                    "Transcription has stopped",
-                    f"{name} has not answered since {since(service, ctx.zone)}. "
-                    f"{plural(waiting, 'recording is', 'recordings are')} waiting. The recordings "
-                    "are safe." + stopped_help(service, waiting, "recording"),
-                    ui.btn("Test now", test_action, "primary", here, busy="Sending the sample…")
-                    + edit
-                    + different,
-                )
-        done, waiting, failed = week["done"], week["waiting"], week["failed"]
-        if done or waiting or failed:
-            this_week = f"{plural(done, 'recording')} written up. "
-            if waiting:
-                this_week += plural(waiting, "is", "are") + " waiting. "
-            if failed:
-                this_week += plural(failed, "has", "have") + " failed. "
-            if not waiting and not failed:
-                this_week += "None failed. "
-        else:
-            this_week = "None yet. "
-        rows = ui.rows(
-            ui.row(
-                "AI service",
-                (
-                    f"{name} {health_badge(service)} {where_text(service)} "
-                    + (f"Model: {e(data['model'])}." if data["model"] else "It uses its own model.")
-                    + (f" Last tested {tested(service, ctx.zone)}." if service["answering"] else "")
-                )
-                if service
-                else "None chosen.",
-                ""
-                if state == "failing" or not service
-                else ui.btn("Test now", test_action, "", here, busy="Sending the sample…")
-                + edit
-                + different,
-            ),
-            ui.row(
-                "Longest wait",
-                ui.quick_select(
-                    "/admin/transcription/wait",
-                    "seconds",
-                    "Longest time to wait for one recording",
-                    WAITS_TRANS,
-                    rounded_wait(WAITS_TRANS, data["wait_s"]),
-                )
-                + " for one recording, before Coppermind gives up and tries later.",
-            ),
-            ui.row(
-                "If a recording fails",
-                "Try "
-                + ui.quick_select(
-                    "/admin/transcription/tries",
-                    "tries",
-                    "Tries per recording",
-                    [("1", "1"), ("2", "2"), ("3", "3")],
-                    str(data["attempts"]),
-                )
-                + " times in all, then stop and tell you. Each try sends the whole recording "
-                "again.",
-            ),
-            ui.row(
-                "This week",
-                this_week + ui.a("See recordings", "/admin/incoming?tab=recording"),
-                ui.btn(
-                    "Try it again" if failed == 1 else "Try them again",
-                    "/admin/transcription/retry",
-                    busy="Trying again…",
-                )
-                if failed and state == "on"
-                else "",
-            ),
-        )
-        cancelled = (
-            ui.banner(
-                "ok",
-                f"Change cancelled. Nothing was changed: recordings still go to {name}.",
-                fresh=True,
-            )
-            if ctx.q("cancelled")
-            else ""
-        )
-        page = f"""{ui.head("Transcription", TRANS_LEDE)}
-{ui.go("How recordings are written up", WRITEUP_PATH)}<div class="stack">
-{setup_strip(view, "trans")}{ctx.flash()}{cancelled}{top}
-{support_detail(service, ctx.zone) if state == "failing" and service else ""}
-{ui.card(rows)}</div>"""
-        return await ctx.page("Transcription", page, "transcription")
-
-    @routes.post("/admin/transcription/save", include_in_schema=False)
-    async def transcription_save(request: Request) -> Response:
-        ctx = Ctx(request, wiring)
-        form = await ctx.form()
-        result = await saved(
-            ctx,
-            "transcription-save",
-            {
-                "connection": form.get("svc", ""),
-                "model": form.get("model", ""),
-                "wait_s": int(form.get("wait_s") or 3600),
-            },
-            "/admin/transcription",
-        )
-        if isinstance(result, Response):
-            return result
-        name = e(result["service"])
-        recordings = result["resumed"].get("recordings", 0)
-        ctx.say(
-            "ok",
-            ("Saved. " if result["was"] != "none" else "Transcription is on. ")
-            + f"Recordings now go to {name}. "
-            + (
-                f"The {plural(recordings, 'recording that was', 'recordings that were')} "
-                f"waiting {'is' if recordings == 1 else 'are'} being written up now."
-                if recordings
-                else "To try it, record with the companion in Obsidian or add a recording "
-                "under " + ui.a("Recordings and imports", "/admin/incoming") + "."
-            )
-            + await paused_note(ctx, "transcription"),
-        )
-        return ctx.go("/admin/transcription")
-
-    @routes.post("/admin/transcription/pause", include_in_schema=False)
-    async def transcription_pause(request: Request) -> Response:
-        ctx = Ctx(request, wiring)
-        form = await ctx.form()
-        paused = bool(form.get("paused"))
-        result = await saved(ctx, "transcription-pause", {"paused": paused}, "/admin/transcription")
-        if isinstance(result, Response):
-            return result
-        ctx.say(
-            "ok",
-            "Transcription is paused. Recordings are kept and wait until you resume."
-            if paused
-            else "Transcription is on again. Any waiting recordings are being written up now.",
-        )
-        return ctx.go("/admin/transcription")
-
-    @routes.post("/admin/transcription/wait", include_in_schema=False)
-    async def transcription_wait(request: Request) -> Response:
-        ctx = Ctx(request, wiring)
-        form = await ctx.form()
-        value = form.get("seconds", "")
-        result = await saved(
-            ctx, "transcription-wait", {"seconds": int(value or 0)}, "/admin/transcription"
-        )
-        if isinstance(result, Response):
-            return result
-        ctx.say(
-            "ok",
-            f"Saved. Coppermind now waits up to {wait_words(WAITS_TRANS, value)} for one "
-            "recording.",
-        )
-        return ctx.go("/admin/transcription")
-
-    @routes.post("/admin/transcription/tries", include_in_schema=False)
-    async def transcription_tries(request: Request) -> Response:
-        ctx = Ctx(request, wiring)
-        form = await ctx.form()
-        value = form.get("tries", "")
-        result = await saved(
-            ctx, "transcription-tries", {"tries": int(value or 0)}, "/admin/transcription"
-        )
-        if isinstance(result, Response):
-            return result
-        ctx.say(
-            "ok",
-            f"Saved. A recording is now tried {'once' if value == '1' else value + ' times'} "
-            "before Coppermind stops and tells you.",
-        )
-        return ctx.go("/admin/transcription")
-
-    @routes.post("/admin/transcription/retry", include_in_schema=False)
-    async def transcription_retry(request: Request) -> Response:
-        ctx = Ctx(request, wiring)
-        await ctx.form()
-        result = await saved(ctx, "transcription-retry-failed", {}, "/admin/transcription")
-        if isinstance(result, Response):
-            return result
-        count = len(result["retried"])
-        ctx.say(
-            "ok" if count else "warn",
-            f"Trying {plural(count, 'recording')} again. "
-            f"{'It is' if count == 1 else 'They are'} back in the queue and will be written "
-            "up in turn."
-            if count
-            else "No recording could be tried again.",
-        )
-        return ctx.go("/admin/transcription")
 
     return routes

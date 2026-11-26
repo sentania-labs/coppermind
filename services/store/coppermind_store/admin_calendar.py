@@ -1,8 +1,8 @@
 """The calendar as Admin shows it: files, meetings, and disagreements between files.
 
 Counts are worked out once from the meetings themselves and remembered until the
-calendar changes, so the Calendar page, Recordings and imports, and Home all read
-the same numbers.
+calendar changes, so the Calendar page and Recordings and imports read the same
+numbers.
 """
 
 from __future__ import annotations

@@ -22,7 +22,7 @@ repair. The authored heading and body stay unchanged. Stale suggestions cannot
 be applied; reload the page.
 
 Coppermind places the companion in the vault at
-`.obsidian/plugins/coppermind-review/` (from Admin's Setup guide) and Obsidian Sync
+`.obsidian/plugins/coppermind-review/` (from the Companion line on Admin's Coppermind page) and Obsidian Sync
 carries it to your devices. Its version follows the Coppermind release that installed it.
 Admin compares the files in your vault with the files it ships and offers an update
 when they differ (reload the companion in Obsidian afterwards). Enable it in Community
@@ -166,7 +166,7 @@ company-profile synthesis.
 
 Drop ICS files or ZIPs containing ICS files into Dropbox, or send binary bytes to
 `POST /v1/dropbox?filename=export.ics` with `sources:write`. A 202 means the original
-and intake receipt are durable, not that parsing has completed. Admin's Calendar and Recordings and imports
+and intake receipt are durable, not that parsing has completed. Admin's Advanced, Calendar files and Recordings and imports
 pages show processing and failure status. The vault scanner
 waits 30 seconds for stable bytes. A completed drop leaves Dropbox only after its
 original is durable and the stored bytes are checked again; a file that cannot be

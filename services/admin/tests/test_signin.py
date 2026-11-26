@@ -25,16 +25,16 @@ def test_before_setup_every_page_leads_to_the_welcome_page(fresh):
 def test_setup_takes_the_code_and_a_password_and_signs_its_owner_in(fresh):
     client, wiring, _ = fresh
     done = set_up(client)
-    assert done.headers["location"] == "/admin/setup"
+    assert done.headers["location"] == "/admin"
     record = wiring.state_dir / "admin.json"
     stored = record.read_text(encoding="utf-8")
     assert PASSWORD not in stored
     assert json.loads(stored)["password_hash"].startswith("$argon2")
     assert record.stat().st_mode & 0o077 == 0
     assert not (wiring.state_dir / "internal" / "claim-code").exists()
-    page = client.get("/admin/setup").text
+    page = client.get("/admin").text
     assert "Password saved. You are signed in." in page
-    assert "Setup guide" in page
+    assert "Connect each thing once" in page
 
 
 def test_setup_says_what_is_wrong_in_words_and_keeps_the_code(fresh):
