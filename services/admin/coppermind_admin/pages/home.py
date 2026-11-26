@@ -171,7 +171,10 @@ def tiles(view: dict[str, Any], ctx: Ctx) -> str:
     }[trans["state"]]
     calendar = view["calendar"]
     to_check = len(calendar["conflicts"]) + len(calendar["bad_files"])
-    if not calendar["files"]:
+    if calendar.get("unavailable"):
+        # The calendar was slow to read; the rest of the page is still true.
+        cal_tile = ("warn", "Not read just now", "Reload in a moment")
+    elif not calendar["files"]:
         cal_tile = (
             ("warn", f"{to_check} to check", "No calendar yet")
             if to_check

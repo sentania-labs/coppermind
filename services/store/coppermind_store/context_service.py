@@ -47,10 +47,15 @@ from coppermind.store_protocol import (
     StoreUnavailable,
     VersionConflict,
 )
-from coppermind_store import answer_shape, meeting_match, meeting_summary, speaker_names
+from coppermind_store import (
+    answer_shape,
+    calendar_lookup,
+    meeting_match,
+    meeting_summary,
+    speaker_names,
+)
 from coppermind_store.calendar_archive import CalendarArchive
 from coppermind_store.calendar_import import CALENDAR_ID
-from coppermind_store.calendar_worker import occurrences
 from coppermind_store.dossier_context import (
     CONFIDENCE_THRESHOLD,
     EXTRACTION_VERSION,
@@ -364,10 +369,8 @@ class ContextService:
         day = note_date(note.frontmatter, self.store.control.schema())
         if day is None:
             return []
-        catalog = await asyncio.to_thread(self.archive.catalog)
-        events = catalog.events.page(None, calendar_id=CALENDAR_ID)
-        found = await asyncio.to_thread(
-            occurrences, events, day, self.store.control.settings().general.timezone
+        found = await calendar_lookup.around(
+            self.archive, day, self.store.control.settings().general.timezone
         )
         if descriptions:
             return found

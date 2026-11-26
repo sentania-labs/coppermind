@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import threading
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -16,6 +18,7 @@ import sqlalchemy as sa
 
 from coppermind.db.calendar import calendar_events as rows
 from coppermind_store import calendar_mirror as mirror
+from coppermind_store.calendar_archive import incoming_path, save_incoming
 from coppermind_store.calendar_import import (
     CALENDAR_ID,
     CalendarEvent,
@@ -27,10 +30,23 @@ from coppermind_store.calendar_worker import parse_bounded
 if TYPE_CHECKING:
     from coppermind_store.notes import LocalStore
 
+log = logging.getLogger(__name__)
+
 CALENDAR_UPLOAD_LIMIT = 200_000_000
+
+# How long a page waits for the calendar's part before it is shown without it. Well inside
+# the 30 seconds Admin and the companion wait for the store, so a slow calendar costs the
+# page one section, never the whole page.
+CALENDAR_BUDGET_SECONDS = 8.0
 
 # One summary of every meeting, kept until the catalog's signature changes.
 _CACHE: dict[str, tuple[str, dict[str, Any]]] = {}
+# One reader at a time per calendar: a request that finds the summary stale waits for the
+# one already rebuilding it instead of reading every meeting again beside it.
+_BUILDING: dict[str, threading.Lock] = {}
+# Disagreements whose other version is being read back from its file, and ones already tried.
+_FILLING: dict[str, asyncio.Task[None]] = {}
+_TRIED: set[tuple[str, str, str]] = set()
 
 
 def _distinct(people: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -46,6 +62,11 @@ def _distinct(people: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _summary(archive: Any) -> dict[str, Any]:
     """Every meeting in brief, and what each file contributed, read once per change."""
     key = str(archive.root)
+    with _BUILDING.setdefault(key, threading.Lock()):
+        return _build_summary(archive, key)
+
+
+def _build_summary(archive: Any, key: str) -> dict[str, Any]:
     with archive.engine.connect() as connection:
         signature = mirror.get_state(connection, "signature")
         cached = _CACHE.get(key)
@@ -133,58 +154,117 @@ class AdminCalendar:
             if receipt.state == "failed" and not receipt.dismissed
         ]
 
-    def _incoming(self, event_id: str, version: str) -> tuple[CalendarEvent, Any] | None:
-        """The other version of a disagreement, read back from the file that carried it."""
-        cache = self.archive.root / "conflict-incoming" / f"{event_id}-{version}.json"
-        receipts = {receipt.id: receipt for receipt in self.archive.receipts()}
-        if cache.exists():
-            saved = json.loads(cache.read_bytes())
+    def _saved_incoming(
+        self, event_id: str, version: str, receipts: dict[str, Any]
+    ) -> tuple[CalendarEvent, Any] | None:
+        """The other version of a disagreement, if it was kept when its file was imported."""
+        try:
+            saved = json.loads(incoming_path(self.archive.root, event_id, version).read_bytes())
             receipt = receipts.get(saved["receipt"])
             if receipt is not None:
                 return CalendarEvent.model_validate(saved["event"]), receipt
+        except (OSError, ValueError, KeyError):
+            pass
+        return None
+
+    def _parse_original(self, receipt: Any) -> list[CalendarEvent] | None:
+        original = self.archive.root / "imports" / receipt.id / "original"
+        try:
+            limits = self.archive.limits()
+            return parse_bounded(
+                CALENDAR_ID,
+                receipt.filename,
+                original.read_bytes(),
+                receipt.limit,
+                max_events=limits.calendar_max_events,
+                memory_mib=limits.calendar_import_memory_mib,
+            )
+        except (OSError, CalendarImportError):
+            return None
+
+    def _incoming(
+        self, event_id: str, version: str, receipts: dict[str, Any] | None = None
+    ) -> tuple[CalendarEvent, Any] | None:
+        """The other version of a disagreement, read back from the file that carried it.
+
+        This reads and parses the calendar file when no copy was kept, so only a person's own
+        choice calls it. Pages read `_saved_incoming` and fill the rest in the background.
+        """
+        receipts = receipts or {receipt.id: receipt for receipt in self.archive.receipts()}
+        found = self._saved_incoming(event_id, version, receipts)
+        if found is not None:
+            return found
         for receipt in sorted(receipts.values(), key=lambda r: r.received_at, reverse=True):
             if not any(p.event_id == event_id and p.version == version for p in receipt.conflicts):
                 continue
-            original = self.archive.root / "imports" / receipt.id / "original"
-            try:
-                limits = self.archive.limits()
-                events = parse_bounded(
-                    CALENDAR_ID,
-                    receipt.filename,
-                    original.read_bytes(),
-                    receipt.limit,
-                    max_events=limits.calendar_max_events,
-                    memory_mib=limits.calendar_import_memory_mib,
-                )
-            except (OSError, CalendarImportError):
-                continue
-            for event in events:
+            events = self._parse_original(receipt)
+            for event in events or []:
                 if event.identity == event_id and event.semantic_hash == version:
-                    from coppermind_store.calendar_import import EventProvenance
-
-                    event.provenance = [
-                        EventProvenance(
-                            source_id=receipt.id,
-                            filename=receipt.export_filename or receipt.filename,
-                            entry=receipt.original_entry or event.source_entry,
-                            imported_at=receipt.received_at,
-                        )
-                    ]
-                    from coppermind.atomicio import atomic_write_text
-
-                    atomic_write_text(
-                        cache,
-                        json.dumps({"receipt": receipt.id, "event": event.model_dump(mode="json")}),
-                        mode=0o600,
-                    )
-                    return event, receipt
+                    save_incoming(self.archive.root, receipt, event)
+                    return self._saved_incoming(event_id, version, receipts)
         return None
 
+    def _fill_incoming(self) -> None:
+        """Keep the other version of every disagreement that has none, one file read per file.
+
+        Disagreements found before copies were kept at import have nothing saved. Each calendar
+        file that carries one is read once, however many disagreements it holds, and what it
+        held is kept so no page reads it again.
+        """
+        receipts = sorted(self.archive.receipts(), key=lambda r: r.received_at, reverse=True)
+        root = str(self.archive.root)
+        missing = {
+            key
+            for event in self.archive.catalog().conflicts
+            if (key := (event.identity, event.conflict_version or event.semantic_hash))
+            and not incoming_path(self.archive.root, *key).exists()
+            and (root, *key) not in _TRIED
+        }
+        _TRIED.update((root, *key) for key in missing)
+        for receipt in receipts:
+            carried = {
+                key
+                for key in missing
+                if any(p.event_id == key[0] and p.version == key[1] for p in receipt.conflicts)
+            }
+            if not carried:
+                continue
+            for event in self._parse_original(receipt) or []:
+                if (event.identity, event.semantic_hash) in carried:
+                    carried.discard((event.identity, event.semantic_hash))
+                    missing.discard((event.identity, event.semantic_hash))
+                    try:
+                        save_incoming(self.archive.root, receipt, event)
+                    except OSError:
+                        log.warning("conflict_incoming_not_saved", exc_info=True)
+
+    def _fill_missing(self, conflicts: list[dict[str, Any]]) -> None:
+        """Start filling in what a page could not show yet, unless that is already under way."""
+        key = str(self.archive.root)
+        if not any(
+            c["incoming"] is None and (key, c["id"], c["version"]) not in _TRIED for c in conflicts
+        ):
+            return
+        running = _FILLING.get(key)
+        if running is not None and not running.done():
+            return
+        task = asyncio.get_running_loop().create_task(asyncio.to_thread(self._fill_incoming))
+
+        def finished(done: asyncio.Task[None]) -> None:
+            _FILLING.pop(key, None)
+            if not done.cancelled() and done.exception() is not None:
+                log.warning("conflict_incoming_fill_failed", exc_info=done.exception())
+
+        task.add_done_callback(finished)
+        _FILLING[key] = task
+
     def _conflicts(self) -> list[dict[str, Any]]:
+        """Every disagreement, with the other version when it was kept. Never reads a file."""
         catalog = self.archive.catalog()
+        receipts = {receipt.id: receipt for receipt in self.archive.receipts()}
         names = {
             receipt.id: (receipt.export_filename or receipt.filename, receipt.received_at)
-            for receipt in self.archive.receipts()
+            for receipt in receipts.values()
         }
         out = []
         for retained in catalog.conflicts:
@@ -193,7 +273,7 @@ class AdminCalendar:
                 stored = catalog.events[retained.identity]
             except KeyError:
                 continue
-            other = self._incoming(retained.identity, version)
+            other = self._saved_incoming(retained.identity, version, receipts)
             first = stored.provenance[0].source_id if stored.provenance else ""
             entry: dict[str, Any] = {
                 "id": retained.identity,
@@ -222,11 +302,30 @@ class AdminCalendar:
             out.append(entry)
         return out
 
+    async def _degraded(self, call: Any, fallback: Any) -> Any:
+        """Run one calendar read in a thread; a slow or failed one gives `fallback` instead."""
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(call), CALENDAR_BUDGET_SECONDS)
+        except Exception:  # noqa: BLE001 - the page is shown without its calendar piece
+            log.warning("calendar_unavailable", exc_info=True)
+            return fallback
+
     async def attention(self) -> dict[str, Any]:
-        """What the calendar needs from its owner: disagreements and files that failed."""
-        return await asyncio.to_thread(
-            lambda: {"conflicts": self._conflicts(), "bad_files": self._bad_files()}
+        """What the calendar needs from its owner: disagreements and files that failed.
+
+        A calendar that is slow or broken leaves this part out and says so; it never holds
+        the rest of the page.
+        """
+        result = await self._degraded(
+            lambda: {"conflicts": self._conflicts(), "bad_files": self._bad_files()},
+            {"conflicts": [], "bad_files": [], "unavailable": True},
         )
+        self._fill_missing(result["conflicts"])
+        return result
+
+    async def files(self) -> list[dict[str, Any]] | None:
+        """The calendar files and what each held, or None when they cannot be read in time."""
+        return await self._degraded(self._files, None)
 
     async def view(self, payload: dict[str, Any]) -> dict[str, Any]:
         def read() -> dict[str, Any]:
@@ -252,7 +351,9 @@ class AdminCalendar:
                 "max_events": self.store.control.settings().limits.calendar_max_events,
             }
 
-        return await asyncio.to_thread(read)
+        result = await asyncio.to_thread(read)
+        self._fill_missing(result["conflicts"])
+        return result
 
     async def meeting(self, payload: dict[str, Any]) -> dict[str, Any]:
         identity = str(payload["id"])
@@ -361,6 +462,8 @@ class AdminCalendar:
                 self.archive.dismiss_conflict(event_id, version)
                 chosen = conflict["stored"]
             else:
+                # The one place a calendar file is read for a disagreement, and only the one
+                # the owner chose.
                 found = self._incoming(event_id, version)
                 if found is None:
                     raise ValueError(
@@ -368,7 +471,10 @@ class AdminCalendar:
                         "Add that calendar file again."
                     )
                 self.archive.choose_incoming(event_id, version, found[0])
-                chosen = conflict["incoming"]
+                chosen = {
+                    "start": found[0].start,
+                    "file": found[1].export_filename or found[1].filename,
+                }
             return {"title": conflict["title"], "start": chosen["start"], "file": chosen["file"]}
 
         return await asyncio.to_thread(apply)
