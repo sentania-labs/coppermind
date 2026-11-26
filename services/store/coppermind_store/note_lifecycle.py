@@ -612,24 +612,32 @@ class NoteLifecycle:
                 if copies:
                     problem = " ".join(dict.fromkeys([*([problem] if problem else []), *copies]))
             with timing.step("calendar_and_recording"):
-                update = manual = recording = meeting = merge = None
+                update = manual = meeting = merge = None
+                recording = next(
+                    (
+                        r
+                        for r in self.context.recordings.jobs()
+                        if r.note_id == note.id and r.source_id
+                    ),
+                    None,
+                )
+                receipt = (
+                    self.context.read("recording-merges/" + recording.source_id, {})
+                    if recording
+                    else {}
+                )
+                if receipt:
+                    merge = {
+                        "state": receipt.get("state"),
+                        "error": receipt.get("error", ""),
+                        "target_id": receipt.get("target_id"),
+                    }
                 with calendar_lookup.degrading(CALENDAR_SECONDS) as calendar:
                     update = self.context.read("calendar-followups", {}).get(note.id)
                     if update is not None:
                         update = dict(
                             update, candidates=await self.context.calendar_candidates(note)
                         )
-                    manual = None
-                    recording = next(
-                        (
-                            r
-                            for r in self.context.recordings.jobs()
-                            if r.note_id == note.id and r.source_id
-                        ),
-                        None,
-                    )
-                    meeting = None
-                    merge = None
                     if recording:
                         candidates = await self.context.recording_calendar_candidates(note)
                         suggested = [
@@ -648,15 +656,9 @@ class NoteLifecycle:
                             .get("event_id"),
                         }
                         manual = await speaker_names.evidence(self.context, note, candidates)
-                        receipt = self.context.read("recording-merges/" + recording.source_id, {})
-                        if receipt:
-                            merge = {
-                                "state": receipt.get("state"),
-                                "error": receipt.get("error", ""),
-                                "target_id": receipt.get("target_id"),
-                            }
-                        elif recording.generation_mode == "markdown-v1" or (
-                            job and job.result and job.result.meeting_summary and not stale
+                        if not receipt and (
+                            recording.generation_mode == "markdown-v1"
+                            or (job and job.result and job.result.meeting_summary and not stale)
                         ):
                             matches = await self.merge_candidates(note, recording)
                             if matches:
@@ -674,8 +676,13 @@ class NoteLifecycle:
                                 }
 
                 if calendar.unavailable:
-                    # Show the review without what the calendar would have added to it.
-                    update = manual = meeting = merge = None
+                    # Show the review without what the calendar would have added to it; the
+                    # merge receipt and the recording's own speakers do not need the calendar.
+                    update = meeting = None
+                    manual = (
+                        await speaker_names.evidence(self.context, note, []) if recording else None
+                    )
+                    merge = merge if receipt else None
                     calendar_unavailable = True
             with timing.step("speaker_details"):
                 from coppermind_store.voice_store import VoiceStore
