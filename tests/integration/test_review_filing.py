@@ -337,10 +337,12 @@ async def test_approval_does_not_cover_a_revision_arriving_before_filing(store):
     )
     request.source.artifacts[0].content = "Late aardvark transcript"
     await store.ingest(request)
-    assert (await filing.file_reviewed(store))["filing_failed"] == 1
+    # A note not yet filed is unticked when its recording changed after review: nothing fails.
+    assert (await filing.file_reviewed(store)) == {"filed": 0, "filing_failed": 0}
+    assert (await store.get_note(note.id)).frontmatter["reviewed"] is False
     await indexer.catch_up(store)
     assert not (await store.search(SearchQuery(q="aardvark"))).items
-    # An explicit mark-reviewed API action can approve material even if the flag is already true.
+    # Ticking it again approves the current material.
     assert (await approve(store, note.id))["filing_failed"] == 0
     await indexer.catch_up(store)
     assert (await store.search(SearchQuery(q="aardvark"))).items
