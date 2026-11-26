@@ -813,7 +813,8 @@ def _context_key(*, default: str | None, work_only: bool, wording: str) -> KeyDe
             ),
             "unwritten": (
                 "Older notes say whether a work note is internal or about a customer. Nothing "
-                "writes it now: an account means a customer meeting."
+                "writes it now: an account means a customer meeting. It does not decide where "
+                "a note files."
             ),
         }[wording],
     )
