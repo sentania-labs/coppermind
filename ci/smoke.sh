@@ -208,15 +208,15 @@ admin_page -X POST "$ADMIN/admin/welcome" --data-urlencode "csrf=$admin_csrf" \
 has_session_cookie && fail "a refused setup code issued a session cookie"
 [ "$(admin -X POST "$ADMIN/admin/welcome" --data-urlencode "code=$setup_code" \
     --data-urlencode "pw1=$admin_password" --data-urlencode "pw2=$admin_password")" \
-    = "$ADMIN/admin/setup" ] \
+    = "$ADMIN/admin" ] \
     || fail "the code bootstrap printed was not accepted by Admin"
 has_session_cookie || fail "setting Admin up did not sign the operator in"
 compose run --rm --no-deps --entrypoint sh bootstrap \
     -c 'test ! -e /data/state/internal/claim-code' \
     || fail "setup did not consume the code on the shared state volume"
-admin_page -f "$ADMIN/admin/setup" | grep -Fq '<h1>Setup guide</h1>' \
-    || fail "the setup guide did not render after setup"
-admin_csrf="$(admin_page -f "$ADMIN/admin/setup" | form_value csrf | head -1)"
+admin_page -f "$ADMIN/admin" | grep -Fq '<h1>Coppermind</h1>' \
+    || fail "the Coppermind page did not render after setup"
+admin_csrf="$(admin_page -f "$ADMIN/admin" | form_value csrf | head -1)"
 [ -n "$admin_csrf" ] || fail "Signed-in page has no CSRF token"
 ok "the printed code set Admin up once, was consumed, and signed the operator in"
 
@@ -225,7 +225,7 @@ step "sign out, be refused with a wrong password, and sign in again"
     || fail "signing out did not return to the sign-in page"
 has_session_cookie && fail "signing out left the session cookie in the browser"
 [ "$(admin "$ADMIN/admin")" = "$ADMIN/admin/signin" ] \
-    || fail "Home was reachable without signing in"
+    || fail "Admin was reachable without signing in"
 # Setup cannot be run a second time, even by someone holding the old code.
 [ "$(admin "$ADMIN/admin/welcome")" = "$ADMIN/admin/signin" ] \
     || fail "the Welcome page was offered again after setup"
@@ -239,8 +239,10 @@ has_session_cookie && fail "a refused password issued a session cookie"
     = "$ADMIN/admin" ] \
     || fail "the Admin password chosen at setup did not sign in"
 has_session_cookie || fail "signing in did not issue a session cookie"
-admin_page -f "$ADMIN/admin" | grep -Fq '<h1>Home</h1>' \
-    || fail "Home did not render for a signed in operator"
+admin_page -f "$ADMIN/admin" | grep -Fq '<h1>Coppermind</h1>' \
+    || fail "the Coppermind page did not render for a signed in operator"
+admin_page -f "$ADMIN/admin/advanced" | grep -Fq '<h1>Advanced</h1>' \
+    || fail "the Advanced page did not render for a signed in operator"
 
 admin_csrf="$(admin_page -f "$ADMIN/admin" | form_value csrf | head -1)"
 [ -n "$admin_csrf" ] || fail "Signed-in page has no CSRF token"
@@ -303,8 +305,8 @@ ok "the history wait saved through Admin and was read back from the state file"
     || fail "signing out did not return to the sign-in page"
 has_session_cookie && fail "signing out left the session cookie in the browser"
 [ "$(admin "$ADMIN/admin")" = "$ADMIN/admin/signin" ] \
-    || fail "Home was still reachable after signing out"
-ok "the operator signed in, saw Home, signed out and lost Home again"
+    || fail "Admin was still reachable after signing out"
+ok "the operator signed in, saw Admin, signed out and lost Admin again"
 
 step "the bootstrapped default key is usable without a setup step"
 default_key="$(compose run --rm --no-deps --entrypoint cat bootstrap \

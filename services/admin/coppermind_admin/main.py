@@ -219,7 +219,7 @@ async def update_companion(app: FastAPI, wiring: Wiring) -> None:
     current, or when the owner has turned this off. A store that is not up yet is tried again.
     """
     from coppermind.store_protocol import StoreError
-    from coppermind_admin.pages.home import place_payload
+    from coppermind_admin.pages.companion import place_payload
 
     for wait in (2, 5, 10, 30, 60, 120, 300):
         await asyncio.sleep(wait)
@@ -469,7 +469,7 @@ def create_app(wiring: Wiring | None = None, sessions: SignedSessions | None = N
                     {k: v for k, v in document.items() if k != "revision"}
                 )
                 state.write("settings", document, if_revision=current.revision)
-        response = start_session("/admin" if reset else "/admin/setup")
+        response = start_session("/admin")
         cookie = _session_cookie(response)
         if cookie:
             app.state.flashes[cookie] = {

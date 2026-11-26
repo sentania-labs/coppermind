@@ -13,12 +13,12 @@ NOTE = VIEWS["note"]["id"]
 PERSON = VIEWS["person"]["id"]
 SERVICE = VIEWS["service"]["service"]["id"]
 ITEM = VIEWS["incoming-item"]["id"]
-MEETING = VIEWS["calendar-meeting"]["id"]
 APP = VIEWS["apps"]["items"][-1]["id"]
 
 PAGES = [
-    ("/admin", "Home"),
-    ("/admin/setup", "Setup guide"),
+    ("/admin", "Connect each thing once"),
+    ("/admin/advanced", "Things you set once"),
+    ("/admin/ai", "Choose what turns a recording into text"),
     ("/admin/setup/companion", "Add the companion to Obsidian"),
     ("/admin/notes", "Notes"),
     ("/admin/notes?tab=waiting", "Waiting for review"),
@@ -28,9 +28,7 @@ PAGES = [
     (f"/admin/notes/{NOTE}/review", "The meeting summary"),
     ("/admin/incoming", "Recordings and imports"),
     (f"/admin/incoming/{ITEM}", "what has happened to it"),
-    ("/admin/calendar", "Calendar"),
-    ("/admin/calendar?tab=files", "Past imports"),
-    (f"/admin/calendar/{MEETING}", "A meeting from your calendar"),
+    ("/admin/calendar", "Calendar files"),
     ("/admin/people", "People and voices"),
     ("/admin/people?tab=companies", "Companies"),
     ("/admin/people?tab=voices", "Voice recognition"),
@@ -44,14 +42,12 @@ PAGES = [
     ("/admin/suggestions", "Suggestions are on"),
     ("/admin/suggestions/fill", "What suggestions fill in"),
     ("/admin/transcription/writeup", "How recordings are written up"),
-    ("/admin/transcription", "Transcription is on"),
     ("/admin/apps", "Connected apps"),
     ("/admin/apps/new", "Connect an app"),
     ("/admin/apps/pair", "Pair the companion on another device"),
     (f"/admin/apps/{APP}", "One connected app"),
     ("/admin/storage", "Storage"),
     ("/admin/storage/files", "Files beside your notes"),
-    ("/admin/settings", "Everyday settings"),
     ("/admin/settings/timezone", "Time zone"),
     ("/admin/settings/signin", "Password and signing in"),
     ("/admin/settings/folders", "Folders"),
@@ -59,7 +55,7 @@ PAGES = [
     ("/admin/settings/properties/edit/date", "Edit"),
     ("/admin/settings/tags", "Tags"),
     ("/admin/settings/search", "Search"),
-    ("/admin/settings/advanced", "Advanced"),
+    ("/admin/settings/advanced", "Limits and timing"),
     ("/admin/settings/advanced?tab=about", "For support"),
 ]
 
@@ -107,10 +103,9 @@ def test_every_form_that_changes_something_carries_the_page_token(admin):
             assert 'name="csrf"' in form, path
 
 
-def test_the_menu_counts_come_from_the_same_overview_as_the_page(admin):
+def test_a_page_reads_the_overview_once(admin):
     client, _, store = admin
-    client.get("/admin/notes")
-    # One overview read per page: the menu and the page cannot disagree about a number.
+    client.get("/admin")
     assert len(store.asked("overview")) == 1
 
 
@@ -140,18 +135,6 @@ def test_a_fault_in_admin_is_said_in_words_too(admin):
     assert "Something went wrong in Admin" in response.text
     assert "Your notes are not affected." in response.text
     assert "Traceback" not in response.text
-
-
-def test_home_lists_what_needs_its_owner_most_urgent_first(admin):
-    client, _, store = admin
-    overview = store.views["overview"]
-    overview["sync"]["needs_signin"] = True
-    page = client.get("/admin").text
-    assert "Sync has stopped" in page
-    assert "Sign in again" in page
-    assert "Something has stopped." in page
-    # The thing that has stopped comes before the things that merely wait.
-    assert page.index("Sync has stopped") < page.index("was not sure about")
 
 
 def test_a_phone_gets_the_same_pages(admin):

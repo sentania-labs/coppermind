@@ -83,7 +83,7 @@ def limit_choices(choices: tuple[tuple[int, str], ...], current: int) -> list[tu
 
 def estimate(minutes: int | None) -> str:
     if not minutes:
-        return "It will be ready within the wait you chose on the Transcription page."
+        return "It will be ready within the longest wait set under Advanced, Limits and timing."
     low, high = max(1, round(minutes / 5)), max(2, round(minutes / 3))
     return f"Usually ready in about {low} to {high} minutes."
 
@@ -232,7 +232,7 @@ async def take_in(ctx: Ctx, upload: Upload) -> tuple[str, str]:
     if result["kind"] == "audio":
         return "warn", (
             f'Added "{e(result["title"])}". It is kept, but not written up, {KEPT_BECAUSE}. '
-            "Turn transcription on under Transcription, then press Write it up now on its "
+            "Connect an AI server on the Coppermind page, then press Write it up now on its "
             "line here."
         )
     if result["kind"] == "recording":
@@ -434,7 +434,7 @@ hours {ui.submit("Save", busy="Saving…")} {ui.go("Cancel", "/admin/incoming")}
             ui.banner(
                 "info",
                 "Transcription is off, so a recording you add is kept as a file, not written up. "
-                + ui.go("Set up transcription", "/admin/transcription", "primary"),
+                + ui.go("Connect an AI server", "/admin/ai", "primary"),
             )
             if transcription == "none"
             else ""
@@ -740,7 +740,7 @@ hours {ui.submit("Save", busy="Saving…")} {ui.go("Cancel", "/admin/incoming")}
         here = model.incoming_path(identity)
         came = ctx.q("from")
         back = {
-            "home": ("/admin", "Home"),
+            "home": ("/admin", "Coppermind"),
             "calendar": ("/admin/calendar", "Calendar"),
         }.get(came, ("/admin/incoming", "Recordings and imports"))
         folder = view["drop_folder"] if view else "To Coppermind"
@@ -827,7 +827,7 @@ hours {ui.submit("Save", busy="Saving…")} {ui.go("Cancel", "/admin/incoming")}
                     "Try again", f"{here}/retry", "primary", {"back": here}, busy="Trying again…"
                 )
                 if transcription != "none"
-                else ui.go("Set up transcription", "/admin/transcription", "primary"),
+                else ui.go("Connect an AI server", "/admin/ai", "primary"),
             )
         elif item["state"] == "waiting":
             top = ui.status(

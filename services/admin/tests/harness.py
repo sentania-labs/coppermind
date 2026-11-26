@@ -54,6 +54,10 @@ class FakeStore:
         self.answers: dict[str, Any] = {}
         self.down = False
 
+    def refuse(self, action: str, message: str, field: str = "service") -> None:
+        """Make `action` come back refused, the way the store answers: as data, status 200."""
+        self.answers[action] = {"refused": {"field": field, "message": message}}
+
     def asked(self, action: str) -> list[dict[str, Any]]:
         return [payload for name, payload in self.calls if name == action]
 
@@ -130,7 +134,7 @@ def set_up(client: TestClient, code: str = SETUP_CODE, password: str = PASSWORD)
 def post(client: TestClient, path: str, data: dict[str, Any] | None = None, page: str = "") -> Any:
     """Press a button on `page` (the form's own page when not given)."""
     fields = dict(data or {})
-    fields["csrf"] = token(client, page or "/admin/suggestions/fill")
+    fields["csrf"] = token(client, page or "/admin")
     return client.post(path, data=fields, follow_redirects=False)
 
 

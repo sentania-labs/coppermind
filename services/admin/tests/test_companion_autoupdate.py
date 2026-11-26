@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from coppermind_admin.main import update_companion
-from coppermind_admin.pages import home
+from coppermind_admin.pages import companion
 from coppermind_store.admin_service import PLUGIN_FOLDER, AdminService
 
 from coppermind.settings import ProductSettings
@@ -36,7 +36,7 @@ def service(tmp_path, *, auto=True):
 
 
 def payload():
-    files = {n: base64.b64encode(d).decode() for n, d in home.companion_files().items()}
+    files = {n: base64.b64encode(d).decode() for n, d in companion.companion_files().items()}
     return {"files": files, "url": "https://cm.example"}
 
 
@@ -58,9 +58,9 @@ def test_updates_an_older_companion_keeps_data_and_records_a_notice(tmp_path):
     (folder / "data.json").write_text('{"url": "https://mine", "key": "k"}')
     stub = service(tmp_path)
     answer = run(stub)
-    new = json.loads(home.companion_files()["manifest.json"])["version"]
+    new = json.loads(companion.companion_files()["manifest.json"])["version"]
     assert answer == {"state": "updated", "from": "0.0.1", "to": new}
-    assert (folder / "main.js").read_bytes() == home.companion_files()["main.js"]
+    assert (folder / "main.js").read_bytes() == companion.companion_files()["main.js"]
     assert json.loads((folder / "data.json").read_text()) == {"url": "https://mine", "key": "k"}
     notice = stub.context.saved["companion-updated"]
     assert (notice["from"], notice["to"], notice["dismissed"]) == ("0.0.1", new, False)
@@ -72,7 +72,7 @@ def test_does_nothing_when_current_and_does_not_rewrite(tmp_path):
     stub = service(tmp_path)
     folder = tmp_path / PLUGIN_FOLDER
     folder.mkdir(parents=True)
-    for name, data in home.companion_files().items():
+    for name, data in companion.companion_files().items():
         (folder / name).write_bytes(data)
     before = {p.name: p.stat().st_mtime_ns for p in folder.iterdir()}
     assert run(stub) == {"state": "current"}
@@ -94,7 +94,7 @@ def test_respects_the_setting(tmp_path):
 
 @pytest.mark.parametrize("vault", ["99.0.0", "0.10.0"])
 def test_a_newer_companion_in_the_vault_is_never_downgraded(tmp_path, vault):
-    bundled = json.loads(home.companion_files()["manifest.json"])["version"]
+    bundled = json.loads(companion.companion_files()["manifest.json"])["version"]
     assert tuple(map(int, vault.split("."))) > tuple(map(int, bundled.split(".")))
     folder = place(tmp_path, version=vault)
     stub = service(tmp_path)
@@ -172,7 +172,7 @@ def test_admin_start_up_gives_up_quietly_when_the_store_never_comes_up(admin, mo
     assert store.calls == []
 
 
-def test_notice_shows_on_home_and_setup_and_the_setting_is_on_sync(admin):
+def test_the_update_notice_is_part_of_the_obsidian_line_and_the_setting_is_on_advanced(admin):
     client, _, store = admin
     store.views["overview"]["notices"] = [
         {
@@ -185,19 +185,32 @@ def test_notice_shows_on_home_and_setup_and_the_setting_is_on_sync(admin):
             "to": "0.9.3",
         }
     ]
-    for path in ("/admin", "/admin/setup/companion"):
-        page = client.get(path).text
-        assert "The companion was updated from 0.9.1 to 0.9.3" in page
-        assert "Reload Obsidian on each device" in page
-    assert "/admin/sync/companion-auto" in client.get("/admin/sync").text
+    page = client.get("/admin").text
+    assert "Updated from 0.9.1 to 0.9.3. Reload Obsidian on each device" in page
+    assert "lat-banner" not in page.split("Companion", 1)[1].split("Calendar", 1)[0]
+    assert "/admin/sync/companion-auto" not in client.get("/admin/sync").text
+    assert "/admin/sync/companion-auto" in client.get("/admin/advanced").text
+
+
+def test_the_setting_is_on_by_default_and_the_advanced_button_turns_it_off(admin):
+    client, _, _ = admin
+    page = client.get("/admin/advanced").text
+    assert "It is <b>on</b>." in page
+    assert 'name="on" value="1"' not in page.split("Update the companion by itself", 1)[1][:900]
 
 
 @pytest.mark.parametrize("on", ["", "1"])
-def test_sync_page_toggle_saves_the_setting(admin, on):
+def test_advanced_toggle_saves_the_setting(admin, on):
     client, wiring, _ = admin
     from services.admin.tests.harness import post
 
-    post(client, "/admin/sync/companion-auto", {"on": on}, "/admin/sync")
+    response = post(
+        client,
+        "/admin/sync/companion-auto",
+        {"on": on, "back": "/admin/advanced"},
+        "/admin/advanced",
+    )
+    assert response.headers["location"] == "/admin/advanced"
     from coppermind.settings import read_settings
     from coppermind.statefiles import StateStore
 

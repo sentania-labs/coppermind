@@ -18,8 +18,9 @@ from coppermind.schema import KEY_NAME_PATTERN, FrontmatterSchema, KeyDefinition
 from coppermind.settings import Wiring
 from coppermind.statefiles import RevisionConflict, StateStore
 from coppermind.store_protocol import StoreError
-from coppermind_admin import model, ui
+from coppermind_admin import ui
 from coppermind_admin.auth import AdminRecordUnreadable
+from coppermind_admin.pages.ai import WAITS
 from coppermind_admin.pages.common import (
     health_badge,
     service_choices,
@@ -262,63 +263,6 @@ def schema_problem(error: Exception) -> str:
 def router(wiring: Wiring) -> APIRouter:
     routes = APIRouter()
 
-    # -- the Settings page ---------------------------------------------------------------
-
-    @routes.get("/admin/settings", include_in_schema=False)
-    async def settings_page(request: Request) -> Response:
-        ctx = Ctx(request, wiring)
-        settings = ctx.settings()
-        view = await ctx.view()
-        try:
-            _, schema = read_schema(ctx.control)
-            shown = properties(schema)
-        except (OSError, ValueError):
-            shown = []
-        hours = settings.admin.session_hours
-        search = "Search by meaning is off, so search finds exact words only."
-        if view and view["search"]["state"] == "on" and view["search"]["service"]:
-            search = f"Search by meaning is on, using {e(view['search']['service']['name'])}."
-        finished = view is not None and model.setup_next(model.setup_steps(view)) is None
-        names = ", ".join(item["label"].lower() for item in shown[:4])
-        rows = ui.rows(
-            ui.row(
-                "Time zone",
-                e(zone_name(settings.general.timezone)),
-                ui.go("Change", "/admin/settings/timezone"),
-            ),
-            ui.row(
-                "Password and signing in",
-                f"Password is set. Admin asks for it again after {duration(hours * 3600)}.",
-                ui.go("Change", "/admin/settings/signin"),
-            ),
-            ui.row(
-                "Folders",
-                f'Notes to review go in "{e(settings.notes.review_folder)}". Reviewed notes '
-                "are filed by type, year and month.",
-                ui.go("Change", "/admin/settings/folders"),
-            ),
-            ui.row(
-                "Note properties",
-                f"{plural(len(shown), 'piece')} of information a note can carry, such as {names}.",
-                ui.go("Change", "/admin/settings/properties"),
-            ),
-            ui.row("Search", search, ui.go("Open", "/admin/settings/search")),
-            ui.row(
-                "Colours",
-                '<select class="lat-select inline theme" aria-label="Colours">'
-                '<option value="system">Match my device</option>'
-                '<option value="light">Light</option><option value="dark">Dark</option></select>'
-                ' <span class="lat-badge lat-badge--ok" id="theme-saved" role="status" hidden>'
-                "Saved on this browser</span>",
-            ),
-            ui.row("Setup guide", "Finished.", ui.go("Open", "/admin/setup")) if finished else "",
-        )
-        body = f"""{ui.head("Settings", "Everyday settings. Each line shows what is set now.")}
-<div class="stack">{ctx.flash()}{ui.card(rows)}
-<p class="subtle">{ui.a("Advanced", "/admin/settings/advanced")}: how often Coppermind checks
-for changes, and details for support. You never need these to use Coppermind.</p></div>"""
-        return await ctx.page("Settings", body, "settings")
-
     # -- time zone -----------------------------------------------------------------------
 
     @routes.get("/admin/settings/timezone", include_in_schema=False)
@@ -383,7 +327,7 @@ catch(e){}</script>"""
             "Used for the dates on your notes and for anything Coppermind does at a set time "
             "of day."
         )
-        body = f"""{ui.head("Time zone", lede, ("/admin/settings", "Settings"))}
+        body = f"""{ui.head("Time zone", lede, ("/admin/advanced", "Advanced"))}
 <div class="stack">{ctx.flash()}
 {
             ui.card(
@@ -488,7 +432,7 @@ catch(e){}</script>"""
             ui.head(
                 "Password and signing in",
                 "The password for these Admin screens, and how long you stay signed in.",
-                ("/admin/settings", "Settings"),
+                ("/admin/advanced", "Advanced"),
             )
         }
 <div class="stack">{ctx.flash()}{ui.card(change)}{ui.card(stay)}</div>"""
@@ -646,7 +590,7 @@ the date</span><div class="chips">{chips}{adder}</div>
 <div class="lat-hint">The list offers the note types already used in your vault.</div></div>
 </form>{example}
 <form method="post" action="/admin/settings/folders">{carry}
-<div class="actions">{ui.submit("Save", busy="Saving…")}{ui.go("Cancel", "/admin/settings")}
+<div class="actions">{ui.submit("Save", busy="Saving…")}{ui.go("Cancel", "/admin/advanced")}
 </div></form>"""
         dialog = ""
         target = ctx.q("pick")
@@ -663,7 +607,7 @@ the date</span><div class="chips">{chips}{adder}</div>
                 + "&d=1"
                 + "".join("&dated=" + segment(item) for item in dated),
             )
-        body = f"""{ui.head("Folders", lede, ("/admin/settings", "Settings"))}
+        body = f"""{ui.head("Folders", lede, ("/admin/advanced", "Advanced"))}
 <div class="stack">{ctx.flash()}{ui.card(form)}</div>"""
         return "Folders", body, "settings", dialog
 
@@ -721,7 +665,7 @@ the date</span><div class="chips">{chips}{adder}</div>
             "ok",
             "Folders saved. " + " ".join(lines) if lines else "Folders saved. Nothing was changed.",
         )
-        return ctx.go("/admin/settings")
+        return ctx.go("/admin/advanced")
 
     # -- note properties -----------------------------------------------------------------
 
@@ -786,7 +730,7 @@ the date</span><div class="chips">{chips}{adder}</div>
                 "Note properties",
                 "The pieces of information every note can carry, shown at the top "
                 "of a note in Obsidian. Suggestions can fill them in.",
-                ("/admin/settings", "Settings"),
+                ("/admin/advanced", "Advanced"),
             )
         }
 <div class="stack">{ctx.flash()}
@@ -1362,7 +1306,7 @@ is sent to this service a little at a time, in the background.</p>
                     "Choose the service to use instead, then press Turn on. Until then search "
                     f"by meaning keeps using {e(service['name'])}.",
                 ) + ui.card(chooser)
-        body = f"""{ui.head("Search", SEARCH_LEDE, ("/admin/settings", "Settings"))}
+        body = f"""{ui.head("Search", SEARCH_LEDE, ("/admin/advanced", "Advanced"))}
 <div class="stack">{ctx.flash()}{top}{meaning}</div>"""
         return await ctx.page("Search", body, "settings")
 
@@ -1450,12 +1394,50 @@ is sent to this service a little at a time, in the background.</p>
             )
             inner = f"""<form method="post" action="/admin/settings/advanced">
 <div class="rows">{rows}</div><div class="actions">{ui.submit("Save")}</div></form>"""
+            try:
+                heard = await ctx.act("transcription", {})
+            except StoreError:
+                heard = None
+            if heard is not None:
+                here = {"back": "/admin/settings/advanced"}
+                waits = WAITS
+                # A wait the store would refuse is shown as the next one listed.
+                wait = next(
+                    (value for value, _ in waits if int(value) >= int(heard["wait_s"])),
+                    waits[-1][0],
+                )
+                inner += ui.rows(
+                    ui.row(
+                        "Longest wait for one recording",
+                        ui.quick_select(
+                            "/admin/ai/wait",
+                            "seconds",
+                            "Longest wait for one recording",
+                            waits,
+                            wait,
+                            here,
+                        ),
+                    ),
+                    ui.row(
+                        "Tries for each recording",
+                        ui.quick_select(
+                            "/admin/ai/tries",
+                            "tries",
+                            "Tries for each recording",
+                            (("1", "1"), ("2", "2"), ("3", "3")),
+                            str(heard["attempts"]),
+                            here,
+                        ),
+                    ),
+                )
         else:
             try:
                 support = await ctx.act("support", {})
             except StoreError:
                 return await ctx.unavailable(
-                    "Advanced", "Details for support need Coppermind to be answering.", "settings"
+                    "Details for support",
+                    "Details for support need Coppermind to be answering.",
+                    "advanced",
                 )
             history = support["history"]
             if history["available"]:
@@ -1493,18 +1475,25 @@ is sent to this service a little at a time, in the background.</p>
                     "</button>",
                 ),
             )
+        title = "Details for support" if tab == "about" else "Limits and timing"
         body = f"""{
             ui.head(
-                "Advanced",
+                title,
                 "You never need this page to use Coppermind. It is here for fine "
                 "tuning and for when support asks.",
-                ("/admin/settings", "Settings"),
+                ("/admin/advanced", "Advanced"),
             )
         }
 <div class="stack">{ctx.flash()}
-{ui.seg("/admin/settings/advanced", [("timing", "Timing"), ("about", "About")], tab)}
+{
+            ui.seg(
+                "/admin/settings/advanced",
+                [("timing", "Limits and timing"), ("about", "Details for support")],
+                tab,
+            )
+        }
 {ui.card(inner)}</div>"""
-        return await ctx.page("Advanced", body, "settings")
+        return await ctx.page(title, body, "advanced")
 
     @routes.post("/admin/settings/advanced", include_in_schema=False)
     async def advanced_save(request: Request) -> Response:

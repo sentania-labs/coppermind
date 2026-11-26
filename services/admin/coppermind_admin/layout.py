@@ -1,13 +1,12 @@
 """The one page frame every Admin screen is drawn in: menu, header, dialog.
 
 Everything visual resolves through Lattice tokens. Lattice has no sidebar,
-stepper, status row, tiles or dialog yet, so those are added in the local layer
+stepper, status row or dialog yet, so those are added in the local layer
 below and are candidates to move into Lattice.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from html import escape
 from pathlib import Path
 
@@ -38,17 +37,10 @@ form.act{display:inline}
   color:var(--ink);text-decoration:none;display:block}
 .brand small{display:block;font-size:11.5px;font-weight:400;color:var(--ink-subtle);
   letter-spacing:0}
-.nav-grp{font-size:10.5px;font-weight:500;letter-spacing:.05em;text-transform:uppercase;
-  color:var(--ink-subtle);padding:12px 10px 3px}
 .nav a{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 10px;
   border-radius:var(--radius-lg);text-decoration:none;color:var(--ink);font-size:13.5px}
 .nav a:hover{background:var(--surface-sunken)}
 .nav a.on{background:var(--accent-soft);color:var(--accent-ink);font-weight:600}
-.count{display:inline-block;min-width:18px;text-align:center;border-radius:var(--radius-pill);
-  padding:0 6px;font-size:11.5px;font-weight:600;background:var(--warn-soft);
-  color:var(--warn-ink)}
-.count--bad{background:var(--bad-soft);color:var(--bad-ink)}
-.count--quiet{background:var(--surface-sunken);color:var(--ink-muted)}
 .side-foot{margin-top:auto;padding:10px 10px 0;font-size:12px;color:var(--ink-subtle);
   display:flex;justify-content:space-between;align-items:center}
 .topbar{display:none}
@@ -69,7 +61,6 @@ p{margin:0 0 8px}
 .lat-textarea{width:100%;min-height:9em;line-height:1.5;resize:vertical}
 ul.plain{margin:6px 0 0;padding-left:20px}ul.plain li{margin:4px 0}
 .summary{white-space:pre-wrap;margin:2px 0 10px;line-height:1.5}
-.status-list{margin-top:8px;border-top:1px solid var(--line-soft)}
 .status-t{font-size:17px;font-weight:650;letter-spacing:-.01em}
 .status-a{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
 .rows{display:grid}
@@ -90,14 +81,6 @@ ul.plain{margin:6px 0 0;padding-left:20px}ul.plain li{margin:4px 0}
 .item-t a:hover{text-decoration:underline}
 .item-d{color:var(--ink-muted);font-size:13px}
 .item-a{display:flex;gap:6px;flex:none;align-items:center}
-.tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
-.tiles--5{grid-template-columns:repeat(5,minmax(0,1fr))}
-.tile{display:block;text-decoration:none;color:inherit;background:var(--surface);
-  border:1px solid var(--line);border-radius:var(--radius-xl);padding:10px 12px}
-.tile:hover{border-color:var(--ink-subtle)}
-.tile-n{font-size:12px;color:var(--ink-muted)}
-.tile-s{font-weight:650;display:flex;gap:7px;align-items:center}
-.tile-f{font-size:12px;color:var(--ink-subtle)}
 .steps{display:flex;gap:6px;list-style:none;padding:0;margin:0 0 12px;flex-wrap:wrap}
 .steps li{display:flex;gap:7px;align-items:center;font-size:13px;color:var(--ink-subtle);
   padding-right:10px}
@@ -207,7 +190,6 @@ audio{height:30px;vertical-align:middle;max-width:220px}
   .lat-input,.lat-select{min-height:44px;font-size:16px}
   .seg a{min-height:40px;font-size:14px;display:inline-flex;align-items:center}
   .linkish{font-size:13px;padding:8px 0}
-  .tiles,.tiles--5{grid-template-columns:1fr 1fr}
   .row{grid-template-columns:1fr}
   .row-a{justify-content:flex-start;flex-wrap:wrap}
   .row-a:empty{display:none}
@@ -218,7 +200,6 @@ audio{height:30px;vertical-align:middle;max-width:220px}
   .two{grid-template-columns:1fr}
   .checks{grid-template-columns:1fr}
   .timeline li{grid-template-columns:1fr;gap:0}
-  .hide-narrow{display:none}
   .back{display:inline-flex;align-items:center;min-height:44px;font-size:14px;margin-bottom:0}
   .chip{padding:0 0 0 12px;font-size:14px}
   .chip button{min-width:44px;min-height:44px;font-size:18px}
@@ -227,6 +208,7 @@ audio{height:30px;vertical-align:middle;max-width:220px}
   .choice{align-items:center;min-height:44px}
   .lede{margin-bottom:8px}
   .hide-wide{display:initial}
+  .hide-narrow{display:none}
   .tcards thead{display:none}
   .tcards tr{display:block;padding:8px 0;border-bottom:1px solid var(--line-soft)}
   .tcards td{display:block;border:0;padding:1px 0}
@@ -252,16 +234,12 @@ function keepChoices(current,next){
 SCRIPT = (
     KEEP_CHOICES
     + """
-const pref=()=>{try{return localStorage.getItem("theme")||"system"}catch(e){return "system"}};
-function theme(v){document.documentElement.dataset.theme=v==="system"
-  ?(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"):v}
-theme(pref());
-matchMedia("(prefers-color-scheme: dark)").addEventListener("change",()=>theme(pref()));
+const theme=()=>{document.documentElement.dataset.theme=
+  matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"};
+theme();
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change",theme);
 addEventListener("DOMContentLoaded",()=>{
   const $=(s,r)=>Array.from((r||document).querySelectorAll(s));
-  $("select.theme").forEach(s=>{s.value=pref();s.addEventListener("change",()=>{
-    try{localStorage.setItem("theme",s.value)}catch(e){}theme(s.value);
-    const done=document.getElementById("theme-saved");if(done)done.hidden=false;});});
   $("form").forEach(f=>f.addEventListener("submit",e=>{
     const b=e.submitter||f.querySelector("button[data-busy]");
     if(b&&b.dataset.busy){setTimeout(()=>{b.disabled=true;b.textContent=b.dataset.busy},0)}}));
@@ -309,92 +287,22 @@ addEventListener("DOMContentLoaded",()=>{
 """
 )
 
-GROUPS = (
-    ("", ("home", "setup")),
-    ("Day to day", ("notes", "incoming", "calendar", "people")),
-    ("Connections", ("sync", "services", "suggestions", "transcription", "apps")),
-    ("Housekeeping", ("storage", "settings")),
-)
-LABELS = {
-    "home": "Home",
-    "setup": "Setup guide",
-    "notes": "Notes",
-    "incoming": "Recordings and imports",
-    "calendar": "Calendar",
-    "people": "People and voices",
-    "sync": "Obsidian Sync",
-    "services": "AI services",
-    "suggestions": "Suggestions",
-    "transcription": "Transcription",
-    "apps": "Connected apps",
-    "storage": "Storage",
-    "settings": "Settings",
-}
+ENTRIES = (("coppermind", "Coppermind", "/admin"), ("advanced", "Advanced", "/admin/advanced"))
+# Pages that are part of connecting something sit under Coppermind in the menu. Every other
+# page is reached from Advanced.
+CONNECTING = {"home", "sync", "services", "ai"}
 
 
-def href(entry: str) -> str:
-    return "/admin" if entry == "home" else f"/admin/{entry}"
+def entry_for(active: str) -> str:
+    return "coppermind" if active in CONNECTING | {"coppermind"} else "advanced"
 
 
-@dataclass
-class Menu:
-    """What the menu shows beside each entry. Every number here is one the pages show too."""
-
-    attention: int = 0
-    stopped: bool = False
-    # (steps done, steps in all) while setup is unfinished; None once it is.
-    setup: tuple[int, int] | None = None
-    counts: dict[str, int] = field(default_factory=dict)
-    # One word per switchable thing: none, on, paused, failing or signin.
-    states: dict[str, str] = field(default_factory=dict)
-    services_down: int = 0
-
-
-def _count(value: int, *, bad: bool = False) -> str:
-    if not value:
-        return ""
-    return f'<span class="count{" count--bad" if bad else ""}">{value}</span>'
-
-
-def _state(word: str) -> str:
-    if word in {"failing", "signin"}:
-        return '<span class="count count--bad">Stopped</span>'
-    if word == "paused":
-        return '<span class="count">Paused</span>'
-    if word == "on":
-        return '<span class="count count--quiet">On</span>'
-    if word == "none":
-        return '<span class="count count--quiet">Off</span>'
-    return ""
-
-
-def menu_html(menu: Menu, active: str) -> str:
-    extras = {
-        "home": _count(menu.attention, bad=menu.stopped),
-        "setup": (
-            f'<span class="count count--quiet">{menu.setup[0]} of {menu.setup[1]}</span>'
-            if menu.setup
-            else ""
-        ),
-        "notes": _count(menu.counts.get("notes", 0)),
-        "incoming": _count(menu.counts.get("incoming", 0)),
-        "calendar": _count(menu.counts.get("calendar", 0)),
-        "sync": _state(menu.states.get("sync", "")),
-        "services": _count(menu.services_down, bad=True),
-        "suggestions": _state(menu.states.get("sugg", "")),
-        "transcription": _state(menu.states.get("trans", "")),
-        "storage": _count(menu.counts.get("storage", 0)),
-    }
-    out = ""
-    for group, entries in GROUPS:
-        if group:
-            out += f'<div class="nav-grp">{group}</div>'
-        for entry in entries:
-            if entry == "setup" and menu.setup is None:
-                continue
-            current = ' class="on" aria-current="page"' if entry == active else ""
-            out += f'<a href="{href(entry)}"{current}>{LABELS[entry]}{extras.get(entry, "")}</a>'
-    return out
+def menu_html(active: str) -> str:
+    here = entry_for(active)
+    return "".join(
+        f'<a href="{href}"{' class="on" aria-current="page"' if key == here else ""}>{label}</a>'
+        for key, label, href in ENTRIES
+    )
 
 
 def document(title: str, content: str, *, refresh: int = 0) -> str:
@@ -415,18 +323,15 @@ def public(title: str, body: str) -> str:
     )
 
 
-def render(
-    title: str, body: str, active: str, menu: Menu, *, dialog: str = "", refresh: int = 0
-) -> str:
+def render(title: str, body: str, active: str, *, dialog: str = "", refresh: int = 0) -> str:
     """A signed-in page: the menu, the page, and a dialog drawn over it when one is open."""
-    badge = _count(menu.attention, bad=menu.stopped)
     content = f"""<a class="skip" href="#content">Skip to content</a>
 <div class="frame"><div class="topbar"><a class="brand" href="/admin">Coppermind</a>
-<button type="button" class="lat-btn" data-menu aria-controls="side">Menu {badge}</button></div>
+<button type="button" class="lat-btn" data-menu aria-controls="side">Menu</button></div>
 <div class="shell"><aside class="side" id="side">
 <div class="spread"><a class="brand" href="/admin">Coppermind<small>Admin</small></a>
 <span class="hide-wide"><button type="button" class="lat-btn" data-menu>Close</button></span></div>
-<nav class="nav" aria-label="Admin">{menu_html(menu, active)}</nav>
+<nav class="nav" aria-label="Admin">{menu_html(active)}</nav>
 <div class="side-foot"><span>Signed in</span><form class="act" method="post"
 action="/admin/signout"><button class="lat-btn lat-btn--ghost">Sign out</button></form></div>
 </aside><main class="main" id="content">{body}</main></div>{dialog}</div>"""

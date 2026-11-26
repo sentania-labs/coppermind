@@ -1,4 +1,4 @@
-"""Calendar: add a calendar file, settle a disagreement between two files, find a meeting."""
+"""Calendar files: add one, settle a disagreement between two, and see what was imported."""
 
 from __future__ import annotations
 
@@ -10,11 +10,10 @@ from fastapi.responses import Response
 
 from coppermind.settings import Wiring
 from coppermind.store_protocol import StoreError
-from coppermind_admin import model, ui
-from coppermind_admin.pages.common import setup_strip
+from coppermind_admin import ui
 from coppermind_admin.pages.incoming import file_dialog, take_in, too_large, upload_limit
 from coppermind_admin.shell import Ctx, explain
-from coppermind_admin.ui import e, plural, segment
+from coppermind_admin.ui import e, plural
 from coppermind_admin.uploads import UploadRefused, receive
 
 LEDE = (
@@ -25,6 +24,7 @@ EXPORT_HELP = (
     "Google Calendar: Settings, then Import and export, then Export. Outlook: File, then Save "
     "Calendar. Apple Calendar: File, then Export."
 )
+BACK = ("/admin/advanced", "Advanced")
 MAX_CHOICES = (("10000", "10,000"), ("50000", "50,000"), ("200000", "200,000"))
 
 
@@ -61,14 +61,12 @@ def router(wiring: Wiring) -> APIRouter:
     async def calendar(request: Request) -> Response:
         ctx = Ctx(request, wiring)
         view = await ctx.view()
-        query = ctx.q("q").strip()
         try:
-            data = await ctx.act("calendar", {"q": query})
+            data = await ctx.act("calendar", {})
         except StoreError:
-            return await ctx.unavailable("Calendar", LEDE, "calendar")
+            return await ctx.unavailable("Calendar files", LEDE, "calendar")
         folder = view["drop_folder"] if view else "To Coppermind"
-        tab = "files" if ctx.q("tab") == "files" else "meet"
-        here = ui.url("/admin/calendar", tab="files" if tab == "files" else "")
+        here = "/admin/calendar"
         files, bad = data["files"], data["bad_files"]
         dialog = ""
         asked = ctx.q("ask")
@@ -95,8 +93,9 @@ def router(wiring: Wiring) -> APIRouter:
             for item in bad
         )
         if not files:
-            strip = setup_strip(view, "cal")
-            body = f"""{ui.head("Calendar", LEDE)}<div class="stack">{strip}{ctx.flash()}{damaged}
+            body = f"""{ui.head("Calendar files", LEDE, BACK)}<div class="stack">{ctx.flash()}{
+                damaged
+            }
 {
                 ui.card(
                     ui.empty(
@@ -110,7 +109,7 @@ def router(wiring: Wiring) -> APIRouter:
                     + f'<p class="lat-hint" style="text-align:center">{EXPORT_HELP}</p>'
                 )
             }</div>"""
-            return await ctx.page("Calendar", body, "calendar", dialog=dialog)
+            return await ctx.page("Calendar files", body, "calendar", dialog=dialog)
         conflicts = ""
         for conflict in data["conflicts"]:
             stored, other = conflict["stored"], conflict["incoming"]
@@ -161,57 +160,37 @@ def router(wiring: Wiring) -> APIRouter:
                 + "</div>",
                 f'Two calendar files disagree about "{e(conflict["title"])}"',
             )
-        if tab == "meet":
-            lines = "".join(
-                f"<tr><td>{ui.a(e(event['title']), '/admin/calendar/' + segment(event['id']))}"
-                f"</td><td>{meeting_when(event['start'], ctx)}</td>"
-                f'<td class="hide-narrow">{event["invited"]} invited</td></tr>'
-                for event in data["events"]
-            )
-            inner = (
-                '<p class="muted">Meetings come from your calendar files. To change one, '
-                "change it in your calendar app and add a fresh file here.</p>"
-                '<form method="get" action="/admin/calendar">'
-                + ui.text_input("q", "Find a meeting", query, live=True, autofocus=bool(query))
-                + "</form>"
-                + (
-                    f'<table class="lat-table"><tbody>{lines}</tbody></table>'
-                    if lines
-                    else ui.empty("No meeting with that name" if query else "No meetings yet", "")
-                )
-            )
-        else:
-            rows = [
-                [
-                    e(item["name"]),
-                    ui.date_only(item["added"], ctx.zone),
-                    f"{item['has']:,}",
-                    f"{item['adds']:,}",
-                ]
-                for item in files
+        rows = [
+            [
+                e(item["name"]),
+                ui.date_only(item["added"], ctx.zone),
+                f"{item['has']:,}",
+                f"{item['adds']:,}",
             ]
-            inner = (
-                ui.table(["File", "Added", "Meetings in the file", "New to Coppermind"], rows)
-                + '<div class="actions">'
-                + ui.go("Add a calendar file", ui.url(here, ask="add"))
-                + '</div><p class="lat-hint" style="margin-top:8px">Meetings that appear in '
-                "more than one file are counted once. Coppermind keeps up to "
-                + ui.quick_select(
-                    "/admin/calendar/max",
-                    "max_events",
-                    "Most meetings kept",
-                    [
-                        *MAX_CHOICES,
-                        *(
-                            []
-                            if str(data["max_events"]) in dict(MAX_CHOICES)
-                            else [(str(data["max_events"]), f"{data['max_events']:,}")]
-                        ),
-                    ],
-                    str(data["max_events"]),
-                )
-                + " meetings; a file that would take it past that is refused.</p>"
+            for item in files
+        ]
+        inner = (
+            ui.table(["File", "Added", "Meetings in the file", "New to Coppermind"], rows)
+            + '<div class="actions">'
+            + ui.go("Add a calendar file", ui.url(here, ask="add"))
+            + '</div><p class="lat-hint" style="margin-top:8px">Meetings that appear in '
+            "more than one file are counted once. Coppermind keeps up to "
+            + ui.quick_select(
+                "/admin/calendar/max",
+                "max_events",
+                "Most meetings kept",
+                [
+                    *MAX_CHOICES,
+                    *(
+                        []
+                        if str(data["max_events"]) in dict(MAX_CHOICES)
+                        else [(str(data["max_events"]), f"{data['max_events']:,}")]
+                    ),
+                ],
+                str(data["max_events"]),
             )
+            + " meetings; a file that would take it past that is refused.</p>"
+        )
         open_count = len(data["conflicts"])
         newest = files[0]
         top = ui.status(
@@ -223,14 +202,9 @@ def router(wiring: Wiring) -> APIRouter:
             f'Newest: "{e(newest["name"])}", added {ui.date_only(newest["added"], ctx.zone)}.',
             ui.go("Add a calendar file", ui.url(here, ask="add")),
         )
-        tabs = ui.seg(
-            "/admin/calendar",
-            [("meet", "Recent meetings"), ("files", f"Past imports ({len(files)})")],
-            tab,
-        )
-        body = f"""{ui.head("Calendar", LEDE)}<div class="stack">{setup_strip(view, "cal")}
-{ctx.flash()}{top}{damaged}{conflicts}{tabs}{ui.card(inner)}</div>"""
-        return await ctx.page("Calendar", body, "calendar", dialog=dialog)
+        body = f"""{ui.head("Calendar files", LEDE, BACK)}<div class="stack">
+{ctx.flash()}{top}{damaged}{conflicts}{ui.card(inner)}</div>"""
+        return await ctx.page("Calendar files", body, "calendar", dialog=dialog)
 
     @routes.post("/admin/calendar/add", include_in_schema=False)
     async def add(request: Request) -> Response:
@@ -283,60 +257,8 @@ def router(wiring: Wiring) -> APIRouter:
         try:
             result = await ctx.act("calendar-max", {"max_events": int(form.get("max_events") or 0)})
         except (StoreError, ValueError) as exc:
-            return await ctx.refused(exc, "/admin/calendar?tab=files")
+            return await ctx.refused(exc, "/admin/calendar")
         ctx.say("ok", f"Saved. Coppermind now keeps up to {result['max_events']:,} meetings.")
-        return ctx.go("/admin/calendar?tab=files")
-
-    @routes.get("/admin/calendar/{identity}", include_in_schema=False)
-    async def meeting(identity: str, request: Request) -> Response:
-        ctx = Ctx(request, wiring)
-        try:
-            data = await ctx.act("calendar-meeting", {"id": identity})
-        except StoreError:
-            return ctx.go("/admin/calendar")
-        invited = data["invited"]
-        names = ", ".join(
-            e(person["name"] or person["address"].removeprefix("mailto:"))
-            for person in invited[:12]
-        )
-        more = f" and {len(invited) - 12} more" if len(invited) > 12 else ""
-        notes = data["notes"]
-        matched = (
-            ui.sentence_list(
-                [ui.a(e(note["title"]), model.note_path(note["id"])) for note in notes]
-            )
-            + "."
-            if notes
-            else "Nothing yet."
-        )
-        rows = ui.rows(
-            ui.row(
-                "When",
-                meeting_when(data["start"], ctx) + (" (cancelled)" if data["cancelled"] else ""),
-            ),
-            ui.row(
-                "Invited",
-                f"{plural(len(invited), 'person', 'people')}"
-                + (f": {names}{more}" if invited else "")
-                + ". Being invited does not mean they came.",
-            ),
-            ui.row(
-                "Found in",
-                ui.sentence_list([f'"{e(name)}"' for name in data["files"]])
-                or "A calendar file added before Coppermind kept track of files.",
-            ),
-            ui.row("Matched to", matched),
-        )
-        body = f"""{
-            ui.head(
-                e(data["title"]),
-                "A meeting from your calendar, and what Coppermind has matched to it.",
-                ("/admin/calendar", "Calendar"),
-            )
-        }
-<div class="stack">{ui.card(rows)}
-<p class="lat-hint">Meetings cannot be changed here. Change it in your calendar app and add a
-fresh calendar file.</p></div>"""
-        return await ctx.page(data["title"], body, "calendar")
+        return ctx.go("/admin/calendar")
 
     return routes

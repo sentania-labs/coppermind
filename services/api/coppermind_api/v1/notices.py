@@ -2,10 +2,9 @@
 
 When a reviewed note or an artifact file is moved or renamed by hand in the
 vault, the reconciler returns it to its filed place and records a notice: what
-moved, where it was found, where it went back and why. The notice is the same
-one Admin's Home shows. Nothing needs doing about it; dismissing it only
-hides it. A notice about an artifact is visible only to a key that may read
-artifacts, the way artifact search hits are.
+moved, where it was found, where it went back and why. Nothing needs doing
+about it; dismissing it only hides it. A notice about an artifact is visible only
+to a key that may read artifacts, the way artifact search hits are.
 """
 
 from __future__ import annotations

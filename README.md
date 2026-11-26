@@ -52,21 +52,19 @@ docker compose run --rm --no-deps --entrypoint cat bootstrap \
 
 The link opens "Welcome to Coppermind" with the code filled in. Type the
 admin password you want to use twice; it has to be at least 12 characters.
-Saving it uses up the code, signs you straight in and opens the setup guide
-at `/admin/setup`: the password, Obsidian Sync, the Obsidian companion, then
-the optional suggestions, transcription and calendar. The link starts with
+Saving it uses up the code, signs you straight in and opens the Coppermind page
+at `/admin`, where you connect Obsidian Sync (and the companion), the AI server and
+the calendar, each once. The link starts with
 `COPPERMIND_ADMIN_URL` (see `.env.example`).
 
 Admin then requires a password-backed browser session, which lasts the
-configured 12-hour default (Settings, Password and signing in). The session
+configured 12-hour default (Advanced, Password and signing in). The session
 lives in the signed cookie itself, not in a database row: Sign out clears it
 from that browser, and the same session cannot be cut off anywhere else by
 signing out, so a token already copied out stays good until its 12 hours are
-up. Changing the password, under Settings, Password and signing in, is what
-ends every other session at once. Admin's Home lists what needs you, with a
-link to the remedy, and the menu is Home, Setup guide (until setup is finished), Notes,
-Recordings and imports, Calendar, People and voices, Obsidian Sync, AI services,
-Suggestions, Transcription, Connected apps, Storage and Settings. Obsidian's
+up. Changing the password, under Advanced, Password and signing in, is what
+ends every other session at once. Admin's menu is two entries: Coppermind, one line for each connection that says
+whether it is working, and Advanced, one list that opens everything else. Obsidian's
 'Default location for new attachments' is a per-device setting that defaults
 to the notes filesystem root; set it from Settings > Files & links > Default
 location for attachments so new attachments land where your filing rules
@@ -267,7 +265,7 @@ does not reduce memory use. The key needs both `sources:write` and
 
 The generated OpenAPI document is at `http://127.0.0.1:8080/openapi.json`.
 
-Use Admin's [Connected apps page](http://127.0.0.1:8082/admin/apps) to list,
+Use Admin's [Connected apps page](http://127.0.0.1:8082/admin/apps) (under Advanced) to list,
 add and remove keys. Adding one starts from what is being connected (an AI
 assistant or agent, an automation that sends things in, or something else
 with its permissions ticked one by one); the key is shown exactly once, with
@@ -278,9 +276,9 @@ companion needs no pasted key: it pairs with a six-digit code shown in Admin
 key records again when they are more than two seconds old, so a removed key
 stops working within about two seconds and a new key works within about two seconds.
 
-The [Settings page](http://127.0.0.1:8082/admin/settings) holds the time
+The [Advanced page](http://127.0.0.1:8082/admin/advanced) opens the time
 zone, password and signing in, folders, note properties, tags, search and
-advanced timing. A save is made against the settings file's current revision,
+limits and timing. A save is made against the settings file's current revision,
 so a change made elsewhere in the meantime is not overwritten.
 
 If Admin is unavailable, the Store command remains a recovery path. It prints
@@ -411,8 +409,8 @@ is required. Supported documents, images, audio and video are stored as artifact
 Markdown is not an artifact: it follows the normal note workflow. Once a file is
 safely stored the folder empties itself; a file that cannot be handled moves to
 `Failed` inside that folder (`Dropbox/Failed` on an older install) with a reason sidecar, and moving it back retries it. Admin's
-Recordings and imports page lists files that could not be taken in, each with
-a Remove. Calendar files that were read stay under Calendar's past imports, which is
+Advanced, Recordings and imports page lists files that could not be taken in, each with
+a Remove. Calendar files that were read stay under Advanced, Calendar files, past imports, which is
 read-only.
 Completed receipts clear after seven days; failures remain until dismissed. Uploads support
 200,000,000 bytes with bounded ZIP expansion. See

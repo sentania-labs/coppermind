@@ -6,7 +6,7 @@ from typing import Any
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
-from coppermind_admin import model, ui
+from coppermind_admin import ui
 from coppermind_admin.ui import e, plural, segment
 
 # The features that use an AI service, and what each needs from one.
@@ -20,8 +20,14 @@ FEATS: dict[str, dict[str, str]] = {
     "trans": {
         "name": "Transcription",
         "lower": "transcription",
-        "to": "/admin/transcription",
+        "to": "/admin/ai",
         "need": "speech",
+    },
+    "ai": {
+        "name": "AI server",
+        "lower": "the AI server",
+        "to": "/admin/ai",
+        "need": "text",
     },
     "writeup": {
         "name": "Recording write-ups",
@@ -220,51 +226,6 @@ def service_choices(
     if services:
         links += ui.go("Manage services", ui.url("/admin/services", **{"for": feature, "pick": 1}))
     return out + f'<div class="actions" style="margin-top:6px">{links}</div>'
-
-
-def setup_strip(view: dict[str, Any] | None, key: str) -> str:
-    """Stays on a setup step's page until setup is finished, so the way forward never goes."""
-    if view is None:
-        return ""
-    steps = model.setup_steps(view)
-    mine = next((step for step in steps if step.key == key), None)
-    if mine is None:
-        return ""
-    following = model.setup_next(steps)
-    if not mine.done:
-        # An optional step that is still to do says so on its own page, with the way past it.
-        if mine.needed or mine.skipped or following is None:
-            return ""
-        return ui.banner(
-            "info",
-            f"<b>Setup: {model.setup_done(steps)} of {len(steps)} done.</b> "
-            f"This step ({mine.title}) is optional. "
-            + ui.btn("Skip for now", "/admin/setup/skip", "", {"step": mine.key})
-            + " "
-            + ui.go("See all steps", "/admin/setup"),
-        )
-    if following is None:
-        if view["setup"].get("finished_seen"):
-            return ""
-        return ui.banner(
-            "ok",
-            "<b>That was the last setup step. Coppermind is fully set up.</b> "
-            + ui.go("Go to Home", "/admin", "primary"),
-        )
-    optional = "" if following.needed else " (optional)"
-    return ui.banner(
-        "info",
-        f"<b>Setup: {model.setup_done(steps)} of {len(steps)} done.</b> "
-        f"Next: {following.title}{optional}. "
-        + ui.go("Continue", following.to, "primary")
-        + " "
-        + (
-            ""
-            if following.needed
-            else ui.btn("Skip for now", "/admin/setup/skip", "", {"step": following.key}) + " "
-        )
-        + ui.go("See all steps", "/admin/setup"),
-    )
 
 
 def obsidian(

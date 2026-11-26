@@ -60,8 +60,7 @@ can also be acknowledged on that page without removing the current event or
 originals. Acknowledging a conflict keeps it quiet until the event is revised
 past it. Attendee response status and provider housekeeping properties
 (`DTSTAMP`, `LAST-MODIFIED`, `PARTSTAT`, `X-WR-*`, `X-PUBLISHED-TTL`) do not
-take part in that comparison. Problems includes unsupported and oversized Dropbox files, and
-Home's Needs attention lists the same active problems.
+take part in that comparison. Problems includes unsupported and oversized Dropbox files.
 
 `GET /v1/calendars` retains its paginated response shape and describes the single
 calendar (`id: calendar`). Event details include provenance: export source ID,

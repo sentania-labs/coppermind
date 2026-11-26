@@ -26,7 +26,7 @@ from coppermind.settings import Wiring
 from coppermind.statefiles import RevisionConflict
 from coppermind.store_protocol import StoreError
 from coppermind_admin import ui
-from coppermind_admin.pages.home import OBSIDIAN_STEPS, pairing_code
+from coppermind_admin.pages.companion import OBSIDIAN_STEPS, pairing_code
 from coppermind_admin.shell import COOKIE, Ctx
 from coppermind_admin.ui import e, segment
 
@@ -298,6 +298,7 @@ clipboard</span></p>
         back = {
             "sync": ("/admin/sync", "Obsidian Sync"),
             "setup": ("/admin/setup/companion", "the companion step"),
+            "coppermind": ("/admin", "Coppermind"),
         }.get(origin, ("/admin/apps", "Connected apps"))
         here = ui.url("/admin/apps/pair", **{"from": origin})
         lede = (
