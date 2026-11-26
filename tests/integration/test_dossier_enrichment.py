@@ -322,7 +322,7 @@ async def test_review_extracts_projects_and_enriches_without_an_acceptance_step(
     before = store.entities.load().model_dump()
     await context.run_job(extraction)
     assert store.entities.load().model_dump() == before
-    # Editing the supporting note removes only its facts; a correction made through the API survives.
+    # Editing the supporting note removes only its facts; an API correction survives.
     sailing = next(f for f in person.facts if f.value == "sailing")
     entity = store.entities.load().entities[person.id]
     await store.entities.change(
