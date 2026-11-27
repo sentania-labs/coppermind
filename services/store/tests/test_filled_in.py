@@ -141,7 +141,7 @@ def test_an_answer_the_schema_refuses_is_left_out_on_its_own():
 def test_a_property_coppermind_filled_and_the_owner_cleared_is_not_filled_again():
     ctx = context()
     filled = {"type": "work", "account": ["Acme"], "tags": ["a"], "meeting": "evt-1"}
-    note = {"reviewed": False}
+    note: dict[str, Any] = {"reviewed": False}
     found = {"type": "work", "account": ["Acme"], "tags": ["a"], "meeting": "evt-1"}
     assert filled_in.fill(ctx, note, found, filled) == {}
     note = {"type": "work", "account": ["Acme"], "tags": [], "reviewed": False}
