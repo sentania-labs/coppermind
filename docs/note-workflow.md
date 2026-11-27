@@ -140,8 +140,8 @@ candidate for that speaker, returned as `voice_matches` in the review response
 `speaker_choices`, an object mapping selected suggestion indexes to candidate IDs;
 an empty value leaves that speaker unnamed. For manual names, pass `manual_speakers`
 (label to candidate ID), `manual_source_id` and `manual_source_revision` from the review
-response. Setting reviewed directly, as the companion's Reviewed button does, applies the
-names typed in the note and no others.
+response. Setting reviewed directly, as the companion's Reviewed button does, applies no
+speaker names; naming a voice is its own step (see [Who spoke](#who-spoke)).
 The transcript sample is sent only to the configured enrichment connection, under the same
 input limit and retry rules as other enrichment.
 
@@ -258,13 +258,13 @@ append, so retrying an interrupted completion does not append a second copy.
 When several timed events overlap a recording's start (a recording that starts up to
 ten minutes early still matches), Review offers the matching meetings and may suggest
 one from names and the topic in the conversation, nearest start first. When exactly one
-event overlaps, it alone is offered, and its invitees become speaker candidates once it is linked. That event
+event overlaps, it alone is offered, and its invitees head the card's voice dropdowns once it is linked. That event
 is not applied on its own: the title and context follow it only when the recording also says one of its
 attendees' full names or its title, and Review asks "Which meeting was this?" otherwise. When none
 overlaps, every event on the note's day stays a candidate, as before. The
 recording and summary do not wait for that choice. Choose the meeting to link it;
 the generated heading takes its title when that heading has not been edited. Until
-then, possible meeting attendees are marked in the speaker chooser. Invited
+then, the card's voice dropdowns have no invitees to list first. Invited
 people are not automatically treated as attendees.
 
 Calendar event descriptions can hold private details, so they stay out of every API
