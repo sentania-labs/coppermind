@@ -499,9 +499,11 @@ test('Resummarize shows it is running, and says what became of it',async()=>{
   assert.ok(f.button('Resummarize'));
 });
 
-test('a summary that failed says why on the card and Resummarize works again',async()=>{
-  const f=await review({notes:[note('n1','Acme call',{writeup:{state:'failed',reason:'The AI server is not answering.',when:''}})]});
-  assert.ok(f.texts().includes('The AI server is not answering.'));
+test('a summary that failed is one plain sentence on the card, the longer reason under the pointer, and Resummarize works again',async()=>{
+  const f=await review({notes:[note('n1','Acme call',{writeup:{state:'failed',reason:'The AI server is not answering. The note is unchanged.',when:''}})]});
+  assert.ok(f.texts().includes('The summary did not finish.'));
+  assert.ok(f.view.contentEl.all().some(e=>e.attr?.title==='The AI server is not answering. The note is unchanged.'));
+  assert.ok(f.texts().every(t=>t!=='The AI server is not answering. The note is unchanged.'));
   await f.button('Resummarize').onclick();
   assert.equal(posted(f).at(-1),'/v1/notes/n1/resummarize');
 });

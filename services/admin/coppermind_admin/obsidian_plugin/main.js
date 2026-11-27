@@ -48,7 +48,8 @@ const rules = {
   summaryLine(note) {
     const step = note.writeup || {};
     if (step.state === 'working') return {text: 'Summarizing' + (step.when ? ', started ' + when(step.when) : '') + '.', busy: true};
-    if (step.state === 'failed') return {text: step.reason || 'The summary did not finish.', problem: true};
+    // One plain sentence on the card; the server's longer reason stays under the pointer.
+    if (step.state === 'failed') return {text: 'The summary did not finish.', detail: step.reason || '', problem: true};
     if (step.state === 'missing' && note.can_resummarize) return {text: 'The summary did not finish.', problem: true};
     return null;
   },
@@ -259,7 +260,7 @@ class ReviewView extends ItemView {
     const who = fields.createDiv({cls: 'coppermind-who'});
     if (props.who.length) {who.createEl('label', {text: 'Who spoke'}); who.createSpan({text: props.who.join(', ')});}
     const summary = rules.summaryLine(note);
-    if (summary) card.createEl('p', {text: summary.text, cls: summary.problem ? 'coppermind-notice coppermind-problem' : 'coppermind-hint'});
+    if (summary) card.createEl('p', {text: summary.text, attr: summary.detail ? {title: summary.detail} : undefined, cls: summary.problem ? 'coppermind-notice coppermind-problem' : 'coppermind-hint'});
     const message = mine.message;
     const line = card.createEl('p', {text: message || '', cls: message ? (mine.problem ? 'coppermind-notice coppermind-problem' : 'coppermind-notice') : ''});
     this.actions(card, note, props, summary, line);
