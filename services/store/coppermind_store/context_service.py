@@ -1097,6 +1097,10 @@ class ContextService:
         """The owner chose another meeting for a waiting note."""
         return await self.review_notes.set_meeting(payload)
 
+    async def note_name_voice(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """The owner chose who a voice on a waiting note's card is."""
+        return await self.review_notes.name_voice(payload)
+
     async def note_reopen(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Put a reviewed or filed note back in Review."""
         return await self.review_notes.reopen(payload)

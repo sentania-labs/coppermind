@@ -57,6 +57,7 @@ ACTIONS = {
     "note-file-again": "note_file_again",
     "review-models": "review_models",
     "note-set-meeting": "note_set_meeting",
+    "note-name-voice": "note_name_voice",
     "note-reopen": "note_reopen",
     "recording-detail": "recording_detail",
     "retry-all-failed": "retry_all_failed",

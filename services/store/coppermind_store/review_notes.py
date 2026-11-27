@@ -35,6 +35,7 @@ from coppermind.store_protocol import (
     ReplaceNote,
     StoreError,
 )
+from coppermind_store import voice_card
 from coppermind_store.note_lifecycle import SETTLING
 
 if TYPE_CHECKING:
@@ -103,6 +104,8 @@ class ReviewNotes:
         self.live: dict[str, asyncio.Task[None]] = {}
         # Rewrites go one at a time, as recordings do, so a long backlog cannot flood the service.
         self.turn = asyncio.Semaphore(1)
+        # What each recording's transcript says about its voices; it never changes.
+        self.facts = voice_card.Facts()
 
     # -- the list ------------------------------------------------------------------------
 
@@ -136,16 +139,23 @@ class ReviewNotes:
                     )
                 ).all()
             )
-        recordings = {
-            job.note_id: job for job in context.recordings.jobs() if job.note_id and job.source_id
-        }
+        jobs = list(context.recordings.jobs())
+        recordings = {job.note_id: job for job in jobs if job.note_id and job.source_id}
         latest = context.recordings.latest_enrichment()
         suggestions_on = bool(context.config().assignments["enrichment"].enabled)
         writeup_on = self.writeup_ready()
+        from coppermind_store.voice_store import VoiceStore
+
+        snapshot = VoiceStore(context).snapshot()
+        people = voice_card.active_people(context)
         notes = []
         for row in rows:
             job = recordings.get(row.id)
-            notes.append(await self.row(row, job, latest.get(row.id), suggestions_on, writeup_on))
+            notes.append(
+                await self.row(
+                    row, job, latest.get(row.id), suggestions_on, writeup_on, snapshot, jobs, people
+                )
+            )
         following = int(start) + len(rows)
         return {
             "notes": notes,
@@ -176,6 +186,8 @@ class ReviewNotes:
             "accounts": sorted(set(vocab["accounts"].values()), key=str.casefold),
             "tags": sorted(set(vocab["tags"].values()), key=str.casefold),
             "tags_closed": schema.tag_mode == "closed",
+            "people": voice_card.people_choices(context),
+            "you": voice_card.owner_person_id(context),
         }
 
     def writeup_ready(self) -> bool:
@@ -188,7 +200,15 @@ class ReviewNotes:
         return bool(limits.enabled and not limits.paused and limits.connection)
 
     async def row(
-        self, row: Note, job: Any, enrichment: Any, suggestions_on: bool, writeup_on: bool = True
+        self,
+        row: Note,
+        job: Any,
+        enrichment: Any,
+        suggestions_on: bool,
+        writeup_on: bool = True,
+        snapshot: dict[str, Any] | None = None,
+        jobs: list[Any] | None = None,
+        people: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         item: dict[str, Any] = {
             "id": row.id,
@@ -213,6 +233,12 @@ class ReviewNotes:
             if note is not None:
                 item["edited"] = self.edited(note, job)
                 item["meeting"] = await self.meeting(note, job)
+                heard = voice_card.voices(self.context, self.facts, row.id, snapshot, jobs, people)
+                if heard:
+                    item["voices"] = heard
+                    item["invitees"] = await voice_card.invitees(
+                        self.context, note, self.meeting_key(note.frontmatter), jobs, people
+                    )
         return item
 
     def edited(self, note: Any, job: Any) -> bool:
@@ -426,9 +452,18 @@ class ReviewNotes:
                 "The saved transcript for this recording could not be found, so it cannot be "
                 "written up again."
             )
-        # The names the owner has given voices since the first write-up carry over.
-        current = context.read("voice-mappings/" + job.id, {})
+        # The names the owner has given voices since the first write-up carry over: the people
+        # chosen on the card, and any name given before the note was filed.
         then = saved.get("voice_map", {})
+        given = context.read("voice-mappings/" + job.id, {})
+        people = voice_card.active_people(context)
+        from coppermind_store.voice_store import VoiceStore
+
+        snapshot = VoiceStore(context).snapshot()
+        current = {}
+        for label, name in then.items():
+            person = voice_card.identify(context, snapshot, note_id, job, label, people)
+            current[label] = person.name if person else given.get(label, name)
         renames = {
             then[label]: current[label]
             for label in then
@@ -442,7 +477,7 @@ class ReviewNotes:
                     for s in transcript["segments"]
                 ],
             }
-        voice_map = {label: current.get(label, name) for label, name in then.items()}
+        voice_map = dict(current)
         # The write-up is made under its own name, so the one the note was filed from is
         # untouched unless the new one is good.
         trial = job.model_copy(update={"id": job.id + "-again"})
@@ -664,6 +699,13 @@ class ReviewNotes:
                 except StoreError:
                     log.info("the title of %s was left as it is", note_id)
         return {"meeting": event_id}
+
+    async def name_voice(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """The owner chose who a voice on a waiting note's card is."""
+        try:
+            return await voice_card.name_voice(self.context, self.facts, payload, self.meeting_key)
+        except voice_card.Refusal as refusal:
+            raise ValueError(str(refusal)) from refusal
 
     async def reopen(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Undo Reviewed: the note goes back to Review, waiting to be checked again."""

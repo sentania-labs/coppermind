@@ -160,16 +160,45 @@ class MeetingChoice(BaseModel):
     event_id: str = Field(max_length=500)
 
 
+class Invitee(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=200)
+    email: str = Field(default="", max_length=200)
+
+
+class VoiceChoice(BaseModel):
+    """Who a voice is: exactly one of `you`, a `person` already in People, an `invitee` of the
+    note's meeting, or a `new_name`. `me` also makes that person the owner, once."""
+
+    model_config = ConfigDict(extra="forbid")
+    voice: str = Field(min_length=1, max_length=300)
+    you: bool = False
+    person: str = Field(default="", max_length=100)
+    invitee: Invitee | None = None
+    new_name: str = Field(default="", max_length=200)
+    me: bool = False
+
+
 @router.get("/review/notes")
 async def review_notes(
     cursor: str | None = Query(default=None, max_length=20),
     limit: int = Query(default=100, ge=1, le=200),
     client: HttpStoreClient = Depends(store),
-    _: Principal = Depends(require_scopes("notes:read", "sources:read")),
+    principal: Principal = Depends(require_scopes("notes:read", "sources:read")),
 ) -> Response:
     """Every note in the Review folder, a page at a time, with where its write-up
-    stands. Send `next_cursor` back as `cursor` until it is null."""
-    return await call(client, "review-notes", {"cursor": cursor, "limit": limit})
+    stands. Send `next_cursor` back as `cursor` until it is null. A recording's note lists
+    its `voices`, and the `invitees` of its meeting, to a key that can read people."""
+    try:
+        page = await client.context_action("review-notes", {"cursor": cursor, "limit": limit})
+    except StoreError as exc:
+        return failure(exc)
+    if not principal.has("entities:read"):
+        for item in page.get("notes", []):
+            item.pop("voices", None)
+            item.pop("invitees", None)
+        page.get("choices", {}).pop("people", None)
+    return JSONResponse(page)
 
 
 @router.post("/notes/{note_id}/resummarize")
@@ -217,6 +246,30 @@ async def choose_meeting(
     """Name another meeting from the note's day, or an empty `event_id` for none. The title and
     the attendees follow a named meeting where the owner has not changed them."""
     return await call(client, "note-set-meeting", {"id": note_id, **payload.model_dump()})
+
+
+@router.post("/notes/{note_id}/voices")
+async def name_voice(
+    note_id: str,
+    payload: VoiceChoice,
+    client: HttpStoreClient = Depends(store),
+    _: Principal = Depends(
+        require_scopes(
+            "notes:write",
+            "notes:read",
+            "sources:read",
+            "sources:write",
+            "entities:read",
+            "entities:write",
+        )
+    ),
+) -> Response:
+    """Say who a voice on a waiting note is. The voice is attached to that person, so other notes
+    that used it and recordings to come follow, and the person joins the note's attendees."""
+    choice = payload.model_dump(exclude={"voice"})
+    return await call(
+        client, "note-name-voice", {"id": note_id, "voice": payload.voice, "choice": choice}
+    )
 
 
 @router.post("/notes/{note_id}/reopen")

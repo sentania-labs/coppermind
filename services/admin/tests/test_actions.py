@@ -992,17 +992,6 @@ def test_cutoff_error_links_to_suggestion_setting(admin):
     assert "<unsafe>" not in page
 
 
-def test_saved_unknown_voice_can_be_named_from_note_and_recording(admin):
-    client, _, store = admin
-    voice = {"id": "unknown:3", "name": "Unknown voice 3"}
-    store.views["note"]["unnamed_voices"] = [voice]
-    store.views["incoming-item"]["unnamed_voices"] = [voice]
-    for path in (f"/admin/notes/{NOTE}", "/admin/incoming/" + store.views["incoming-item"]["id"]):
-        page = client.get(path).text
-        assert "Unknown voice 3" in page
-        assert 'href="/admin/people?tab=voices&amp;name=unknown%3A3#voice-unknown%3A3"' in page
-
-
 def test_failed_writeup_reason_is_shown_once_with_an_editor_link(admin):
     from coppermind.recording_writeup import failure_message
 
@@ -1276,3 +1265,42 @@ def test_properties_and_tags_have_no_suggestions_tick(admin):
         assert "Suggestions fill it in" not in page, path
         assert "/admin/settings/tags/fill" not in page, path
     assert store.asked("suggestions-tick") == []
+
+
+# -- voices are named on the card in Review, not here ---------------------------------------------
+
+
+def test_people_and_voices_has_no_unnamed_voices_and_no_choice_of_how_sure_to_be(admin):
+    client, _, _ = admin
+    page = client.get("/admin/people?tab=voices").text
+    for gone in (
+        "Careful",
+        "Balanced",
+        "Eager",
+        "How sure",
+        "Voices not named yet",
+        "Name this voice",
+        "Someone new",
+    ):
+        assert gone not in page
+    # What stays: the one switch and each saved voice.
+    assert "Voice recognition" in page and "Saved voices" in page
+
+
+@pytest.mark.parametrize("name", ["level", "name", "forget"])
+def test_the_routes_that_named_or_forgot_an_unnamed_voice_are_gone(admin, name):
+    client, _, store = admin
+    sent = post(
+        client,
+        f"/admin/people/voices/{name}",
+        {"csrf": token(client, "/admin/people?tab=voices"), "id": "unknown:1", "level": "Eager"},
+    )
+    assert sent.status_code in {404, 405}
+    assert not [a for a in ("voice-level", "voice-name", "voice-forget") if store.asked(a)]
+    assert "/admin/people/clip" not in client.get("/admin/people?tab=voices").text
+
+
+def test_a_recording_and_a_note_page_say_nothing_about_unnamed_voices(admin):
+    client, _, store = admin
+    for path in (f"/admin/notes/{NOTE}", "/admin/incoming/" + store.views["incoming-item"]["id"]):
+        assert "Voices not named yet" not in client.get(path).text

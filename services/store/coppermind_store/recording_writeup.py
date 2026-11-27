@@ -31,7 +31,6 @@ from coppermind.recording_writeup import (
     read_field_suggestions,
 )
 from coppermind.schema import parse_note_time
-from coppermind.speakers_section import render as render_speakers
 from coppermind_store import grounding, meeting_match, speaker_facts
 from coppermind_store.answer_shape import FENCE
 from coppermind_store.model_provider import ProviderError
@@ -768,7 +767,7 @@ async def generate(
         + [float(transcript.get("duration") or 0)]
     )
     vocab = vocabulary(context)
-    voices, owner_label = speaker_facts.heard(context, job.id, transcript, calendar)
+    voices, owner_label = speaker_facts.heard(context, job.id, transcript)
     evidence = {
         "resolved_title": title,
         "recording_date": title[:10],
@@ -867,11 +866,7 @@ async def generate(
             job.id,
             len(unsupported),
         )
-    body = compose_body(
-        body,
-        render_speakers(voices, owner_known=bool(speaker_facts.owner_person_id(context))),
-        summary,
-    )
+    body = compose_body(body, summary)
     # A suggestion that cannot be read costs the note nothing; it is reported on its own.
     suggestions: list[dict[str, Any]] = []
     suggestion_error = ""

@@ -199,37 +199,6 @@ def record_review(store: LocalStore, note_id: str, frontmatter: dict) -> None:
     )
 
 
-def carry_review(store: LocalStore, note_id: str, before: dict[str, int | None]) -> None:
-    """Keep a note's approval across a rewrite of its own transcript that the owner asked for.
-
-    Naming a voice from the note replaces speaker labels in the transcript, which makes a new
-    source revision after the owner marked the note reviewed. The owner approved that note
-    knowing the names would be applied, so each source the approval covered at `before` is
-    approved at its new revision. A source whose approval was not at `before`, or that
-    is not reviewed, is left alone.
-    """
-    path = store.control.store.state_dir / "reviews" / f"{note_id}.json"
-    if not path.exists():
-        return
-    receipt = json.loads(path.read_bytes())
-    if not receipt.get("reviewed"):
-        return
-    now = source_revisions(store, {store.control.schema().role("sources_key"): list(before)})
-    moved = False
-    for source_id, old in before.items():
-        new = now.get(source_id)
-        if (
-            old is not None
-            and new is not None
-            and new != old
-            and receipt.get("sources", {}).get(source_id) == old
-        ):
-            receipt["sources"][source_id] = new
-            moved = True
-    if moved:
-        _save(path, receipt)
-
-
 async def file_note(store: LocalStore, note_id: str) -> bool:
     from coppermind_store.artifacts import TRANSCRIPT_DATA, file_source_artifact
     from coppermind_store.sources import (
@@ -252,8 +221,6 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         or not await store.context.lifecycle.follow(note)
     ):
         await store.context.lifecycle.finalize(note)
-        # Naming a voice from the note rewrites it; filing carries on with what is there now.
-        note = await store.get_note(note_id)
     problem = date_field_problem(note.frontmatter, schema)
     if problem:
         raise ValueError(problem)

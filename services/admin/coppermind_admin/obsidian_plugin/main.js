@@ -1,9 +1,8 @@
 /* Coppermind companion: one Review screen. A recording comes in, is summarized and filled in; the owner fixes what is wrong on its card and marks it Reviewed. */
 const {Plugin, ItemView, PluginSettingTab, Setting, SecretComponent, Notice, requestUrl, Modal, MarkdownView} = require('obsidian');
 const VIEW = 'coppermind-review';
-const PEOPLE_VIEW = 'coppermind-people';
-// Earlier versions had three screens; a saved layout may still hold one.
-const RETIRED_VIEWS = ['coppermind-waiting', 'coppermind-notes-in-review'];
+// Earlier versions had more screens; a saved layout may still hold one.
+const RETIRED_VIEWS = ['coppermind-waiting', 'coppermind-notes-in-review', 'coppermind-people'];
 const COMPANION_PERMISSIONS = 'Read notes, Add and change notes, Hand in recordings and files, Search, and Read and correct people and companies';
 const KEY_MISSING = 'This key is missing something the companion needs. In Coppermind Admin, open Advanced, then Connected apps, and either pair this device with a code, or make a key with: ' + COMPANION_PERMISSIONS + ', then select it in the companion settings.';
 const NOT_ANSWERING = 'Coppermind is not answering. Check your connection and that this device is still paired.';
@@ -33,7 +32,6 @@ const list = value => (Array.isArray(value) ? value : value ? [value] : []).map(
 const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 // "work/2026/2026-11/Call.md" is shown "work › 2026 › 2026-11".
 const where = path => String(path || '').split('/').slice(0, -1).join(' › ');
-const link = value => String(value).replace(/^\[\[|\]\]$/g, '').split('|').pop().split('/').pop().replace(/\.md$/, '');
 
 // What a card knows about one note, in one place so the screen and its tests read the same rules.
 const rules = {
@@ -59,6 +57,49 @@ const rules = {
   },
   // Where the owner's choice goes: one value for a single property, a list for the others.
   withValue(values, value, add) {return add ? (values.includes(value) ? values : [...values, value]) : values.filter(v => v !== value);},
+  // Talk time as it is read aloud: "48 s", "2 min 10 s", "1 h 05 min".
+  spoke(seconds) {
+    const whole = Math.max(0, Math.round(Number(seconds) || 0));
+    if (whole < 60) return whole + ' s';
+    if (whole < 600) return Math.floor(whole / 60) + ' min' + (whole % 60 ? ' ' + (whole % 60) + ' s' : '');
+    const minutes = Math.round(whole / 60);
+    return minutes < 60 ? minutes + ' min' : Math.floor(minutes / 60) + ' h ' + String(minutes % 60).padStart(2, '0') + ' min';
+  },
+  // What a voice's dropdown offers, in this order: that meeting's invitees (each carries its email), people already
+  // known, someone new. "You" once the owner is known; until then "Me", the one time the owner says which voice it is.
+  voiceOptions(voice, invitees, choices) {
+    const owner = choices.you || '', options = [];
+    options.push(owner ? {value: 'you', label: 'You'} : {value: 'me', label: 'Me'});
+    const listed = new Set();
+    (invitees || []).forEach((who, index) => {
+      if (who.person_id && who.person_id === owner) return;
+      if (who.person_id) listed.add(who.person_id);
+      options.push({value: 'invitee:' + index, label: who.name, title: who.email || ''});
+    });
+    for (const person of choices.people || []) {
+      if (person.id === owner || listed.has(person.id)) continue;
+      options.push({value: 'person:' + person.id, label: person.name});
+    }
+    options.push({value: 'new', label: 'Someone new…'});
+    return options;
+  },
+  // The option that says who a voice is now, or nothing while it is unnamed.
+  voiceValue(voice, invitees, choices) {
+    const person = voice.person; if (!person) return '';
+    if (voice.you) return 'you';
+    const at = (invitees || []).findIndex(who => who.person_id === person.id);
+    return at >= 0 ? 'invitee:' + at : 'person:' + person.id;
+  },
+  // What is sent for a choice: exactly one way of saying who it is.
+  voiceRequest(voice, value, invitees, text) {
+    const body = {voice: voice.id};
+    if (value === 'you') body.you = true;
+    else if (value === 'me') {body.new_name = text; body.me = true;}
+    else if (value === 'new') body.new_name = text;
+    else if (value.startsWith('invitee:')) {const who = (invitees || [])[+value.slice(8)]; body.invitee = {name: who.name, email: who.email || ''};}
+    else if (value.startsWith('person:')) body.person = value.slice(7);
+    return body;
+  },
 };
 
 class ReviewView extends ItemView {
@@ -164,7 +205,6 @@ class ReviewView extends ItemView {
       account: list(get(keys.account)),
       tags: list(get(keys.tags)),
       meeting: note.meeting?.selected ?? get(keys.meeting) ?? '',
-      who: [...new Set(list(get(keys.attendees)).map(link))],
       reviewed: get(keys.reviewed) === true,
     };
   }
@@ -262,14 +302,75 @@ class ReviewView extends ItemView {
     this.typeField(fields, note, props);
     this.pillsField(fields, note, props, 'Account', this.keys().account, props.account, this.choices().accounts || [], false);
     this.pillsField(fields, note, props, 'Tags', this.keys().tags, props.tags, this.choices().tags || [], this.choices().tags_closed);
-    // Piece 4 puts one voice picker per voice here. Until then voices are named in the note itself, and this shows who was matched.
-    const who = fields.createDiv({cls: 'coppermind-who'});
-    if (props.who.length) {who.createEl('label', {text: 'Who spoke'}); who.createSpan({text: props.who.join(', ')});}
+    this.voicesField(card, note);
     const summary = rules.summaryLine(note);
     if (summary) card.createEl('p', {text: summary.text, attr: summary.detail ? {title: summary.detail} : undefined, cls: summary.problem ? 'coppermind-notice coppermind-problem' : 'coppermind-hint'});
     const message = mine.message;
     const line = card.createEl('p', {text: message || '', cls: message ? (mine.problem ? 'coppermind-notice coppermind-problem' : 'coppermind-notice') : ''});
     this.actions(card, note, props, summary, line);
+  }
+  // -- who spoke: one row per voice, its talk time, one line it said, and who it is --------------------
+  voicesField(card, note) {
+    const voices = note.voices || [];
+    if (!voices.length) return;
+    const who = card.createDiv({cls: 'coppermind-who'});
+    who.createEl('label', {text: 'Who spoke'});
+    const mine = (this.local[note.id] ??= {}); mine.voices ??= {};
+    for (const voice of voices) this.voiceRow(who, note, voice, mine);
+  }
+  voiceRow(parent, note, voice, mine) {
+    const row = parent.createDiv({cls: 'coppermind-voice'});
+    const head = row.createDiv({cls: 'coppermind-voicehead'});
+    head.createEl('strong', {text: voice.you ? 'You' : voice.label});
+    head.createSpan({text: rules.spoke(voice.seconds), cls: 'coppermind-hint'});
+    if (voice.said) row.createEl('p', {text: '“' + voice.said + '”', cls: 'coppermind-said'});
+    const choices = this.choices(), invitees = note.invitees || [];
+    const options = rules.voiceOptions(voice, invitees, choices);
+    const current = rules.voiceValue(voice, invitees, choices);
+    // What the owner has picked and not yet saved stays through a redraw.
+    const pending = mine.voices[voice.id];
+    const shown = pending ? pending.value : current;
+    const control = row.createDiv({cls: 'coppermind-voicepick'});
+    const select = control.createEl('select', {attr: {'aria-label': 'Who is ' + voice.label}});
+    if (!current) select.createEl('option', {text: 'Who is this?', value: ''});
+    // A person who is named but is no longer on either list is still shown as chosen.
+    if (voice.person && !options.some(o => o.value === current)) options.splice(1, 0, {value: current, label: voice.person.name});
+    for (const o of options) {const el = select.createEl('option', {text: o.label, value: o.value}); if (o.title) el.setAttr?.('title', o.title);}
+    select.value = shown;
+    const save = async value => {
+      const text = mine.voices[voice.id]?.text ?? '';
+      const body = rules.voiceRequest(voice, value, invitees, text.trim());
+      select.disabled = true;
+      try {
+        await this.plugin.call('/v1/notes/' + encodeURIComponent(note.id) + '/voices', 'POST', body);
+        delete mine.voices[voice.id]; this.say(note.id, ''); this.typing = false;
+        await this.refresh();
+      } catch (e) {
+        this.typing = false;
+        this.say(note.id, this.fail(e, 'Could not name this voice. Check your connection.'), true); this.render();
+      }
+    };
+    select.onfocus = () => {this.typing = true;};
+    select.onblur = () => {this.typing = false; if (this.deferred) {this.deferred = false; this.refresh(true);}};
+    select.onchange = async () => {
+      const value = select.value;
+      if (value === 'new' || value === 'me') {this.typing = false; mine.voices[voice.id] = {value, text: mine.voices[voice.id]?.text || '', focus: true}; this.redraw(); return;}
+      delete mine.voices[voice.id];
+      if (value) return save(value);
+    };
+    if (shown === 'new' || shown === 'me') {
+      const typed = control.createEl('input', {attr: {type: 'text', placeholder: shown === 'me' ? 'Your name' : 'Their name', list: 'coppermind-people-' + voice.id}, cls: 'coppermind-add'});
+      const names = control.createEl('datalist', {attr: {id: 'coppermind-people-' + voice.id}});
+      for (const person of choices.people || []) names.createEl('option', {value: person.name});
+      typed.value = pending?.text || '';
+      if (pending?.focus) {pending.focus = false; setTimeout(() => typed.focus?.(), 0);}
+      typed.oninput = () => {mine.voices[voice.id] = {value: shown, text: typed.value};};
+      typed.onfocus = () => {this.typing = true;};
+      typed.onblur = () => {this.typing = false; if (this.deferred) {this.deferred = false; this.refresh(true);}};
+      const go = control.createEl('button', {text: 'Save', cls: 'mod-cta'});
+      go.onclick = () => {mine.voices[voice.id] = {value: shown, text: typed.value}; if (!typed.value.trim()) {this.say(note.id, 'Type a name.', true); this.render(); return;} return save(shown);};
+      typed.onkeydown = event => {if (event.key === 'Enter') go.onclick();};
+    }
   }
   field(parent, label) {
     const row = parent.createDiv({cls: 'coppermind-field'});
@@ -424,85 +525,6 @@ class ReviewView extends ItemView {
     this.modelsAt = Date.now();
   }
 }
-class DeleteVoiceModal extends Modal {
-  constructor(app, person, confirm, options={}){super(app);this.person=person;this.confirm=confirm;this.options=options;this.done=false;}
-  onOpen(){
-    const o=this.options;
-    this.contentEl.createEl('h2',{text:o.title||'Delete voice signatures?'});
-    this.contentEl.createEl('p',{text:o.text||'All saved voice signatures for '+this.person.name+' will be deleted. This cannot be undone.'});
-    const button=this.contentEl.createEl('button',{text:o.action||'Delete signatures',cls:'mod-warning'});
-    button.onclick=async()=>{this.done=true;this.close();await this.confirm();};
-    const cancel=this.contentEl.createEl('button',{text:'Cancel'});cancel.onclick=()=>this.close();
-  }
-  onClose(){this.contentEl.empty();if(!this.done&&this.options.cancel)this.options.cancel();}
-}
-class PeopleView extends ItemView {
-  constructor(leaf,plugin){super(leaf);this.plugin=plugin;}
-  getViewType(){return PEOPLE_VIEW;}
-  getDisplayText(){return 'People';}
-  getIcon(){return 'users';}
-  async onOpen(){await this.show();}
-  async show(person){
-    const el=this.contentEl;el.empty();el.createEl('h2',{text:'People and voices'});
-    try{
-      const recognition=await this.plugin.call('/v1/entities/voice/recognition');
-      new Setting(el).setName('Voice recognition').setDesc('Store voice signatures to recognise speakers in future recordings. No audio clips are saved for recognition.').addToggle(t=>t.setValue(recognition.enabled).onChange(async enabled=>{try{await this.plugin.call('/v1/entities/voice/recognition','PUT',{enabled});await this.show(person);}catch(e){new Notice(e.message);}}));
-      if(!recognition.enabled)el.createEl('p',{text:'New voice signatures are not being stored. Existing voice data is listed below.'});
-      const unknowns=await this.plugin.call('/v1/entities/voice/unknowns');
-      const savedPeople=await this.plugin.call('/v1/entities/voice/people');
-      const search=el.createEl('input',{attr:{type:'search',placeholder:'Find a person'}});
-      const find=el.createEl('button',{text:'Search'});const list=el.createDiv();
-      find.onclick=async()=>{try{list.empty();const page=await this.plugin.call('/v1/entities?kind=person&limit=50&q='+encodeURIComponent(search.value.trim()));
-        if(!page.items.length)list.createEl('p',{text:'No people found.'});
-        for(const item of page.items){const b=list.createEl('button',{text:item.name});b.onclick=()=>this.show(item);}
-      }catch(e){new Notice(e.message);}};
-      el.createEl('h3',{text:'Saved voices'});
-      if(!Object.keys(unknowns).length&&!Object.keys(savedPeople).length)el.createEl('p',{text:'No voices saved yet.'});
-      for(const [id,item] of Object.entries(savedPeople)){const b=el.createEl('button',{text:item.name+' · Voice data saved'});b.onclick=()=>this.show({id,name:item.name});}
-      for(const [id,item] of Object.entries(unknowns)){const b=el.createEl('button',{text:item.name+' · '+item.assignments.length+' recordings'});b.onclick=()=>this.show({id,name:item.name,unknown:true});}
-      if(!person)return;
-      const path=person.unknown?'/v1/entities/voice/unknowns/'+encodeURIComponent(person.id):'/v1/entities/'+encodeURIComponent(person.id)+'/voice';
-      const voice=person.unknown?unknowns[person.id]:await this.plugin.call(path);
-      if(!voice){await this.show();return;}
-      el.createEl('h3',{text:person.name});
-      el.createEl('p',{text:voice.signatures.length+' saved voice signatures'});
-      const attended=new Set();const attendeesKey=recognition.attendees_field||'';
-      for(const assignment of voice.assignments||[]){const line=el.createDiv();
-        try{const note=await this.plugin.call('/v1/notes/'+encodeURIComponent(assignment.note_id));for(const v of attendeesKey&&Array.isArray(note.frontmatter?.[attendeesKey])?note.frontmatter[attendeesKey]:[])if(typeof v==='string')attended.add(v.trim().replace(/^\[\[|\]\]$/g,'').split('|')[0].replace(/\.md$/,'').toLowerCase());const a=line.createEl('a',{text:note.title,href:'#'});a.onclick=e=>{e.preventDefault();this.app.workspace.openLinkText(note.path,'',false);};}
-        catch{line.createSpan({text:'Source note unavailable'});}
-        const split=line.createEl('button',{text:'This is not '+person.name});split.onclick=()=>new DeleteVoiceModal(this.app,person,async()=>{try{await this.plugin.call('/v1/entities/voice/voices/'+encodeURIComponent(person.unknown?person.id:'person:'+person.id)+'/split','POST',{note_id:assignment.note_id,label:assignment.label,source_id:assignment.source_id});await this.show(person);}catch(e){new Notice(e.message);}},{title:'Separate this recording?',text:'This recording will use a new unknown voice label. Other recordings stay with '+person.name+'. Your own writing in reviewed notes stays intact.',action:'Separate recording'}).open();
-      }
-      if(person.unknown){
-        el.createEl('p',{text:'Combine this voice with another unknown voice or attach it to a person. Earlier recordings will be relabelled; your own writing in reviewed notes stays intact.'});
-        const target=el.createEl('select');target.createEl('option',{text:'Choose a voice or person',value:''});const labels={};let personOptions=[];
-        for(const [id,item] of Object.entries(unknowns))if(id!==person.id){target.createEl('option',{text:item.name,value:id});labels[id]=item.name;}
-        const query=el.createEl('input',{attr:{type:'search',placeholder:'Type a name to find a person'}});const lookup=el.createEl('button',{text:'Find a person'});
-        const found=el.createEl('p');const matches=el.createDiv();const summary=el.createEl('p',{cls:'coppermind-notice'});
-        const count=new Set((voice.assignments||[]).map(a=>a.note_id)).size;const recordings=count+' recording'+(count===1?'':'s');
-        const describe=()=>{const label=labels[target.value]||'';
-          summary.setText(target.value&&label?person.name+' will become '+label+' in '+recordings+'.':'Choose who '+person.name+' should be combined with.');};
-        target.onchange=describe;describe();
-        const personLabel=(p,all)=>{const email=p.emails?.[0]||'';const clash=all.filter(x=>x.name===p.name).length>1;return p.name+(email?' ('+email+')':clash?' (no email, ID '+String(p.id).slice(0,8)+')':'');};
-        let lookupId=0;const attendedBefore=p=>[p.path&&String(p.path).replace(/\.md$/,''),p.name,...(p.emails||[])].some(k=>k&&attended.has(String(k).toLowerCase()));
-        const clearPeople=()=>{matches.empty();for(const o of personOptions)o.remove();personOptions=[];for(const k of Object.keys(labels))if(k.startsWith('person:'))delete labels[k];};
-        lookup.onclick=async()=>{const mine=++lookupId;try{
-          const text=query.value.trim();if(!text){clearPeople();target.value='';found.setText('Type a name first, then choose Find a person.');describe();return;}
-          const page=await this.plugin.call('/v1/entities?kind=person&limit=50&q='+encodeURIComponent(text));if(mine!==lookupId)return;const items=page.items||[];
-          clearPeople();
-          const seen=new Set();const unique=items.filter(p=>seen.has(p.id)?false:(seen.add(p.id),true)).map(p=>({p,here:attendedBefore(p)})).sort((a,b)=>b.here-a.here).map(x=>x.p);
-          for(const p of unique){const text2=personLabel(p,unique);personOptions.push(target.createEl('option',{text:text2,value:'person:'+p.id}));labels['person:'+p.id]=text2;
-            const pick=matches.createEl('button',{text:text2+(attendedBefore(p)?' · attended these meetings':'')});pick.onclick=()=>{target.value='person:'+p.id;describe();};}
-          if(!unique.length){found.setText('No one named '+text+' found.');target.value='';}
-          else{found.setText(unique.length===1?'Found 1 person. Check the summary below, then combine.':'Found '+unique.length+' people. Choose one from the list below.');if(unique.length===1)target.value='person:'+unique[0].id;}
-          describe();
-        }catch(e){if(mine===lookupId){found.setText('Could not search for people.');new Notice(e.message);}}};
-        let typing;query.oninput=()=>{clearTimeout(typing);++lookupId;if(!query.value.trim()){lookup.onclick();return;}clearPeople();target.value='';describe();found.setText('Searching…');typing=setTimeout(()=>lookup.onclick(),250);};
-        const combine=el.createEl('button',{text:'Choose and combine',cls:'mod-cta'});combine.onclick=()=>{if(!target.value){found.setText('Choose a voice or person first.');return;}const chosen=target.value;const label=labels[chosen]||'the chosen voice';new DeleteVoiceModal(this.app,person,async()=>{try{await this.plugin.call(path+'/combine','POST',{target:chosen});await this.show();el.createEl('p',{text:'Done: '+person.name+' is now '+label+' in '+recordings+'.',cls:'coppermind-notice'});new Notice(person.name+' is now '+label+'.');}catch(e){new Notice(e.message);}},{title:'Combine these voices?',text:person.name+' will become '+label+' in '+recordings+'. Transcripts and unchanged generated labels will change; your own writing in reviewed notes stays intact.',action:'Combine voices'}).open();};
-      }
-      if(person.unknown||voice.signatures.length){const del=el.createEl('button',{text:'Delete voice data',cls:'mod-warning'});del.onclick=()=>new DeleteVoiceModal(this.app,person,async()=>{try{await this.plugin.call(path,'DELETE');await this.show(person.unknown?undefined:person);}catch(e){new Notice(e.message);}},{title:'Delete voice data?',text:'Delete '+voice.signatures.length+' saved voice signature'+(voice.signatures.length===1?'':'s')+' for '+person.name+'? Future recordings cannot be recognised from these signatures. This cannot be undone.',action:'Delete voice data'}).open();}
-    }catch(e){el.createEl('p',{text:e.message,cls:'coppermind-notice'});}
-  }
-}
 
 const NOT_COPPERMIND='That address did not answer like Coppermind. Check the address and try again.';
 function readJson(result){try{const value=result.json;return value&&typeof value==='object'?value:null;}catch{return null;}}
@@ -555,14 +577,12 @@ module.exports=class CoppermindReview extends Plugin {
   async onload(){
     this.settings={url:'',secret:'',...await this.loadData()};
     this.registerView(VIEW,leaf=>new ReviewView(leaf,this));
-    this.registerView(PEOPLE_VIEW,leaf=>new PeopleView(leaf,this));
     this.addSettingTab(new Settings(this.app,this));
     // Let go of any copy of a retired screen that a saved layout still holds.
     for(const type of RETIRED_VIEWS)this.app.workspace.detachLeavesOfType?.(type);
     this.app.workspace.detachLeavesOfType?.('coppermind-imports');
     this.addCommand({id:'review',name:'Review',callback:()=>this.openReview()});
     this.addRibbonIcon('clipboard-check','Review',()=>this.openReview());
-    this.addCommand({id:'manage-people',name:'Manage people and voice recognition',callback:()=>this.openPeople()});
     this.addCommand({id:'pair-device',name:'Pair this device with Coppermind',callback:()=>new PairModal(this.app,this).open()});
     // A device that has the add-on but no key yet is asked for the pairing code once it is ready.
     this.app.workspace.onLayoutReady?.(()=>{if(!this.paired())new PairModal(this.app,this).open();});
@@ -591,12 +611,6 @@ module.exports=class CoppermindReview extends Plugin {
   async openReview(){
     let leaf=this.app.workspace.getLeavesOfType(VIEW)[0]||this.app.workspace.getRightLeaf(false);
     await leaf.setViewState({type:VIEW,active:true});await this.app.workspace.revealLeaf(leaf);await leaf.view.refresh();
-  }
-  async openPeople(){
-    const file=this.app.workspace.getActiveFile();
-    let leaf=this.app.workspace.getLeavesOfType(PEOPLE_VIEW)[0]||this.app.workspace.getRightLeaf(false);
-    await leaf.setViewState({type:PEOPLE_VIEW,active:true});await this.app.workspace.revealLeaf(leaf);
-    if(file){try{const result=await this.call('/v1/entities?kind=person&limit=50&q='+encodeURIComponent(file.basename));const person=result.items?.find(p=>p.path===file.path);if(person)await leaf.view.show(person);}catch{}}
   }
   // Reads that a screen waits on give up on a silent server. Writes are never cut off, because the server may still be working on them.
   withTimeout(request){

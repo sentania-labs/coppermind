@@ -60,12 +60,6 @@ class AdminIncoming:
             speakers = len(
                 {s.get("speaker") for s in saved.get("segments", []) if s.get("speaker")}
             )
-        from coppermind_store.voice_store import VoiceStore
-
-        unnamed = VoiceStore(self.context).unknown_for_note(
-            self.context.recordings.parent_note_id(job) or "recording:" + job.id,
-            job.source_id or None,
-        )
         held = job.state == "failed" and job.error_rule in UNREACHABLE and not job.dismissed
         return {
             "id": "r:" + job.id,
@@ -89,7 +83,6 @@ class AdminIncoming:
             "done_at": job.succeeded_at,
             "took_minutes": took_minutes(job) if job.state == "succeeded" else None,
             "speakers": speakers,
-            "unnamed_voices": unnamed,
             "note_id": self.context.recordings.parent_note_id(job),
             "audio_removed": job.audio_removed,
             "dismissed": job.dismissed,

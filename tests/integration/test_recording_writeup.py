@@ -6,7 +6,6 @@ import asyncio
 import io
 import json
 import os
-import re
 import wave
 from pathlib import Path
 
@@ -73,19 +72,18 @@ async def test_finished_body_without_suggestions_then_review(store):
         assert job.state == "succeeded", job.error
         assert job.stage == "Note ready"
         note = await store.get_note(job.note_id)
-        # Speakers first, then the top line; no title heading; one references block last.
+        # The top line first; no title heading, no Speakers section; one references block last.
         assert "# 2026-11-09 Standup" not in note.body
-        speakers = note.body.partition("## Top line")[0]
-        assert speakers.startswith("## Speakers\n\n")
-        assert re.search(
-            r"^- (\[\[[^\]|]+\|)?Alex Example(\]\])?, 3 s. Identified by voice \(strong match\)\.$",
-            speakers,
-            re.M,
-        )
-        assert "- Unknown voice 1, 4 s. Not identified yet.\n" in speakers
-        assert "  - [ ] This is me\n  - Name this voice:" in speakers
-        assert speakers.index("Alex Example") < speakers.index("Unknown voice 1")
+        assert note.body.startswith("## Top line")
+        for gone in ("## Speakers", "Name this voice", "This is me", "Not identified yet"):
+            assert gone not in note.body
         assert "Alex Example and Unknown voice 1" in note.body
+        # Who spoke is on the card: the recognised person, and the voice nobody has named.
+        from coppermind_store import voice_card
+
+        heard = voice_card.voices(context, context.review_notes.facts, note.id)
+        assert [v["person"] and v["person"]["name"] for v in heard] == ["Alex Example", None]
+        assert [v["label"] for v in heard] == ["Alex Example", "Voice 1"]
         references = note.body.partition("## References")[2]
         assert note.body.count("## References") == 1 and "## Artifacts" not in note.body
         assert "- Source transcript: [[" in references and "- Recording: [[" in references
@@ -102,12 +100,6 @@ async def test_finished_body_without_suggestions_then_review(store):
         evidence = await speaker_names.evidence(context, note, [])
         assert evidence["speakers"] == ["Unknown voice 1"]
         assert not any(c["name"] == "Alex Example" for c in evidence["candidates"])
-        voices = VoiceStore(context).unknown_for_note(note.id)
-        assert len(voices) == 1 and voices[0]["name"] == "Unknown voice 1"
-        assert store.admin.incoming.recording(job)["unnamed_voices"] == voices
-        assert (await store.admin.notes.detail({"id": note.id}))["unnamed_voices"] == voices
-        people = await store.admin.people.listing()
-        assert people["unnamed"][0]["label"] == "Unknown voice 1"
         config = context.config()
         enrichment = config.assignments["enrichment"]
         enrichment.connection = config.assignments["writeup"].connection
@@ -157,7 +149,6 @@ async def test_finished_body_without_suggestions_then_review(store):
         detail = await context.lifecycle.detail({"note_id": note.id})
         speaker = next(s for s in detail["suggestions"] if s["kind"] == "speaker")
         assert speaker["value"] is None and speaker["candidates"] == []
-        assert detail["unnamed_voices"] == voices
         # The type answer was filled in on its own, so there is nothing left to select.
         assert all(
             s.field != "type" or i in review.decided

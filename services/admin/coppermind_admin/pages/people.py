@@ -1,8 +1,8 @@
 """People and voices: what Coppermind knows about someone, corrected where it is listed.
 
 Voices are kept as signatures only, never as audio. Each saved voice can be seen
-and removed, a person can be marked "never save", an unnamed voice can be named
-or removed, and one switch turns voice recognition off altogether.
+and removed, a person can be marked "never save", and one switch turns voice recognition
+off altogether. Who a voice is gets chosen on the card in Review.
 """
 
 from __future__ import annotations
@@ -23,12 +23,6 @@ LEDE = (
     "People and companies Coppermind has learned from notes you reviewed. Open one to see "
     "what it knows, correct it, or manage a saved voice."
 )
-SURE = {
-    "Careful": "Only suggests a name when the voice match is very strong. Fewer suggestions, "
-    "almost never wrong.",
-    "Balanced": 'Suggests a name on a strong match, and marks weaker ones as "maybe". Recommended.',
-    "Eager": "Suggests names on weaker matches too. More suggestions, more to correct.",
-}
 
 
 async def stream_artifact(ctx: Ctx, artifact_id: str) -> Response:
@@ -52,32 +46,6 @@ def first_name(name: str) -> str:
 def router(wiring: Wiring) -> APIRouter:
     routes = APIRouter()
 
-    async def clip_player(ctx: Ctx, note_id: str, label: str) -> str:
-        """A Play control for one speaker, shown only while that recording's audio exists."""
-        try:
-            clip = await ctx.act("voice-clip", {"note_id": note_id, "label": label})
-        except StoreError:
-            clip = {}
-        if not clip:
-            return ""
-        source = (
-            ui.url("/admin/people/clip", note=note_id, label=label)
-            + f"#t={clip['start']},{clip['end']}"
-        )
-        label = 'aria-label="Play this voice"'
-        return f'<audio controls preload="none" src="{e(source)}" {label}></audio>'
-
-    @routes.get("/admin/people/clip", include_in_schema=False)
-    async def clip(request: Request) -> Response:
-        ctx = Ctx(request, wiring)
-        try:
-            found = await ctx.act("voice-clip", {"note_id": ctx.q("note"), "label": ctx.q("label")})
-            if not found:
-                return Response(status_code=404)
-            return await stream_artifact(ctx, found["artifact_id"])
-        except StoreError:
-            return Response(status_code=404)
-
     @routes.get("/admin/people", include_in_schema=False)
     async def people(request: Request) -> Response:
         ctx = Ctx(request, wiring)
@@ -85,8 +53,8 @@ def router(wiring: Wiring) -> APIRouter:
             data = await ctx.act("people", {})
         except StoreError:
             return await ctx.unavailable("People and voices", LEDE, "people")
-        listed, companies, unnamed = data["people"], data["companies"], data["unnamed"]
-        if not listed and not companies and not unnamed:
+        listed, companies = data["people"], data["companies"]
+        if not listed and not companies:
             body = ui.head("People and voices", LEDE) + ui.card(
                 ui.empty(
                     "No people yet",
@@ -129,7 +97,7 @@ def router(wiring: Wiring) -> APIRouter:
                 ui.row(
                     "Voice recognition",
                     "On. Coppermind keeps a signature of each voice it hears, never the audio, "
-                    "and uses it to suggest who is speaking."
+                    "and uses it to recognise who is speaking."
                     if on
                     else "Off. No voice is learned or recognised. Signatures already saved are "
                     "kept but not used; remove them below if you want them gone.",
@@ -149,90 +117,17 @@ def router(wiring: Wiring) -> APIRouter:
                 )
                 for person in voiced
             ) or ui.empty("No saved voices", "They are learned from recordings you review.")
-            unknown = ""
-            if unnamed:
-                rows = ""
-                naming = ctx.q("name")
-                for voice in unnamed:
-                    where = (
-                        f'{e(voice["label"])} in "{e(voice["where"])}"'
-                        if voice["where"]
-                        else e(voice["name"])
-                    )
-                    detail = f"Heard {ui.date_only(voice['heard'], ctx.zone)}." + (
-                        f" Also in {plural(voice['more'], 'earlier recording')}."
-                        if voice["more"]
-                        else ""
-                    )
-                    if naming == voice["id"]:
-                        choices = (
-                            [("", "Choose a person…")]
-                            + [
-                                (person["id"], person["name"])
-                                for person in listed
-                                if not person["never"]
-                            ]
-                            + [("__new__", "Someone new…")]
-                        )
-                        actions = f"""<form class="act" method="post"
-action="/admin/people/voices/name">{ui.hidden({"id": voice["id"]})}
-<select class="lat-select inline" name="person" aria-label="Who is this">
-{ui.options(choices, "")}</select>
-<span data-if="person=__new__"><input class="lat-input inline" style="width:170px"
-name="new_name" aria-label="Name of the new person" placeholder="Their name"></span>
-{ui.submit("Save", busy="Naming…")}{ui.go("Cancel", here)}</form>"""
-                    else:
-                        actions = (
-                            await clip_player(ctx, voice["note_id"], voice["label"])
-                            + ui.go("Name this voice", ui.url(here, name=voice["id"]))
-                            + ui.go("Remove", ui.url(here, ask="unnamed:" + voice["id"]))
-                        )
-                    rows += (
-                        f'<div id="voice-{e(voice["id"])}">'
-                        + ui.item(where, detail, actions)
-                        + "</div>"
-                    )
-                unknown = (
-                    '<div style="border-top:1px solid var(--line-soft);margin-top:6px;'
-                    f'padding-top:10px"><div class="row-l">Voices not named yet ({len(unnamed)})'
-                    '</div><p class="muted">Heard in recordings where nobody has said who was '
-                    "speaking. Name one here and Coppermind names that speaker in every "
-                    "recording it was heard in. A voice can be played while its recording is "
-                    f"still waiting for review.</p>{rows}</div>"
-                )
-            level = data["level"]
-            buttons = " ".join(
-                ui.btn(
-                    name,
-                    "/admin/people/voices/level",
-                    "primary" if name == level else "",
-                    {"level": name},
-                )
-                for name in SURE
-            )
-            sure = (
-                '<div style="border-top:1px solid var(--line-soft);margin-top:6px;'
-                'padding-top:10px"><div class="row-l">How sure should Coppermind be before '
-                f'suggesting a name?</div><div style="margin-top:6px">{buttons}</div>'
-                '<p class="lat-hint" style="margin-top:6px">'
-                + (
-                    f"{level}: {SURE[level]}"
-                    if level
-                    else "Set to values of your own. Pick one of the three to replace them."
-                )
-                + "</p></div>"
-            )
             inner = (
                 switch
                 + '<p class="muted" style="margin-top:8px">Coppermind learns a person\'s voice '
-                "from recordings you have reviewed, so it can suggest who is speaking next "
-                "time.</p>" + saved + unknown + sure
+                "from the voices you name on a card in Review, so it can tell who is speaking "
+                "next time.</p>" + saved
             )
             asked = ctx.q("ask")
             if asked == "off":
                 dialog = ui.dialog(
                     "Turn voice recognition off?",
-                    "Coppermind stops learning voices and stops suggesting who is speaking, "
+                    "Coppermind stops learning voices and stops recognising who is speaking, "
                     "for everyone. Signatures already saved are kept but not used, so turning "
                     "it back on later picks up where it left off. To delete them, remove each "
                     "saved voice.",
@@ -246,24 +141,7 @@ name="new_name" aria-label="Name of the new person" placeholder="Their name"></s
                 target = next((p for p in voiced if p["id"] == asked[6:]), None)
                 if target:
                     dialog = voice_dialog(target, here)
-            elif asked.startswith("unnamed:"):
-                target = next((v for v in unnamed if v["id"] == asked[8:]), None)
-                if target:
-                    dialog = ui.dialog(
-                        "Remove this unnamed voice?",
-                        (
-                            f'{e(target["label"])} in "{e(target["where"])}". '
-                            if target["where"]
-                            else ""
-                        )
-                        + "The voice is deleted for good. That speaker stays unnamed, and "
-                        "naming them later will not reach back to this recording.",
-                        "/admin/people/voices/forget",
-                        "Remove",
-                        here,
-                        danger=True,
-                        fields={"id": target["id"]},
-                    )
+
         tabs = ui.seg(
             "/admin/people",
             [
@@ -330,20 +208,6 @@ name="new_name" aria-label="Name of the new person" placeholder="Their name"></s
             )
         return ctx.go(target)
 
-    @routes.post("/admin/people/voices/level", include_in_schema=False)
-    async def level(request: Request) -> Response:
-        ctx = Ctx(request, wiring)
-        form = await ctx.form()
-        target = "/admin/people?tab=voices"
-        result = await done(ctx, "voice-level", {"level": form.get("level", "")}, target)
-        if result is not None:
-            ctx.say(
-                "ok",
-                f"Saved. Voice matching is now set to {result['level']}. This applies to new "
-                "recordings.",
-            )
-        return ctx.go(target)
-
     @routes.post("/admin/people/voices/remove", include_in_schema=False)
     async def voice_remove(request: Request) -> Response:
         ctx = Ctx(request, wiring)
@@ -364,43 +228,6 @@ name="new_name" aria-label="Name of the new person" placeholder="Their name"></s
                     else ""
                 ),
             )
-        return ctx.go(target)
-
-    @routes.post("/admin/people/voices/name", include_in_schema=False)
-    async def voice_name(request: Request) -> Response:
-        ctx = Ctx(request, wiring)
-        form = await ctx.form()
-        target = "/admin/people?tab=voices"
-        person = form.get("person", "")
-        result = await done(
-            ctx,
-            "voice-name",
-            {
-                "id": form.get("id", ""),
-                "person": "" if person == "__new__" else person,
-                "new_name": form.get("new_name", "") if person == "__new__" else "",
-            },
-            ui.url(target, name=form.get("id", "")),
-        )
-        if result is None:
-            return ctx.go(ui.url(target, name=form.get("id", "")))
-        count = result["recordings"]
-        ctx.say(
-            "ok",
-            f"Named. {e(result['name'])} is now shown as that speaker in "
-            f"{'that recording' if count == 1 else f'those {count} recordings'}, and the voice "
-            f"is saved under {first_name(result['name'])}'s name. A recording still being "
-            "reviewed is updated when its review is finished.",
-        )
-        return ctx.go(target)
-
-    @routes.post("/admin/people/voices/forget", include_in_schema=False)
-    async def voice_forget(request: Request) -> Response:
-        ctx = Ctx(request, wiring)
-        form = await ctx.form()
-        target = "/admin/people?tab=voices"
-        if await done(ctx, "voice-forget", {"id": form.get("id", "")}, target) is not None:
-            ctx.say("ok", "Removed that unnamed voice. Named voices were not touched.")
         return ctx.go(target)
 
     # -- one person or company -----------------------------------------------------------

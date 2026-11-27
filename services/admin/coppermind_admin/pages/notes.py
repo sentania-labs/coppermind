@@ -696,8 +696,7 @@ name="csrf" value="{{csrf}}">Save</button>
         if data["state"] == "waiting" and not stuck:
             summary, notice, refresh = summary_card(await note_summary(ctx, identity), here)
         live = f"<div data-live>{summary}</div>" if summary else ""
-        voices = ui.unnamed_voices(data.get("unnamed_voices", []))
-        body = f'{head}<div class="stack">{ctx.flash()}{notice}{top}{live}{voices}{history}</div>'
+        body = f'{head}<div class="stack">{ctx.flash()}{notice}{top}{live}{history}</div>'
         return await ctx.page(data["title"], body, "notes", refresh=refresh)
 
     async def note_summary(ctx: Ctx, identity: str) -> dict[str, Any]:

@@ -852,7 +852,6 @@ hours {ui.submit("Save", busy="Saving…")} {ui.go("Cancel", "/admin/incoming")}
             )
         if item["state"] == "failed" and item.get("rule", "").startswith("writeup-"):
             top += ui.go("How recordings are written up", "/admin/transcription/writeup")
-        top += ui.unnamed_voices(item.get("unnamed_voices", []))
         service = view["trans"]["service"] if view else None
         sent_to = ""
         if item["state"] == "failed" and service:

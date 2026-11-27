@@ -7,8 +7,6 @@ import copy
 import re
 from typing import Any
 
-from coppermind import speakers_section
-
 
 def relabel_transcript(
     transcript: dict[str, Any], positions: list[int], old: str, new: str
@@ -166,10 +164,6 @@ async def relabel_recording(
         if baseline and generated:
             body, baseline, generated = relabel_generated_lines(
                 note.body, baseline, generated, 0, body_old, new
-            )
-            # The Speakers entry for this voice has its answer now: drop the questions.
-            body, baseline, generated = (
-                speakers_section.settle(text, new) for text in (body, baseline, generated)
             )
             body_labels[assignment["label"]] = new
             if body != note.body:

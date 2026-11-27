@@ -32,31 +32,30 @@ def read(items, **overrides):
     return read_field_suggestions(json.dumps({"suggestions": items}), **{**VOCAB, **overrides})
 
 
-def test_speakers_come_first_then_the_top_line_and_no_title_or_owned_sections():
+def test_the_top_line_comes_first_and_there_is_no_title_or_owned_section():
     body = (
         "Customer meeting (inferred)\n\n## References\nold\n\n## Details\nOrbit 7.2.\n\n"
         "## Speakers\n- the model's own list\n\n## Top line\nHalcyon plans 8.0.\n"
     )
-    section = "## Speakers\n\n- Alex Example, 5 min. Identified.\n- Unknown voice 1, 2 min.\n"
-    shaped = compose_body(body, section, None)
-    assert shaped.startswith(section)
+    shaped = compose_body(body, None)
+    assert shaped.startswith("## Top line")
     assert (
         shaped.index("## Top line") < shaped.index("Customer meeting") < shaped.index("## Details")
     )
-    assert "References" not in shaped and "the model's own list" not in shaped
+    # Who spoke is on the card and in the attendees, never a section of the note.
+    assert "Speakers" not in shaped and "the model's own list" not in shaped
+    assert "References" not in shaped
     assert not any(line.startswith("# ") for line in shaped.splitlines())
 
 
 def test_a_clean_recording_prints_no_boundaries_even_when_the_model_wrote_one():
     body = "## Top line\nDone.\n\n## Recording boundaries\n[]\n\n## Notes\nBody.\n"
-    assert "boundaries" not in compose_body(body, "", None).lower()
+    assert "boundaries" not in compose_body(body, None).lower()
 
 
 def test_a_boundary_notice_sits_right_after_the_top_line():
     body = "## Top line\nDone.\n\n## Notes\nBody.\n"
-    shaped = compose_body(
-        body, "## Speakers\n\n- A\n", "## Recording boundaries\n\n- 00:30:00 to 00:40:00: tail.\n"
-    )
+    shaped = compose_body(body, "## Recording boundaries\n\n- 00:30:00 to 00:40:00: tail.\n")
     assert (
         shaped.index("## Top line")
         < shaped.index("## Recording boundaries")
@@ -64,15 +63,9 @@ def test_a_boundary_notice_sits_right_after_the_top_line():
     )
 
 
-def test_a_prompt_without_a_top_line_still_gets_speakers_first():
-    shaped = compose_body(
-        "## Summary\nText.\n", "## Speakers\n\n- A\n", "## Recording boundaries\n\nx\n"
-    )
-    assert (
-        shaped.index("## Speakers")
-        < shaped.index("## Recording boundaries")
-        < shaped.index("## Summary")
-    )
+def test_a_prompt_without_a_top_line_still_gets_the_boundary_notice_first():
+    shaped = compose_body("## Summary\nText.\n", "## Recording boundaries\n\nx\n")
+    assert shaped.index("## Recording boundaries") < shaped.index("## Summary")
 
 
 def test_references_are_one_block_at_the_bottom():

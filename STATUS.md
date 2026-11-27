@@ -64,14 +64,12 @@ transcript. Proved by the rendered page and action tests under
 `services/admin/tests/`, `tests/integration/test_admin_service.py`,
 `tests/integration/test_recording_writeup.py` and
 `tests/integration/test_summary_directions.py`.
-A recording note opens with a Speakers section (issue 149): the owner first, people
-recognised by voice with their dossier, and each unidentified voice with its talk time, two
-or three word-for-word quotes that link to the transcript, a suggested name only when the
-transcript supports one, and a place to type a name. Typing the name and marking the note
-reviewed attaches the voice to that person as People's combine does, and a name nobody
-holds creates the person; a name two people hold names no one and says so in the note.
-Proved by `tests/integration/test_speakers_named.py` and `coppermind/tests/test_speakers_section.py`;
-the Obsidian side is proved only through the plugin harness, as there is no Obsidian on the build host.
+Each voice on a waiting note's card in Review has its talk time, one line it said and a dropdown
+(the meeting's invitees with their email, then people known, then someone new); choosing attaches
+the voice to that person as People's combine does, adds them to the attendees and never touches
+what the owner wrote. The owner is learned once and offered as You. Proved by
+`tests/integration/test_voices_on_card.py`, `services/api/tests/test_workflow.py` and
+`services/admin/tests/obsidian-review.test.cjs`, and seen in real Obsidian against a real stack.
 
 ## Working
 

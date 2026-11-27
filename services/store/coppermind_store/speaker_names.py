@@ -115,7 +115,7 @@ def _is_contact(person: dict[str, Any]) -> bool:
     return not person["id"].startswith("person:") and not person.get("person_id")
 
 
-def _contact_match(context: Any, person: dict[str, Any], *, applying: bool = False) -> Any:
+def contact_match(context: Any, person: dict[str, Any], *, applying: bool = False) -> Any:
     from coppermind_store.entities import email
 
     address = email(person.get("email", ""))
@@ -160,7 +160,7 @@ def find_contact(context: Any, person: dict[str, Any]) -> dict[str, Any]:
     """An existing person for a contact-only choice, else the contact itself; never creates."""
     if not _is_contact(person):
         return person
-    match = _contact_match(context, person)
+    match = contact_match(context, person)
     if match is None:
         return person
     return {**person_candidate(match), "id": person["id"], "person_id": match.id}
@@ -175,7 +175,7 @@ async def create_contact_people(context: Any, operation: dict[str, Any]) -> None
     for index, person in enumerate(operation["people"]):
         if not _is_contact(person):
             continue
-        match = _contact_match(context, person, applying=True)
+        match = contact_match(context, person, applying=True)
         if match is None:
             address = email(person.get("email", ""))
             try:

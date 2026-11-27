@@ -19,8 +19,13 @@
 .coppermind-pill { display:inline-flex;align-items:center;gap:2px;padding:1px 4px 1px 8px;border-radius:999px;background:var(--background-modifier-hover); }
 .workspace-leaf-content[data-type="coppermind-review"] .coppermind-remove { background:none;box-shadow:none;border:0;padding:0 4px;height:auto;color:var(--text-muted); }
 .coppermind-add { width:7em;flex:1 1 7em;min-width:0; }
-.coppermind-who { display:flex;flex-wrap:wrap;align-items:baseline;gap:8px; }
-.coppermind-who:empty { display:none; }
+.coppermind-who { display:grid;gap:6px;margin:10px 0; }
+.coppermind-voice { display:grid;gap:2px;padding:6px 0;border-top:1px solid var(--background-modifier-border); }
+.coppermind-voicehead { display:flex;align-items:baseline;gap:8px; }
+.coppermind-said { margin:0;color:var(--text-muted);font-size:var(--font-ui-smaller);overflow-wrap:anywhere; }
+.coppermind-voicepick { display:flex;flex-wrap:wrap;align-items:center;gap:6px; }
+.coppermind-voicepick select { flex:1 1 10em;min-width:0; }
+.coppermind-voicepick .coppermind-add { flex:1 1 10em;width:auto; }
 .coppermind-actions { display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:8px; }
 .coppermind-actions select { flex:1 1 8em;min-width:0; }
 .coppermind-confirm:empty { display:none; }

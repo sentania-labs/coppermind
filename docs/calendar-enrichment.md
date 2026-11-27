@@ -232,7 +232,7 @@ noted. A clearly unrelated tail is excluded from the main write-up and flagged b
 timestamp. A second meeting gets a separate account in the same note.
 
 The application, not the model, lays the note out, so the order holds for any directions:
-**Speakers** (who was heard, by name where known), the top line, a **Recording boundaries**
+the top line, a **Recording boundaries**
 notice only when something was trimmed or a second meeting was found, the summary sections,
 and one **References** block at the very bottom (source transcript link, recording link,
 calendar match status). There is no title heading in the body: the file name and `title`
