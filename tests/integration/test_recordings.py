@@ -2227,7 +2227,7 @@ async def settle_rewrites(context):
         await asyncio.gather(*list(context.review_notes.live.values()))
 
 
-async def test_notes_in_review_writes_a_recording_up_again_without_losing_hand_edits(store):
+async def test_resummarize_writes_a_recording_up_again_without_losing_hand_edits(store):
     """The whole path through the real store: list, resummarize an untouched note, an edited
     one, and a rewrite that fails. No new transcription happens at any point."""
     from coppermind_store.model_provider import ProviderError
@@ -2272,7 +2272,7 @@ async def test_notes_in_review_writes_a_recording_up_again_without_losing_hand_e
         assert "[[" in after.body.split("References", 1)[1]
         assert (await context.review_note_list({}))["notes"][0]["writeup"]["state"] == "written"
 
-        # A note edited by hand is never overwritten; the new write-up is held for a choice.
+        # A note edited by hand is not overwritten unless the owner said yes.
         context.provider.write_text = first_try
         await store.replace_note(
             note_id,
@@ -2280,18 +2280,29 @@ async def test_notes_in_review_writes_a_recording_up_again_without_losing_hand_e
             if_match=after.content_hash,
         )
         edited = await store.get_note(note_id)
+        row = next(i for i in (await context.review_note_list({}))["notes"] if i["id"] == note_id)
+        assert row["edited"] is True and row["meeting"] is not None
         await context.note_resummarize({"id": note_id})
         await settle_rewrites(context)
         assert (await store.get_note(note_id)).body == edited.body
         held = next(i for i in (await context.review_note_list({}))["notes"] if i["id"] == note_id)
-        assert any(line.startswith("-My own line.") for line in held["kept"]["difference"])
-        with pytest.raises(ValueError, match="changed"):
-            await context.note_resummarize({"id": note_id, "replace": True, "if_match": "nope"})
-        await context.note_resummarize(
-            {"id": note_id, "replace": True, "if_match": held["kept"]["if_match"]}
-        )
+        assert held["writeup"]["state"] == "failed" and "edited" in held["writeup"]["reason"]
+        # One run can use another model; the configured one is untouched.
+        models: list[str] = []
+
+        async def named(connection, key, limits, system, evidence):
+            models.append(limits.model)
+            return await first_try(connection, key, limits, system, evidence)
+
+        context.provider.write_text = named
+        await context.note_resummarize({"id": note_id, "overwrite": True, "model": "stand-in-big"})
+        await settle_rewrites(context)
         replaced = await store.get_note(note_id)
         assert "My own line." not in replaced.body and "A brief greeting." in replaced.body
+        assert models and set(models) == {"stand-in-big"}
+        await context.note_resummarize({"id": note_id})
+        await settle_rewrites(context)
+        assert models[-1] != "stand-in-big"
 
         # A failed rewrite leaves the note alone and says why.
         async def broken(*_):
@@ -2326,7 +2337,7 @@ async def test_notes_in_review_writes_a_recording_up_again_without_losing_hand_e
         assert len(service.requests) == transcriptions
 
 
-async def test_notes_in_review_pages_so_no_note_is_left_out(store):
+async def test_the_review_list_pages_so_no_note_is_left_out(store):
     async with Service(delay=0.1) as service:
         context = await setup_transcription(store, service)
         for number in (1, 2, 3):

@@ -411,7 +411,7 @@ def test_a_refused_summary_comes_back_as_the_plain_message():
         (["notes:read", "sources:read"], 200),
     ],
 )
-def test_the_list_of_notes_in_review_needs_only_reads(scopes, expected):
+def test_the_list_of_waiting_notes_needs_only_reads(scopes, expected):
     app = FastAPI()
     fake = Store()
     app.include_router(router)
