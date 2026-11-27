@@ -339,6 +339,7 @@ async def test_resummarize_is_offered_only_when_the_service_that_does_it_is_on(
     row = SimpleNamespace(id=NOTE, title="Call", path="Review/Call.md", date=None, reviewed=False)
     item = await reviewer.row(row, job, None, suggestions_on, writeup_on)
     assert item["can_resummarize"] is offered
+    assert item["takes_model"] is (mode == "markdown-v1")
 
 
 ANSWERS = (
@@ -511,6 +512,24 @@ async def test_choosing_another_meeting_names_it_and_the_title_follows_while_unc
     assert renamed == ["2026-11-02 Northwind check-in"]
     with pytest.raises(ValueError, match="not on the calendar"):
         await reviewer.set_meeting({"id": NOTE, "event_id": "zzz"})
+
+
+@pytest.mark.asyncio
+async def test_a_title_that_cannot_be_renamed_still_leaves_the_meeting_saved(tmp_path):
+    from coppermind.store_protocol import PathCollision
+
+    reviewer, memory, job, note, _ = build(tmp_path)
+    note.title = "2026-11-02 Pipeline review"
+    note.frontmatter = {"calendar_event": "a", "reviewed": False}
+    patched: list[Any] = []
+    calendar(memory, note, patched, [])
+
+    async def collide(note_id, request, if_match):
+        raise PathCollision("Review/2026-11-02 Northwind check-in.md")
+
+    memory.store.rename_note = collide
+    assert await reviewer.set_meeting({"id": NOTE, "event_id": "b"}) == {"meeting": "b"}
+    assert patched[0]["calendar_event"] == "b" and note.title == "2026-11-02 Pipeline review"
 
 
 @pytest.mark.asyncio

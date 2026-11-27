@@ -197,6 +197,7 @@ class ReviewNotes:
             "date": (job.captured_at if job and job.captured_at else "")
             or (row.date.isoformat() if row.date else ""),
             "from_recording": job is not None,
+            "takes_model": job is not None and job.generation_mode == "markdown-v1",
             "can_resummarize": job is not None
             and not row.reviewed
             and (writeup_on if job.generation_mode == "markdown-v1" else suggestions_on),
@@ -609,10 +610,13 @@ class ReviewNotes:
                 else f"{stamp[0]} {clean_title(job.title, date.fromisoformat(stamp[0]))}"
             )
             if note.title == made and titled(event["title"]) != note.title:
-                current = await context.store.get_note(note_id)
-                await context.store.rename_note(
-                    note_id, RenameNote(title=titled(event["title"])), current.content_hash
-                )
+                try:
+                    current = await context.store.get_note(note_id)
+                    await context.store.rename_note(
+                        note_id, RenameNote(title=titled(event["title"])), current.content_hash
+                    )
+                except StoreError:
+                    log.info("the title of %s was left as it is", note_id)
         return {"meeting": event_id}
 
     async def reopen(self, payload: dict[str, Any]) -> dict[str, Any]:

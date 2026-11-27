@@ -100,7 +100,7 @@ class ReviewView extends ItemView {
         const retry = el.createEl('button', {text: 'Try again'}); retry.onclick = () => this.refresh();
         return;
       }
-      if (notes.ok && notes.value.notes.some(n => n.can_resummarize) && (!this.models || Date.now() - this.modelsAt > MODELS_FRESH_MS)) await this.loadModels();
+      if (notes.ok && notes.value.notes.some(n => n.can_resummarize && n.takes_model) && (!this.models || Date.now() - this.modelsAt > MODELS_FRESH_MS)) await this.loadModels();
       if (generation !== this.generation || (quiet && this.busy)) return;
       this.problem = '';
       const data = {
@@ -200,7 +200,7 @@ class ReviewView extends ItemView {
   failedRow(recording) {
     const row = this.contentEl.createDiv({cls: 'coppermind-card coppermind-trouble'});
     const head = row.createDiv({cls: 'coppermind-head'}); head.createEl('strong', {text: recording.title, cls: 'coppermind-name'});
-    row.createEl('p', {text: recording.message});
+    row.createEl('p', {text: recording.message, attr: recording.detail ? {title: recording.detail} : {}});
     const bar = row.createDiv({cls: 'coppermind-actions'}), line = row.createEl('p', {cls: 'coppermind-notice'});
     if (recording.can_retry) {
       const again = bar.createEl('button', {text: 'Try again'});
@@ -355,7 +355,7 @@ class ReviewView extends ItemView {
       const working = !!summary?.busy;
       let model = '';
       const models = this.models || [];
-      if (models.length > 1) {
+      if (note.takes_model && models.length > 1) {
         const select = bar.createEl('select', {attr: {'aria-label': 'Model', title: 'The model for this one Resummarize'}, cls: 'coppermind-model'});
         for (const name of models) select.createEl('option', {text: name, value: name});
         select.value = this.defaultModel; model = select.value; select.onchange = () => {model = select.value;};

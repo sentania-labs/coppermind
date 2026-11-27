@@ -292,7 +292,7 @@ const BASE='https://coppermind.example';
 const CHOICES={keys:{type:'type',account:'account',tags:'tags',reviewed:'reviewed',meeting:'calendar_event',attendees:'attendees'},types:['work','personal','reference'],accounts:['Acme','Contoso'],tags:['vsphere','vsan'],tags_closed:false};
 const MEETINGS=[{event_id:'a',title:'Acme architecture review',start:'2026-11-26T10:00:00-06:00',end:'2026-11-26T11:00:00-06:00'},{event_id:'b',title:'Pipeline review',start:'2026-11-26T11:30:00-06:00',end:'2026-11-26T12:00:00-06:00'}];
 const written={state:'written',reason:'',when:''};
-const note=(id,title,over={})=>({id,title,path:'Review/'+title+'.md',date:'2026-11-26T10:02:00-06:00',from_recording:true,can_resummarize:true,writeup:written,edited:false,meeting:{selected:'a',candidates:MEETINGS},...over});
+const note=(id,title,over={})=>({id,title,path:'Review/'+title+'.md',date:'2026-11-26T10:02:00-06:00',from_recording:true,can_resummarize:true,takes_model:true,writeup:written,edited:false,meeting:{selected:'a',candidates:MEETINGS},...over});
 const frontmatter=(over={})=>({type:'reference',account:[],tags:[],calendar_event:'a',attendees:[],reviewed:false,...over});
 const ok=json=>({status:200,json});
 // A server that answers the three reads the screen makes, from state the test can change.
@@ -485,6 +485,20 @@ test('with only one model, or a server that will not list them, there is no choi
   assert.ok(!down.view.contentEl.all().some(e=>e.attr?.['aria-label']==='Model'));
   await down.button('Resummarize').onclick();
   assert.deepEqual(down.calls.at(-1),{path:'/v1/notes/n1/resummarize',body:{}});
+});
+
+test('a note whose server takes no model for a run shows no model choice',async()=>{
+  const f=await review({notes:[note('n1','Acme call',{takes_model:false})]});
+  assert.ok(!f.view.contentEl.all().some(e=>e.attr?.['aria-label']==='Model'));
+  assert.equal(f.requests.filter(r=>new URL(r.url).pathname==='/v1/review/models').length,0);
+  await f.button('Resummarize').onclick();
+  assert.deepEqual(f.calls.at(-1),{path:'/v1/notes/n1/resummarize',body:{}});
+});
+
+test('a failed recording row keeps the specific reason as a hover title',async()=>{
+  const f=await review({failed:[{id:'r1',title:'A',message:'Sentence.',detail:'The service is paused.',can_retry:false,can_dismiss:true}]});
+  const sentence=f.view.contentEl.all().find(e=>e.text==='Sentence.');
+  assert.equal(sentence.attr?.title,'The service is paused.');
 });
 
 test('Resummarize shows it is running, and says what became of it',async()=>{

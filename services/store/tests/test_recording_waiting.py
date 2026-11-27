@@ -296,6 +296,15 @@ async def test_a_failed_summary_is_one_plain_sentence_whatever_the_model_said(tm
     (row,) = (await recordings.waiting())["failed"]
     assert row["message"] == "The summary did not finish. The recording and transcript are safe."
     assert row["can_retry"] is True
+    assert row["detail"] and "could not produce a note" not in row["detail"]
+
+
+@pytest.mark.asyncio
+async def test_a_failure_that_is_not_a_summary_carries_no_hover_detail(tmp_path):
+    failures = [job(1, state="failed", error_rule="transcription-no_speech")]
+    recordings, _, _ = waiting_recordings(tmp_path, failures, enabled=True)
+    (row,) = (await recordings.waiting())["failed"]
+    assert row["detail"] == ""
 
 
 @pytest.mark.asyncio
