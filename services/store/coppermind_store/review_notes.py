@@ -223,10 +223,14 @@ class ReviewNotes:
         baseline = saved.get("voice_body", saved.get("filed_body"))
         return baseline is not None and note.body.strip() != baseline.strip()
 
+    def meeting_key(self, frontmatter: dict[str, Any]) -> str:
+        assignment = self.context.config().assignments["enrichment"]
+        return assignment.event_key(frontmatter) or "calendar_event"
+
     async def meeting(self, note: Any, job: Any) -> dict[str, Any] | None:
         """The meeting the note names and the meetings of that day, nearest the recording first."""
         context = self.context
-        field = context.config().assignments["enrichment"].event_field or "calendar_event"
+        field = self.meeting_key(note.frontmatter)
         try:
             events = await context.calendar_candidates(note)
         except Exception:  # noqa: BLE001
@@ -547,7 +551,7 @@ class ReviewNotes:
         return {"default": limits.model, "models": offered, "problem": problem}
 
     async def set_meeting(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """The owner picked another meeting for a waiting note.
+        """The owner picked another meeting for a waiting note, or none.
 
         The note names the meeting, the people on its invitation fill in the attendees where
         the owner has not put their own, and the title follows the meeting unless the owner
@@ -565,12 +569,24 @@ class ReviewNotes:
         note = await context.store.get_note(note_id)
         if job is None or not self.in_review(note):
             raise ValueError("This note is not waiting for review.")
+        field = self.meeting_key(note.frontmatter)
+        if not event_id:
+            named = note.frontmatter.get(field)
+            if named is not None:
+                await context.store.patch_frontmatter(
+                    note_id, PatchFrontmatter(unset=[field]), if_match=note.content_hash
+                )
+                associations = context.read("associations", {})
+                events = associations.get(note_id, {}).get("events", [])
+                if named in events:
+                    events.remove(named)
+                    context.write("associations", associations)
+            return {"meeting": ""}
         events = await context.calendar_candidates(note)
         event = next((e for e in events if e["event_id"] == event_id), None)
         if event is None:
             raise ValueError("That meeting is not on the calendar for this day.")
         assignment = context.config().assignments["enrichment"]
-        field = assignment.event_field or "calendar_event"
         attendees = assignment.attendees_field or "attendees"
         previous = next((e for e in events if e["event_id"] == note.frontmatter.get(field)), None)
         saved = context.read("recording-writeups/" + job.id, {})

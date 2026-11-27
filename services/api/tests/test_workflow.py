@@ -532,9 +532,14 @@ def test_choosing_another_meeting_is_scoped_like_the_other_review_writes(scopes,
         result = client.post("/v1/notes/note/meeting", json={"event_id": "e1"})
         empty = client.post("/v1/notes/note/meeting", json={"event_id": ""})
     assert result.status_code == expected
-    assert empty.status_code == (422 if expected == 200 else 403)
+    assert empty.status_code == expected
     assert fake.calls == (
-        [("note-set-meeting", {"id": "note", "event_id": "e1"})] if expected == 200 else []
+        [
+            ("note-set-meeting", {"id": "note", "event_id": "e1"}),
+            ("note-set-meeting", {"id": "note", "event_id": ""}),
+        ]
+        if expected == 200
+        else []
     )
 
 

@@ -157,7 +157,7 @@ class Resummarize(BaseModel):
 
 class MeetingChoice(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    event_id: str = Field(min_length=1, max_length=500)
+    event_id: str = Field(max_length=500)
 
 
 @router.get("/review/notes")
@@ -214,8 +214,8 @@ async def choose_meeting(
     client: HttpStoreClient = Depends(store),
     _: Principal = Depends(require_scopes("notes:write", "notes:read", "sources:read")),
 ) -> Response:
-    """Name another meeting from the note's day. The title and the attendees follow it where
-    the owner has not changed them."""
+    """Name another meeting from the note's day, or an empty `event_id` for none. The title and
+    the attendees follow a named meeting where the owner has not changed them."""
     return await call(client, "note-set-meeting", {"id": note_id, **payload.model_dump()})
 
 

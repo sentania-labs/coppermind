@@ -6,6 +6,7 @@ import pytest
 from coppermind_store import review_notes
 from coppermind_store.review_notes import STATE, ReviewNotes
 
+from coppermind.context_config import FeatureAssignment
 from coppermind.schema import default_schema
 
 JOB = "a" * 64
@@ -20,6 +21,7 @@ class Memory:
         self.recordings: Any = None
         self.store: Any = None
         self.in_review_folder: Any = None
+        self.event_field = ""
 
     def read(self, name, default):
         return self.data.get(name, default)
@@ -31,7 +33,7 @@ class Memory:
         return []
 
     def config(self):
-        enrichment = SimpleNamespace(attendees_field="", event_field="")
+        enrichment = FeatureAssignment(event_field=self.event_field)
         return SimpleNamespace(assignments={"enrichment": enrichment})
 
 
@@ -512,6 +514,57 @@ async def test_choosing_another_meeting_names_it_and_the_title_follows_while_unc
     assert renamed == ["2026-11-02 Northwind check-in"]
     with pytest.raises(ValueError, match="not on the calendar"):
         await reviewer.set_meeting({"id": NOTE, "event_id": "zzz"})
+
+
+@pytest.mark.asyncio
+async def test_a_note_that_still_has_the_old_meeting_name_is_changed_under_that_name(tmp_path):
+    reviewer, memory, job, note, _ = build(tmp_path)
+    memory.event_field = "meeting"
+    note.title = "2026-11-02 Pipeline review"
+    note.frontmatter = {"calendar_event": "a", "reviewed": False}
+    patched: list[Any] = []
+    renamed: list[str] = []
+    calendar(memory, note, patched, renamed)
+    assert (await reviewer.meeting(note, job))["selected"] == "a"
+    await reviewer.set_meeting({"id": NOTE, "event_id": "b"})
+    assert patched[0] == {"calendar_event": "b"}
+    assert note.frontmatter == {"calendar_event": "b", "reviewed": False}
+    assert renamed == ["2026-11-02 Northwind check-in"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["calendar_event", "meeting"])
+async def test_choosing_no_meeting_removes_it_and_it_stays_removed(tmp_path, name):
+    reviewer, memory, job, note, _ = build(tmp_path)
+    memory.event_field = "meeting"
+    note.title = "2026-11-02 Pipeline review"
+    note.frontmatter = {name: "a", "reviewed": False}
+    memory.data["associations"] = {NOTE: {"events": ["a"], "contacts": ["c"]}}
+    unset: list[Any] = []
+    renamed: list[str] = []
+    calendar(memory, note, [], renamed)
+
+    async def patch(note_id, request, if_match):
+        unset.append(request.unset)
+        note.frontmatter = {k: v for k, v in note.frontmatter.items() if k not in request.unset}
+        return note
+
+    memory.store.patch_frontmatter = patch
+    assert await reviewer.set_meeting({"id": NOTE, "event_id": ""}) == {"meeting": ""}
+    assert unset == [[name]] and note.frontmatter == {"reviewed": False}
+    assert memory.data["associations"][NOTE] == {"events": [], "contacts": ["c"]}
+    assert (await reviewer.meeting(note, job))["selected"] == ""
+    assert await reviewer.set_meeting({"id": NOTE, "event_id": ""}) == {"meeting": ""}
+    assert unset == [[name]] and renamed == []
+
+
+@pytest.mark.asyncio
+async def test_a_reviewed_note_cannot_have_its_meeting_removed(tmp_path):
+    reviewer, memory, job, note, _ = build(tmp_path)
+    note.frontmatter = {"calendar_event": "a", "reviewed": True}
+    memory.in_review_folder = lambda path: False
+    with pytest.raises(ValueError, match="not waiting for review"):
+        await reviewer.set_meeting({"id": NOTE, "event_id": ""})
 
 
 @pytest.mark.asyncio

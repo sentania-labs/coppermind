@@ -157,7 +157,7 @@ class ReviewView extends ItemView {
       type: get(keys.type) ?? '',
       account: list(get(keys.account)),
       tags: list(get(keys.tags)),
-      meeting: get(keys.meeting) ?? note.meeting?.selected ?? '',
+      meeting: note.meeting?.selected ?? get(keys.meeting) ?? '',
       who: [...new Set(list(get(keys.attendees)).map(link))],
       reviewed: get(keys.reviewed) === true,
     };
@@ -280,11 +280,10 @@ class ReviewView extends ItemView {
     }
     select.value = props.meeting;
     select.onchange = async () => {
-      if (!select.value) return;
       select.disabled = true;
       try {
         await this.plugin.call('/v1/notes/' + encodeURIComponent(note.id) + '/meeting', 'POST', {event_id: select.value});
-        ((this.local[note.id] ??= {}).props ??= {})[this.keys().meeting] = select.value; this.say(note.id, '');
+        this.say(note.id, '');
         await this.refresh();
       } catch (e) {this.say(note.id, this.fail(e, 'Could not change the meeting. Check your connection.'), true); this.render();}
     };

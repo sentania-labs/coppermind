@@ -413,6 +413,20 @@ test('the meeting is a dropdown of the day, and choosing one tells Coppermind',a
   assert.deepEqual(f.calls,[{path:'/v1/notes/n1/meeting',body:{event_id:'b'}}]);
 });
 
+test('choosing No meeting tells Coppermind, and the card shows none after it redraws',async()=>{
+  const f=await review({notes:[note('n1','Acme call')],respond:async(req,p)=>{
+    if(p.endsWith('/meeting')&&req.method==='POST'){f.s.notes=[note('n1','Acme call',{meeting:{selected:'',candidates:MEETINGS}})];return null;}
+    return null;}});
+  const select=f.view.contentEl.all().find(e=>e.tag==='select'&&e.children.some(o=>o.value==='b'));
+  assert.equal(select.value,'a');
+  select.value='';await select.onchange();
+  assert.deepEqual(f.calls,[{path:'/v1/notes/n1/meeting',body:{event_id:''}}]);
+  const after=f.view.contentEl.all().find(e=>e.tag==='select'&&e.children.some(o=>o.value==='b'));
+  assert.equal(after.value,'');
+  f.view.render();
+  assert.equal(f.view.contentEl.all().find(e=>e.tag==='select'&&e.children.some(o=>o.value==='b')).value,'');
+});
+
 test('a meeting that could not be changed says so in one sentence and the card stays usable',async()=>{
   const f=await review({notes:[note('n1','Acme call')],respond:(req,p)=>p.endsWith('/meeting')?{status:422,json:{message:'That meeting is not on the calendar for this day.'}}:null});
   const select=f.view.contentEl.all().find(e=>e.tag==='select'&&e.children.some(o=>o.value==='b'));
