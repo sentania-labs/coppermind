@@ -581,6 +581,8 @@ class ReviewNotes:
                 if named in events:
                     events.remove(named)
                     context.write("associations", associations)
+                names = {field, "meeting"}
+                filled_in.remember(context, note_id, dict.fromkeys(names, named), names)
             return {"meeting": ""}
         events = await context.calendar_candidates(note)
         event = next((e for e in events if e["event_id"] == event_id), None)

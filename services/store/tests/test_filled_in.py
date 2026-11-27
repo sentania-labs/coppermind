@@ -136,3 +136,21 @@ def test_an_answer_the_schema_refuses_is_left_out_on_its_own():
     note = {"type": "reference", "tags": [], "reviewed": False}
     found = {"type": "work", "tags": ["unlisted"]}
     assert filled_in.fill(ctx, note, found, {}) == {"type": "work"}
+
+
+def test_a_property_coppermind_filled_and_the_owner_cleared_is_not_filled_again():
+    ctx = context()
+    filled = {"type": "work", "account": ["Acme"], "tags": ["a"], "meeting": "evt-1"}
+    note = {"reviewed": False}
+    found = {"type": "work", "account": ["Acme"], "tags": ["a"], "meeting": "evt-1"}
+    assert filled_in.fill(ctx, note, found, filled) == {}
+    note = {"type": "work", "account": ["Acme"], "tags": [], "reviewed": False}
+    assert "tags" not in filled_in.fill(ctx, note, found, filled)
+
+
+def test_a_blank_property_coppermind_never_filled_is_still_filled():
+    ctx = context()
+    note = {"type": "work", "tags": [], "reviewed": False}
+    found = {"account": ["Acme"], "tags": ["a"]}
+    assert filled_in.fill(ctx, note, found, {"type": "work"}) == found
+    assert filled_in.fill(ctx, note, found, {"tags": None, "account": []}) == found

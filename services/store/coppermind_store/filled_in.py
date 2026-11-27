@@ -3,9 +3,10 @@ note's properties.
 
 The write-up gives the note's type, account and tags. The voices it recognised and the meeting
 it matched give the attendees and the meeting. Each answer goes in only where the owner has not
-put something of their own: a blank, a value the schema gives every note, or a value Coppermind
-itself filled and the owner has not changed since. So writing a note up again refreshes what
-Coppermind filled and leaves everything the owner typed or changed alone.
+put something of their own: a blank Coppermind never filled, a value the schema gives every note,
+or a value Coppermind itself filled and the owner has not changed or cleared since. So writing a
+note up again refreshes what Coppermind filled and leaves everything the owner typed, changed or
+cleared alone.
 
 `what-was-filled` keeps, per note, the value Coppermind last put in each property. That is the
 only record of who wrote a value, and nothing about it is shown to the owner.
@@ -124,10 +125,11 @@ def answers(context: Any, saved: dict[str, Any]) -> dict[str, Any]:
 
 
 def untouched(schema: FrontmatterSchema, key: str, current: Any, filled: dict[str, Any]) -> bool:
-    """Whether the owner has not put their own value here."""
+    """Whether the owner has not put their own value here. A value Coppermind filled that the
+    owner has since cleared is theirs now: clearing it is a choice."""
+    if key in filled and not blank(filled[key]):
+        return current == filled[key]
     if blank(current):
-        return True
-    if key in filled and current == filled[key]:
         return True
     default = next((k.default for k in schema.keys if k.name == key), None)
     return not blank(default) and current == default

@@ -7,7 +7,7 @@ from coppermind_store import review_notes
 from coppermind_store.review_notes import STATE, ReviewNotes
 
 from coppermind.context_config import FeatureAssignment
-from coppermind.schema import default_schema
+from coppermind.schema import KeyDefinition, default_schema
 
 JOB = "a" * 64
 NOTE = "01HZ" + "0" * 22
@@ -556,6 +556,19 @@ async def test_choosing_no_meeting_removes_it_and_it_stays_removed(tmp_path, nam
     assert (await reviewer.meeting(note, job))["selected"] == ""
     assert await reviewer.set_meeting({"id": NOTE, "event_id": ""}) == {"meeting": ""}
     assert unset == [[name]] and renamed == []
+
+    async def replace(note_id, request, if_match):
+        note.frontmatter = dict(request.frontmatter)
+
+    schema = default_schema()
+    schema.keys += [KeyDefinition(name="meeting", kind="string")]
+    schema.keys += [KeyDefinition(name="calendar_event", kind="string")]
+    memory.store.control = SimpleNamespace(schema=lambda: schema)
+    memory.store.replace_note = replace
+    memory.store.get_note = lambda _: asyncio.sleep(0, note)
+    again = {"calendar": {"event": {"event_id": "a", "people": []}}}
+    assert (await reviewer.refill(note, again)) is note
+    assert note.frontmatter == {"reviewed": False}
 
 
 @pytest.mark.asyncio
