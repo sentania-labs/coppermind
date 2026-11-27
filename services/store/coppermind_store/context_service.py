@@ -438,7 +438,8 @@ class ContextService:
 
     async def lifecycle_detail(self, payload: dict[str, Any]) -> dict[str, Any]:
         detail = await self.lifecycle.detail(payload)
-        # So the review panel can warn that marking the note reviewed discards a rewrite.
+        # Whether a rewrite of this note is being written now. The companion's Review screen no
+        # longer reads it.
         detail["rewrite_running"] = str(payload.get("note_id", "")) in self.review_notes.live
         return detail
 
