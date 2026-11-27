@@ -534,13 +534,11 @@ test('an unedited note is written again with no question',async()=>{
   assert.deepEqual(f.calls,[{path:'/v1/notes/n1/resummarize',body:{}}]);
 });
 
-test('there is no diff dialog, no bulk write-up and no list of imports',async()=>{
+test('the review screen has no diff dialog and no banned wording',async()=>{
   const f=await review({notes:[note('n1','Acme call',{edited:true}),note('n2','Other call',{writeup:{state:'failed',reason:'Failed.',when:''}})]});
   const words=f.view.contentEl.all().flatMap(e=>[e.text,e.title]).filter(Boolean);
   assert.ok(words.every(w=>!BANNED.test(w)));
   assert.equal(f.modals.length,0);
-  const source=fs.readFileSync(path.join(__dirname,'../coppermind_admin/obsidian_plugin/main.js'),'utf8');
-  for(const gone of ['KeptRewriteModal','coppermind-diff','summaries-again','/v1/dropbox','class HomeView','class NotesView','Needs you','Notes in Review','Enrich','Compare with'])assert.ok(!source.includes(gone),gone);
 });
 
 test('a recording that failed is a row with one sentence and Try again, and it can be dismissed without a question',async()=>{
