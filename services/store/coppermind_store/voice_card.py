@@ -253,6 +253,16 @@ async def invitees(
 # -- naming ----------------------------------------------------------------------------------
 
 
+def same_name(people: dict[str, Any], name: str, address: str) -> list[Any]:
+    """The people an invitee could already be by name alone: exactly that name, and no address of
+    their own that could disagree with the invitation's."""
+    return [
+        p
+        for p in people.values()
+        if p.name.casefold() == name.casefold() and not (address and p.emails)
+    ]
+
+
 def clean(name: Any) -> str:
     text = " ".join(str(name or "").split())
     if not text or len(text) > 200:
@@ -324,6 +334,10 @@ async def person_for(context: Any, note: Any, meeting_key: str, choice: dict[str
         listed = await invitees(context, note, meeting_key)
         if not any(i["name"] == name and i["email"].casefold() == address for i in listed):
             raise Refusal("That person is not on the invitation for this meeting.")
+        # An address that is nobody's is found by name only when one person has that name.
+        by_address = any(address in {a.casefold() for a in p.emails} for p in people.values())
+        if not by_address and len(same_name(people, name, address)) > 1:
+            raise Refusal(f"More than one person is called {name}. Choose one from the list.")
         try:
             match = speaker_names.contact_match(context, {"name": name, "email": address})
         except ValueError as exc:
@@ -347,8 +361,9 @@ def find(context: Any, note_id: str, voice_id: str) -> tuple[Any, str]:
     return job, label
 
 
-async def attach(context: Any, note: Any, job: Any, label: str, person: Any) -> None:
-    """Make this voice that person here, in other notes that used it and in recordings to come."""
+async def attach(context: Any, note: Any, job: Any, label: str, person: Any) -> list[str]:
+    """Make this voice that person here, in other notes that used it and in recordings to come.
+    Returns the other notes that heard the same voice."""
     from coppermind_store.voice_relabel import combine, relabel_recording, separate
     from coppermind_store.voice_store import VoiceStore
 
@@ -357,12 +372,21 @@ async def attach(context: Any, note: Any, job: Any, label: str, person: Any) -> 
         if found is not None:
             current = found["voice_id"]
             if current == "person:" + person.id:
-                return
+                return []
+            others: list[str] = []
             if current.startswith("person:"):
                 # Another person was named for it: it stops being theirs, then becomes this one's.
                 current = await separate(context, current, note.id, label, found.get("source_id"))
+            else:
+                others = sorted(
+                    {
+                        a["note_id"]
+                        for a in VoiceStore(context).assignments(current)
+                        if a["note_id"] != note.id and not a["note_id"].startswith("recording:")
+                    }
+                )
             await combine(context, current, "person:" + person.id, note.id)
-            return
+            return others
         transcript = context.recordings.saved_transcript(job)
         positions = [i for i, s in enumerate(transcript["segments"]) if s.get("speaker") == label]
         if not positions:
@@ -376,6 +400,7 @@ async def attach(context: Any, note: Any, job: Any, label: str, person: Any) -> 
         kept = ledger(context, note.id)
         kept[job.id + "|" + label] = person.id
         context.write(LEDGER + note.id, kept)
+        return []
 
 
 def _known(person: Any) -> frozenset[str]:
@@ -461,7 +486,7 @@ async def name_voice(
     was = identify(
         context, VoiceStore(context).snapshot(), note_id, job, label, active_people(context)
     )
-    await attach(context, note, job, label, person)
+    sharing = await attach(context, note, job, label, person)
     async with context.lock:
         if choice.get("me") and not owner_person_id(context):
             context.write("owner", {"person_id": person.id, "at": now()})
@@ -477,6 +502,16 @@ async def name_voice(
             if not elsewhere and not await _invited(context, note, meeting_key, was):
                 gone = _known(was)
         await change_attendees(context, note_id, field, person, gone)
+        # Another note still waiting for review that heard the same voice has the same person
+        # there now; combining only reaches the attendees of notes already reviewed.
+        reviewed = context.store.control.schema().role("reviewed_key")
+        for other in sharing:
+            try:
+                waiting = await context.store.get_note(other)
+            except (NotFound, StoreError):
+                continue
+            if waiting.frontmatter.get(reviewed) is not True:
+                await change_attendees(context, other, field, person)
     return {"voices": voices(context, facts, note_id), "you": bool(owner_person_id(context))}
 
 

@@ -531,3 +531,49 @@ async def test_writing_the_note_up_again_keeps_the_names_given_on_the_card(store
         assert "Tom Reed raised the support matrix." in again.body
         assert row(context, note.id, "Voice 2")["person"]["name"] == "Tom Reed"
         assert any("Tom Reed" in v for v in again.frontmatter["attendees"])
+
+
+async def test_an_invitee_whose_name_two_people_share_is_not_guessed_between(store, monkeypatch):
+    async with Service(reply=reply(TOM)) as service:
+        context = await lifecycle(store, service)
+        with_invitation(context, monkeypatch)
+        await store.entities.create(EntityInput(kind="person", name="Tom Reed"))
+        await store.entities.create(EntityInput(kind="person", name="Tom Reed"))
+        _, note = await record(store, context, "plaud/rec-1", AUDIO)
+        await context.review_notes.set_meeting({"id": note.id, "event_id": "evt-1"})
+        card = next(
+            n for n in (await context.review_notes.listing({}))["notes"] if n["id"] == note.id
+        )
+        assert next(i for i in card["invitees"] if i["name"] == "Tom Reed")["person_id"] == ""
+        with pytest.raises(ValueError, match="More than one person is called Tom Reed"):
+            await choose(
+                context, note.id, "Voice 2", invitee={"name": "Tom Reed", "email": "tom@acme.test"}
+            )
+        # Nobody was picked for him and no address was given to either of them.
+        assert row(context, note.id, "Voice 2")["person"] is None
+        assert all(p.emails == [] for p in people_all(store))
+
+
+def people_all(store):
+    return [e for e in store.entities.load().entities.values() if e.kind == "person"]
+
+
+async def test_the_person_joins_the_attendees_of_every_waiting_note_that_heard_the_voice(store):
+    async with Service(reply=reply(TOM)) as service:
+        context = await lifecycle(store, service)
+        _, first = await record(store, context, "plaud/rec-1", AUDIO)
+        _, second = await record(store, context, "plaud/rec-2", AUDIO + b"2")
+        await store.patch_frontmatter(
+            second.id,
+            PatchFrontmatter(set={"attendees": ["Pat Kim"]}),
+            (await store.get_note(second.id)).content_hash,
+        )
+        await choose(context, first.id, "Voice 2", new_name="Tom Reed")
+        tom = people(store)["Tom Reed"]
+        link = f"[[{tom.path.removesuffix('.md')}]]"
+        assert (await store.get_note(first.id)).frontmatter["attendees"] == [link]
+        # The other note keeps what the owner listed, and now has him too.
+        assert (await store.get_note(second.id)).frontmatter["attendees"] == ["Pat Kim", link]
+        # A recording that comes after is recognised and has him once, not twice.
+        _, third = await record(store, context, "plaud/rec-3", AUDIO + b"3")
+        assert (await store.get_note(third.id)).frontmatter["attendees"] == [link]
