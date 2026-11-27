@@ -214,7 +214,9 @@ private state in the same folder (mode 0600, never in the vault or an API respon
 assignments, turned-down suggestions),
 `voice-pending/<recording id>.json` (a recording's signatures, removed when its
 review completes), `voice-mappings/<recording id>.json` (the unknown-voice names given
-to that recording's speakers) and `voice-settings.json` (the two match thresholds). Rules in
+to that recording's speakers), `voice-card/<note id>.json` (who the owner said each voice
+was, for a voice too short to keep a signature) and `voice-settings.json` (the two match
+thresholds). Rules in
 [dossiers](dossiers.md#voice-recognition).
 
 ### Recording write-up directions

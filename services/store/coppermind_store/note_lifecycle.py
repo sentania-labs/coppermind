@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import time as clock
 from typing import TYPE_CHECKING, Any
 
-from coppermind import speakers_section
 from coppermind.ids import is_valid_id
 from coppermind.meeting_summary import MeetingSummary
 from coppermind.schema import (
@@ -754,17 +752,6 @@ class NoteLifecycle:
             with timing.step("response"):
                 return {
                     "manual_speaker_review": manual,
-                    "unnamed_voices": VoiceStore(self.context).unknown_for_note(note.id),
-                    # Names the owner already typed into the note's Speakers section. Marking
-                    # the note reviewed applies them, so the panel does not ask again.
-                    "speakers_in_note": recording is not None
-                    and recording.generation_mode == "markdown-v1"
-                    and speakers_section.has_section(note.body),
-                    "speaker_naming": self.context.read("speaker-naming/" + note.id, []),
-                    "named_in_note": [
-                        {"label": label, "name": name}
-                        for label, name in speakers_section.typed_names(note.body).items()
-                    ],
                     "review_problem": problem,
                     "note": note.model_dump(mode="json"),
                     "job_id": job.id if job else None,
@@ -1237,37 +1224,14 @@ class NoteLifecycle:
                         {"action": "review completed; remaining proposals dismissed", "at": now()}
                     )
                     self.context.save_job(job)
-            await self.finalize(current, locked=True)
+            await self.finalize(current)
             from coppermind_store.voice_relabel import apply_deferred
 
             async with self.context.lock:
                 await apply_deferred(self.context, identity)
             return receipt
 
-    async def name_voices(self, note: NoteDocument, *, locked: bool) -> NoteDocument:
-        """Apply names the owner typed into the Speakers section of a reviewed recording note.
-        The note is rewritten to say what happened; that rewrite is ours, not an edit to wait
-        for, so the stability observation follows it."""
-        from coppermind import speakers_section
-        from coppermind_store import voice_naming
-
-        if not any(speakers_section.typed_names(note.body)) and not any(
-            e.me for e in speakers_section.entries(note.body)
-        ):
-            return note
-        async with contextlib.nullcontext() if locked else self.lock:
-            renamed = await voice_naming.name_voices(self.context, note)
-        if renamed.content_hash != note.content_hash:
-            seen = self.observed.get(note.id)
-            if seen is not None and seen[0] == note.content_hash:
-                self.observed[note.id] = (renamed.content_hash, seen[1])
-            completion = self.context.read("review-completions/" + note.id, {})
-            if completion.get("final_hash") == note.content_hash:
-                completion["final_hash"] = renamed.content_hash
-                self.context.write("review-completions/" + note.id, completion)
-        return renamed
-
-    async def finalize(self, note: NoteDocument, *, locked: bool = False) -> None:
+    async def finalize(self, note: NoteDocument) -> None:
         from coppermind_store.context_service import now
 
         schema = self.context.store.control.schema()
@@ -1283,7 +1247,6 @@ class NoteLifecycle:
                 raise ValueError(SETTLING)
             if clock.monotonic() - previous_observation[1] < 30:
                 raise ValueError(SETTLING)
-        note = await self.name_voices(note, locked=locked)
         assignment = self.context.config().assignments["enrichment"]
         fields = note.frontmatter
         # Only final human-owned metadata becomes a confirmed fact. No model

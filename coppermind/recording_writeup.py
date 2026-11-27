@@ -310,13 +310,13 @@ def split_sections(body: str) -> tuple[str, list[tuple[str, str]]]:
     )
 
 
-def compose_body(body: str, speakers: str, boundaries: str | None) -> str:
-    """The note body in the order the owner reads it: who was heard, the top line, the
-    boundary notice only when there is one, then the summary sections. No title, and no
-    section the application writes elsewhere. `speakers` is the finished Speakers section
-    (see `coppermind.speakers_section`), or empty. `boundaries` is the boundary section to
-    show when something was trimmed or a second meeting was found, and None when the
-    recording was clean, however the model described it."""
+def compose_body(body: str, boundaries: str | None) -> str:
+    """The note body in the order the owner reads it: the top line, the boundary notice only
+    when there is one, then the summary sections. No title, and no section the application
+    writes elsewhere. Who spoke is not in the body: it is on the card in Review and in the
+    note's attendees. `boundaries` is the boundary section to show when something was trimmed
+    or a second meeting was found, and None when the recording was clean, however the model
+    described it."""
     preamble, sections = split_sections(body)
     top = next((text for heading, text in sections if _TOP_LINE.match(heading)), None)
     model_boundaries = next((t for h, t in sections if _BOUNDARIES.match(h)), None)
@@ -327,8 +327,6 @@ def compose_body(body: str, speakers: str, boundaries: str | None) -> str:
     ]
     shown = (model_boundaries or boundaries) if boundaries is not None else None
     parts: list[str] = []
-    if speakers.strip():
-        parts.append(speakers.strip())
     if top is not None:
         parts.append(top)
         if shown:

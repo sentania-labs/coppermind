@@ -152,40 +152,31 @@ If the transcription service supplies no usable signature because there is too l
 speech, the speaker remains local to that recording and cannot be recognised later.
 No voice identity or signature is saved for that speaker; a name chosen in Review
 applies only to that recording.
-The single switch in the Obsidian People view stops collecting new signatures; existing
-data remains available for deletion. Recordings reviewed before this change have no
+The single switch under Admin, Advanced, People and voices stops collecting new signatures;
+existing data remains available for deletion. Recordings reviewed before this change have no
 signatures and cannot be recovered or backfilled.
 
-New recording write-ups use a person's name on a unique strong match to an already
-named voice. Ambiguous matches keep stable Unknown voice N identities; model guesses
-never name voices. A close match against a person also appears as `Voice` or `Maybe` in Review. The existing
-thresholds are 0.60 and 0.45 by default. For legacy recordings, a single strong match may start selected but is applied only
-when the owner completes review. Ambiguous and conflicting matches
-remain for the owner to choose.
+New recording write-ups use a person's name on a unique strong match to an already named voice.
+Ambiguous matches keep stable Unknown voice N identities (shown on the card as "Voice N"); model
+guesses never name voices. The thresholds are 0.60 and 0.45; Admin no longer offers a choice of
+how sure to be, and only the settings request below changes them. For legacy recordings, a
+single strong match may start selected but is applied only when the owner completes review.
+Ambiguous and conflicting matches remain for the owner to choose.
 
-The everyday way to name an unknown voice is in the recording note itself: type the name
-under the voice in its Speakers section and mark the note reviewed (see
-[the Speakers section](note-workflow.md#the-speakers-section)). That runs the same combine
-described next.
+The everyday way to name an unknown voice is the dropdown for that voice on the note's card in
+Review (see [Who spoke](note-workflow.md#who-spoke)). Choosing a person attaches the voice to
+them, the same as combining it with that person: the voice's appearances are relabelled in
+recording transcripts, and generated summary lines that still say the old label follow unless the
+owner changed them. Owner-edited lines are left alone. The person is added to the note's attendees
+at once, and anyone already listed stays. Choosing someone else for a voice that was already
+named separates it from the first person for that recording, then attaches it to the second. A
+person's saved voice data can be deleted under Admin, Advanced, People and voices, after
+confirmation, so future recordings cannot be recognised from those signatures. Deleting a note or
+person also removes the corresponding data.
 
-In People, an unknown voice can be combined with another unknown voice or attached to
-a person. Typing a name in the find box narrows the matching people as you type, lists each
-match once with people who attended the voice's meetings first, and says so when no one
-matches. The People view shows who will become whom before anything changes; combining
-asks for confirmation. The voice's appearances are
-relabelled in recording transcripts; unchanged generated
-summary lines can also be updated. Owner-edited lines are left alone. When a voice left
-unnamed at review is later attached to a person, that person is also added to the
-attendees of the already reviewed note, if suggestions point at an attendees property;
-anyone already listed stays, nobody is removed, and a note still in review is left to its
-review. A wrong match can
-be separated for one recording. A person or unknown voice's saved voice data can be
-deleted after confirmation, so future recordings cannot be recognised from those
-signatures. Deleting a note or person also removes the corresponding data.
-
-The Obsidian command "Manage people and voice recognition" opens People. Admin's
-Dossiers view offers person signature deletion and controls the matching thresholds.
-Signatures and their vectors stay private and are never returned in API responses.
+Admin's People and voices page offers the recognition switch, each person's saved voice and
+person signature deletion. Signatures and their vectors stay private and are never returned in
+API responses.
 
 | Request | Scopes | Purpose |
 | --- | --- | --- |

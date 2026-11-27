@@ -12,13 +12,12 @@ from coppermind_store.enrichment_models import EnrichmentJob, Suggestion, Sugges
 from coppermind.store_protocol import PatchFrontmatter
 from services.store.tests.test_transcription_call import Service
 from tests.integration.test_recordings import AUDIO
-from tests.integration.test_speakers_named import (
+from tests.integration.test_voices_on_card import (
     TOM,
+    choose,
     lifecycle,
-    mark_reviewed,
     record,
     reply,
-    type_into,
 )
 
 
@@ -74,8 +73,7 @@ async def test_attendees_come_from_the_voices_that_were_recognised(store):
         context.save_config(config)
         answering(context, [])
         _, first = await record(store, context, "plaud/rec-1", AUDIO)
-        await type_into(store, first, {"Unknown voice 2": {"name": "Tom Reed"}})
-        await mark_reviewed(store, context, first.id)
+        await choose(context, first.id, "Voice 2", new_name="Tom Reed")
         _, second = await record(store, context, "plaud/rec-2", AUDIO + b"2")
         tom = next(e for e in store.entities.load().entities.values() if e.name == "Tom Reed")
         assert any(tom.path.removesuffix(".md") in v for v in second.frontmatter["attendees"])
@@ -90,11 +88,9 @@ async def test_what_the_owner_typed_survives_naming_a_voice_elsewhere_and_resumm
         # The owner changes what was filled in.
         mine = {"type": "personal", "account": ["Contoso"], "tags": ["mine"]}
         await store.patch_frontmatter(second.id, PatchFrontmatter(set=mine), second.content_hash)
-        # Naming a voice in the other note rewrites this one's body, as it always has.
-        await type_into(store, first, {"Unknown voice 2": {"name": "Tom Reed"}})
-        await mark_reviewed(store, context, first.id)
+        # Naming a voice in the other note reaches this one's voices, never its properties.
+        await choose(context, first.id, "Voice 2", new_name="Tom Reed")
         after = await store.get_note(second.id)
-        assert "- Tom Reed, 59 s. Named by you in another recording." in after.body
         assert {k: after.frontmatter[k] for k in mine} == mine
         detail = await context.lifecycle.detail({"note_id": second.id})
         assert "stale" not in detail

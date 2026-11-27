@@ -1,4 +1,10 @@
 {
+ "alerts": {
+  "on": false,
+  "recent": [],
+  "stuck_hours": 6,
+  "where": ""
+ },
  "apps": {
   "items": [
    {
@@ -191,7 +197,6 @@
   ],
   "total": 4
  },
- "alerts": {"on": false, "where": "", "stuck_hours": 6, "recent": []},
  "folders": {
   "current": {
    "drop": "To Coppermind",
@@ -1162,7 +1167,6 @@
     "people": 0
    }
   ],
-  "level": "Balanced",
   "people": [
    {
     "company": "",
@@ -1183,22 +1187,7 @@
     "samples": 0
    }
   ],
-  "recognition": true,
-  "thresholds": {
-   "maybe": 0.45,
-   "strong": 0.6
-  },
-  "unnamed": [
-   {
-    "heard": "2026-11-12T17:22:39.671100+00:00",
-    "id": "unknown:2",
-    "label": "Speaker 2",
-    "more": 0,
-    "name": "Unknown voice 2",
-    "note_id": "01M78CGWH2FKAQM3WVDSXNCXXJ",
-    "where": "Vendor call"
-   }
-  ]
+  "recognition": true
  },
  "person": {
   "facts": [
@@ -1476,12 +1465,12 @@
   }
  },
  "suggestions": {
-  "max_output_tokens": 2048,
   "descr": false,
   "last": {
    "at": "2026-11-12T17:54:31.517560+00:00",
    "title": "Depot walkthrough"
   },
+  "max_output_tokens": 2048,
   "model": "llama-3.1-8b",
   "older": [
    {

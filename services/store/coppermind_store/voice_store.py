@@ -181,16 +181,14 @@ class VoiceStore:
         """How many recordings have a voice appearance on file, named or not."""
         return len({a["note_id"] for a in self._load().get("assignments", [])})
 
-    def unknown_for_note(self, note_id: str, source_id: str | None = None) -> list[dict[str, str]]:
-        return [
-            {"id": identity, "name": item["name"]}
-            for identity, item in self.unknown_summaries().items()
-            if any(
-                a["note_id"] == note_id
-                and (source_id is None or a.get("source_id") in (None, source_id))
-                for a in item["assignments"]
-            )
-        ]
+    def snapshot(self) -> dict[str, Any]:
+        """Every voice appearance, and what each unnamed voice is called, read once. Signatures
+        and their vectors are left out."""
+        data = self._load()
+        return {
+            "assignments": list(data.get("assignments", [])),
+            "unknowns": {i: v["name"] for i, v in data.get("unknowns", {}).items()},
+        }
 
     def bind_recording(self, provisional_id: str, note_id: str) -> None:
         data = self._load()

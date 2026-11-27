@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from coppermind.entities import EntityChange, EntityInput
+from coppermind.entities import EntityChange
 from coppermind.store_protocol import StoreError
 from coppermind_store.ai_services import Refused
 from coppermind_store.entities import active_facts
@@ -19,12 +19,6 @@ from coppermind_store.voice_store import VoiceStore
 if TYPE_CHECKING:
     from coppermind_store.notes import LocalStore
 
-# The three named levels, as the two numbers voice matching works with.
-LEVELS = {
-    "Careful": {"strong": 0.75, "maybe": 0.75},
-    "Balanced": {"strong": 0.60, "maybe": 0.45},
-    "Eager": {"strong": 0.50, "maybe": 0.35},
-}
 PREDICATES = {
     "role": "Role",
     "organization": "Company",
@@ -88,9 +82,7 @@ class AdminPeople:
             voice = self._voice()
             saved = voice.summaries()
             never = voice.never_saved()
-            unknowns = voice.unknown_summaries()
             enabled = voice.recognition_enabled()
-            thresholds = self.context.read("voice-settings", LEVELS["Balanced"])
         ledger, active = self._active()
         people = []
         companies = []
@@ -126,39 +118,9 @@ class AdminPeople:
                         "notes": self._notes(entity),
                     }
                 )
-        unnamed = []
-        for identity, item in unknowns.items():
-            appearances = sorted(
-                item["assignments"], key=lambda a: a.get("created_at", ""), reverse=True
-            )
-            titles = await self._recording_titles({a["note_id"] for a in appearances})
-            first = appearances[0] if appearances else None
-            unnamed.append(
-                {
-                    "id": identity,
-                    "name": item["name"],
-                    "label": item["name"],
-                    "where": titles.get(first["note_id"], "") if first else "",
-                    "note_id": first["note_id"] if first else "",
-                    "heard": max((s["created_at"] for s in item["signatures"]), default=""),
-                    "more": max(0, len({a["note_id"] for a in appearances}) - 1),
-                }
-            )
-        level = next(
-            (
-                name
-                for name, values in LEVELS.items()
-                if abs(values["strong"] - thresholds["strong"]) < 1e-6
-                and abs(values["maybe"] - thresholds["maybe"]) < 1e-6
-            ),
-            "",
-        )
         return {
             "people": people,
             "companies": companies,
-            "unnamed": unnamed,
-            "level": level,
-            "thresholds": thresholds,
             "recognition": enabled,
         }
 
@@ -314,96 +276,9 @@ class AdminPeople:
             self._voice().set_never(identity, bool(payload.get("never")))
         return {"name": detail["name"], "never": bool(payload.get("never"))}
 
-    async def voice_name(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Name an unnamed voice as someone known, or as someone new."""
-        from coppermind_store.voice_relabel import combine
-
-        voice_id = str(payload["id"])
-        person_id = str(payload.get("person") or "")
-        new_name = str(payload.get("new_name") or "").strip()
-        if not person_id and not new_name:
-            raise Refused(
-                "person",
-                'Choose who this voice belongs to, or pick "Someone new" and type their name, '
-                "then press Save.",
-            )
-        async with self.context.lock:
-            unknown = self._voice().unknown_summaries().get(voice_id)
-        if unknown is None:
-            raise ValueError("That voice is no longer listed.")
-        ledger, active = self._active()
-        if person_id:
-            if not any(entity.id == person_id and entity.kind == "person" for entity in active):
-                raise ValueError("That person is no longer listed.")
-        else:
-            known = next(
-                (
-                    entity
-                    for entity in active
-                    if entity.kind == "person" and entity.name.casefold() == new_name.casefold()
-                ),
-                None,
-            )
-            if known is None:
-                created = await self.store.entities.create(
-                    EntityInput(kind="person", name=new_name)
-                )
-                person_id = created["id"]
-            else:
-                person_id = known.id
-        recordings = len({a["note_id"] for a in unknown["assignments"]})
-        async with self.context.lifecycle.lock, self.context.lock:
-            await combine(self.context, voice_id, "person:" + person_id)
-        detail = await self.detail({"id": person_id})
-        return {"name": detail["name"], "recordings": max(1, recordings)}
-
-    async def voice_forget(self, payload: dict[str, Any]) -> dict[str, Any]:
-        async with self.context.lock:
-            self._voice().delete_unknown(str(payload["id"]))
-        return {}
-
-    async def voice_level(self, payload: dict[str, Any]) -> dict[str, Any]:
-        level = str(payload["level"])
-        if level not in LEVELS:
-            raise ValueError("choose Careful, Balanced or Eager")
-        async with self.context.lock:
-            self.context.write("voice-settings", LEVELS[level])
-        return {"level": level}
-
     async def voice_recognition(self, payload: dict[str, Any]) -> dict[str, Any]:
         """The one switch for all voice recognition."""
         enabled = bool(payload.get("enabled"))
         async with self.context.lock:
             self._voice().set_recognition_enabled(enabled)
         return {"enabled": enabled}
-
-    async def clip(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Where one speaker can be heard, while the recording's audio is still kept.
-
-        Signatures are all that is kept of a voice. A recording's audio is deleted once
-        its note is reviewed, so a clip exists only for a recording still waiting.
-        """
-        note_id, label = str(payload.get("note_id", "")), str(payload.get("label", ""))
-        for job in self.context.recordings.jobs():
-            if note_id not in {job.note_id, "recording:" + job.id} or job.audio_removed:
-                continue
-            if not job.transcribed:
-                continue
-            transcript = self.context.recordings.saved_transcript(job)
-            spans = [
-                (segment["start"], segment["end"])
-                for segment in transcript.get("segments", [])
-                if segment.get("speaker") == label
-                and segment.get("start") is not None
-                and segment.get("end") is not None
-            ]
-            if not spans:
-                continue
-            start, end = max(spans, key=lambda span: span[1] - span[0])
-            return {
-                "artifact_id": job.artifact_id,
-                "start": round(float(start), 1),
-                "end": round(min(float(end), float(start) + 8), 1),
-                "mime_type": job.mime_type,
-            }
-        return {}

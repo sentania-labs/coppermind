@@ -199,6 +199,7 @@ class ContextService:
         # Reads every provider call's outcome, so health is observed and never assumed.
         self.services = AiServices(self)
         self.lock = asyncio.Lock()
+        self.naming_lock = asyncio.Lock()
         self.seen: dict[str, tuple[tuple[int, int, int, int], float]] = {}
         self.watch_status: dict[str, str] = {}
         self.worker_error = ""
@@ -1096,6 +1097,10 @@ class ContextService:
     async def note_set_meeting(self, payload: dict[str, Any]) -> dict[str, Any]:
         """The owner chose another meeting for a waiting note."""
         return await self.review_notes.set_meeting(payload)
+
+    async def note_name_voice(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """The owner chose who a voice on a waiting note's card is."""
+        return await self.review_notes.name_voice(payload)
 
     async def note_reopen(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Put a reviewed or filed note back in Review."""

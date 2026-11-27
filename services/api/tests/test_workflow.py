@@ -560,3 +560,110 @@ def test_undoing_reviewed_needs_to_move_the_note_back(scopes, expected):
         result = client.post("/v1/notes/note/reopen")
     assert result.status_code == expected
     assert fake.calls == ([("note-reopen", {"id": "note"})] if expected == 200 else [])
+
+
+class Listing(Store):
+    async def context_action(self, action, payload):
+        self.calls.append((action, payload))
+        return {
+            "notes": [
+                {
+                    "id": "n1",
+                    "voices": [{"id": "j|Speaker 1", "person": {"id": "p", "name": "Tom Reed"}}],
+                    "invitees": [{"name": "Dana", "email": "dana@acme.test", "person_id": ""}],
+                }
+            ],
+            "choices": {"people": [{"id": "p", "name": "Tom Reed"}], "you": "p", "types": ["work"]},
+        }
+
+
+@pytest.mark.parametrize("scopes", [["notes:read", "sources:read"]])
+def test_a_key_that_cannot_read_people_is_not_shown_who_spoke(scopes):
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[store] = lambda: Listing()
+    app.dependency_overrides[authenticated_key] = lambda: Principal("test", frozenset(scopes))
+    with TestClient(app) as client:
+        page = client.get("/v1/review/notes").json()
+    assert page["notes"] == [{"id": "n1"}]
+    assert "people" not in page["choices"] and page["choices"]["types"] == ["work"]
+
+
+def test_a_key_that_can_read_people_is_shown_who_spoke():
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[store] = lambda: Listing()
+    app.dependency_overrides[authenticated_key] = lambda: Principal(
+        "test", frozenset({"notes:read", "sources:read", "entities:read"})
+    )
+    with TestClient(app) as client:
+        page = client.get("/v1/review/notes").json()
+    assert page["notes"][0]["voices"][0]["person"]["name"] == "Tom Reed"
+    assert page["notes"][0]["invitees"][0]["email"] == "dana@acme.test"
+    assert page["choices"]["people"] == [{"id": "p", "name": "Tom Reed"}]
+
+
+FULL = [
+    "notes:read",
+    "notes:write",
+    "sources:read",
+    "sources:write",
+    "entities:read",
+    "entities:write",
+]
+
+
+@pytest.mark.parametrize(
+    "scopes,expected",
+    [
+        (["notes:read", "notes:write", "sources:read"], 403),
+        ([s for s in FULL if s != "entities:write"], 403),
+        ([s for s in FULL if s != "entities:read"], 403),
+        ([s for s in FULL if s != "sources:write"], 403),
+        (FULL, 200),
+    ],
+)
+def test_naming_a_voice_needs_to_change_notes_transcripts_and_people(scopes, expected):
+    app = FastAPI()
+    fake = Store()
+    app.include_router(router)
+    app.dependency_overrides[store] = lambda: fake
+    app.dependency_overrides[authenticated_key] = lambda: Principal("test", frozenset(scopes))
+    with TestClient(app) as client:
+        result = client.post(
+            "/v1/notes/note/voices",
+            json={"voice": "job|Speaker 1", "invitee": {"name": "Tom", "email": "t@a.test"}},
+        )
+    assert result.status_code == expected
+    assert fake.calls == (
+        [
+            (
+                "note-name-voice",
+                {
+                    "id": "note",
+                    "voice": "job|Speaker 1",
+                    "choice": {
+                        "you": False,
+                        "person": "",
+                        "invitee": {"name": "Tom", "email": "t@a.test"},
+                        "new_name": "",
+                        "me": False,
+                    },
+                },
+            )
+        ]
+        if expected == 200
+        else []
+    )
+
+
+def test_a_voice_choice_with_something_extra_or_nothing_to_name_it_by_is_refused():
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[store] = lambda: Store()
+    app.dependency_overrides[authenticated_key] = lambda: Principal("test", frozenset(FULL))
+    with TestClient(app) as client:
+        assert (
+            client.post("/v1/notes/n/voices", json={"voice": "j|S", "extra": 1}).status_code == 422
+        )
+        assert client.post("/v1/notes/n/voices", json={}).status_code == 422

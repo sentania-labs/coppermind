@@ -45,12 +45,9 @@ Admin compares the files in your vault with the files it ships and offers an upd
 when they differ (reload the companion in Obsidian afterwards). Enable it in Community
 plugins. It requires
 Obsidian 1.11 or later and a Coppermind API key with `notes:read`, `notes:write` and
-`sources:read`. Naming speakers also needs `sources:write` and `entities:read`; a key
-without `entities:read` still reviews everything else, and speakers
-cannot be named with it. Naming a calendar contact who needs a new People entry also
-requires `entities:write`; choosing an existing person does not. The People view
-(voice recognition) also needs `entities:write`
-to change recognition or delete signatures. Combining or separating voices also needs `sources:write`. Select the key through
+`sources:read`. Naming who spoke also needs `entities:read`, `entities:write` and
+`sources:write` (it can add a person to People and it relabels transcripts); a key without
+`entities:read` still reviews everything else, and its cards show no Who spoke. Select the key through
 Obsidian SecretStorage; the plugin saves only its name, never its value, in plugin settings. Configure it separately on devices
 that do not share local secret storage.
 
@@ -68,8 +65,8 @@ wrong right there. **Meeting** is a dropdown of that day's meetings, nearest the
 choosing another one renames the note after it and refills the attendees from its invitation,
 unless you changed the title or the attendees yourself. **Type** is a button for each of your
 types. **Account** and **Tags** are pills you remove with their × and add to from the known names
-or with a new one (a closed tag list refuses a name that is not on it). **Who spoke** shows who was
-matched; voices are named in the note's Speakers section, as described below. Type, account and
+or with a new one (a closed tag list refuses a name that is not on it). **Who spoke** has a row for each voice
+(see [Who spoke](#who-spoke)). Type, account and
 tags are written straight to the note's properties, so the note, the Properties panel and the card
 always agree. Each card has two buttons:
 
@@ -143,8 +140,8 @@ candidate for that speaker, returned as `voice_matches` in the review response
 `speaker_choices`, an object mapping selected suggestion indexes to candidate IDs;
 an empty value leaves that speaker unnamed. For manual names, pass `manual_speakers`
 (label to candidate ID), `manual_source_id` and `manual_source_revision` from the review
-response. Setting reviewed directly, as the companion's Reviewed button does, applies the
-names typed in the note and no others.
+response. Setting reviewed directly, as the companion's Reviewed button does, applies no
+speaker names; naming a voice is its own step (see [Who spoke](#who-spoke)).
 The transcript sample is sent only to the configured enrichment connection, under the same
 input limit and retry rules as other enrichment.
 
@@ -201,8 +198,7 @@ invitation. Unchanged re-exports do not reopen the decision.
 
 ## Recording summaries
 
-New recordings produce their finished Markdown note before ordinary ingest: the Speakers
-section, a one or two sentence top line, the summary sections written from the owner's side
+New recordings produce their finished Markdown note before ordinary ingest: a one or two sentence top line, the summary sections written from the owner's side
 of the table, and one references block at the bottom (source transcript, recording, calendar
 match), with no title heading. The write-up also answers account, type and tags, and the note
 is made with them (see [Notes arrive filled in](#notes-arrive-filled-in)). Review never asks
@@ -212,63 +208,36 @@ A failed write-up retains the recording and transcript without creating a note; 
 Recordings and imports resumes from the last saved stage. Configure the document prompt
 and model under **Transcription > How recordings are written up**. Existing notes are not
 rewritten by a settings change. Unique strong known-voice matches use the person's name;
-other usable signatures keep stable Unknown voice N identities.
+other usable signatures keep stable Unknown voice N identities (shown as "Voice N").
 
-### The Speakers section
+### Who spoke
 
-The Speakers section is the first thing in a recording note. It lists every voice heard,
-the owner first (marked "(you)"), then people the service recognised by voice, each linked
-to their dossier with how they were identified and how sure that is, then the voices nobody
-has identified. Talk time is shown for each. An unidentified voice shows up to three short
-lines it said, word for word, each with its time as a link to the transcript, and the
-owner's own place to put a name:
+The note body has no Speakers section: the card in Review has the voices, and the note keeps a
+plain list of who was there in its `attendees` property. Each voice on a card is a row with its
+talk time, one line it said, word for word, and one dropdown. A voice nobody has named is called
+"Voice 2" (never the service's own label). The dropdown lists, in this order, the people invited
+to the meeting the note names (each carries their email, so choosing one never makes a second
+person: someone already in People with that address, or with that exact name, is that person),
+then everyone already in People, then **Someone new**, which asks for a name. A name someone in
+People already has is that person; a name two people have is refused in one sentence.
 
-```
-- Unknown voice 7, 8 min 20 s. Not identified yet.
-  - Said: "We run vSphere 7 on the older cluster." ([[Sources/talk|00:03:12]])
-  - Suggestion, not confirmed: Tom Reed, addressed as Tom at 00:04:12.
-  - [ ] This is me
-  - Name this voice:
-```
+Choosing writes straight through, as combining the voice with a person in Admin, Advanced, People
+and voices always did: the voice is attached to that person, so recordings to come recognise it;
+this note's transcript and every other note's that heard the same voice say the name; and
+generated lines in a note that still say the old label follow it unless the owner changed the line.
+Nothing is proposed and nothing in the note goes out of date. The person is added to the note's
+`attendees` as a link to their page, like every other attendee (never an email; an invitee with no
+page yet is written by the name on the invitation); what the owner already listed or wrote stays.
+Choosing someone else for a voice that was already named moves the voice, and takes the first
+person off the attendees unless another voice or the invitation has them. A voice with too little
+speech to keep a signature is named in this recording only.
 
-A suggestion appears only when the transcript supports it (a known first name used to answer
-that voice, or any name used twice for it) and is never written as a name, an attendee or a
-speaker label. The "This is me" box appears until the owner is known. When a voice is in
-at least three recordings and most of them, the section says so ("Heard in 9 of your 10
-recordings, so this may be you"), which is the offer to enrol the owner.
+**You** is learned once. Until the owner is known each dropdown offers **Me**, which asks for
+the owner's name and makes that person the owner, once; after that it offers **You**, and the
+owner's own voice is called You in later recordings. A key that cannot read people sees no rows.
 
-**Naming a voice is typing a name and marking the note reviewed.** Type the name after
-"Name this voice:" (a name completed from Obsidian's `[[` list works too) and mark the note
-reviewed, in the companion or by setting `reviewed` yourself. After the same
-30 second wait that finishing a review has always had, Coppermind does what combining the
-voice with a person in People does: the voice is attached to that person, so recordings to
-come recognise it; this note's transcript and every other note's that used the voice have
-the label replaced where the text was not hand-edited; and the person is added to this note's attendees when
-suggestions point at an attendees property. The entry in this note becomes
-"Name, talk time. Named by you." Typing a name in a note that is already reviewed does the
-same when the note is next saved. Tick "This is me" with your name to make that person the
-owner: they are listed first and marked "(you)" in later notes, and the write-up treats
-them as "I". The companion's Reviewed button applies the names typed in the note too. The reason a name
-was not applied is written under the voice in the note, and since the note is already
-reviewed, correcting the name there and saving the note is enough.
-
-- A name that matches no one in People **creates that person**; the entry says "New person
-  added to People".
-- A name that matches more than one person (two people with the same alias, say) names
-  nobody. The entry keeps what was typed and says which people matched; type the full name
-  and save the note.
-- A name matches exactly, by alias, or by the page of a completed `[[link]]`. Nothing is
-  guessed beyond that. A single word that is only the first name of someone in People
-  ("Tom" when People holds Tom Reed) names nobody and creates nobody: the entry keeps what
-  was typed and says it could be that person; write the full name or the link to confirm.
-- A voice numbered within one recording ("Unknown voice 2 (recording-local)") that the note
-  shows for more than one recording names nobody, because it cannot be told which recording
-  was meant. The entry says so; name it in People.
-- A voice with too little speech to keep a signature is named in this recording only, and
-  the entry says so.
-- An action item is given to a named person only when that speaker is identified. Otherwise
-  it stays with its Unknown voice label, marked "(speaker not identified)". A person who was
-  mentioned but not heard is not a speaker and not an attendee.
+Notes already filed keep whatever text they have: an older note's Speakers section stays as it was
+written and Coppermind no longer reads it.
 
 The proposal behavior below applies only to legacy recording jobs accepted before the
 Markdown intake flow. Those jobs and review receipts finish under their original contract.
@@ -289,13 +258,13 @@ append, so retrying an interrupted completion does not append a second copy.
 When several timed events overlap a recording's start (a recording that starts up to
 ten minutes early still matches), Review offers the matching meetings and may suggest
 one from names and the topic in the conversation, nearest start first. When exactly one
-event overlaps, it alone is offered, and its invitees become speaker candidates once it is linked. That event
+event overlaps, it alone is offered, and its invitees head the card's voice dropdowns once it is linked. That event
 is not applied on its own: the title and context follow it only when the recording also says one of its
 attendees' full names or its title, and Review asks "Which meeting was this?" otherwise. When none
 overlaps, every event on the note's day stays a candidate, as before. The
 recording and summary do not wait for that choice. Choose the meeting to link it;
 the generated heading takes its title when that heading has not been edited. Until
-then, possible meeting attendees are marked in the speaker chooser. Invited
+then, the card's voice dropdowns have no invitees to list first. Invited
 people are not automatically treated as attendees.
 
 Calendar event descriptions can hold private details, so they stay out of every API

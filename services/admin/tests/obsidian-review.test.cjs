@@ -46,10 +46,6 @@ async function fixture(local, overrides={}){
     const routed=overrides.routes&&await overrides.routes(req,url);if(routed)return routed;
     if(req.url.endsWith('/v1/pair')&&overrides.pair)return overrides.pair(req);
     if(req.url.endsWith('/v1/anything')&&overrides.page)return overrides.page(req);
-    if(req.url.endsWith('/v1/entities/voice/recognition'))return {status:200,json:overrides.recognition||{enabled:true,attendees_field:'attendees'}};
-    if(req.url.endsWith('/v1/entities/voice/unknowns'))return {status:200,json:overrides.unknownVoices||{}};
-    if(req.url.endsWith('/v1/entities/voice/people'))return {status:200,json:overrides.savedPeople||{}};
-    if(req.url.includes('/v1/entities?'))return overrides.rejectPeople?{status:overrides.rejectPeople===true?403:overrides.rejectPeople,json:{error:'forbidden'}}:{status:200,json:typeof overrides.peopleResults==='function'?await overrides.peopleResults(req):overrides.peopleResults||{items:[],next_cursor:null}};
     return {status:200,json:{...overrides}};}}),crypto:webcrypto,TextEncoder,URL,
     // A long timer (the screen's poll) is one the test process does not wait for.
     setTimeout:(fn,ms)=>{const t=setTimeout(fn,ms);if(ms>=1000)t.unref?.();return t;},clearTimeout,setInterval,clearInterval};
@@ -135,138 +131,6 @@ test('a successful pairing keeps the key in secret storage only and uses it for 
   assert.equal(f.requests[0].headers.Authorization,'Bearer '+credential);
 });
 
-const personVoice=(signatures)=>({enabled:true,signatures});
-const sig=(id)=>({note_id:id,created_at:'2026-01-02T00:00:00Z'});
-async function peopleFixture(signatures){
-  const f=await fixture(undefined,personVoice(signatures));
-  const view=f.factories['coppermind-people']({app:f.app});
-  await view.show({id:'alex-id',name:'Alex'});
-  const toggle=view.contentEl.all().find(e=>e.tag==='toggle');
-  const puts=()=>f.requests.filter(r=>r.method==='PUT');
-  return {...f,view,toggle,puts};
-}
-test('the global switch stops collecting signatures without deleting saved voices',async()=>{
-  const f=await peopleFixture([sig('n1')]);
-  await f.toggle.onchange(false);
-  assert.equal(f.puts().length,1);
-  assert.match(f.puts()[0].url,/\/v1\/entities\/voice\/recognition$/);
-  assert.deepEqual(JSON.parse(f.puts()[0].body),{enabled:false});
-  assert.equal(f.modals.length,0);
-});
-test('deleting a person voice requires confirmation',async()=>{
-  const f=await peopleFixture([sig('n1')]);
-  f.view.contentEl.all().find(e=>e.text==='Delete voice data').onclick();
-  assert.equal(f.requests.filter(r=>r.method==='DELETE').length,0);
-  const modal=f.modals.at(-1);
-  assert.match(modal.contentEl.all().map(e=>e.text||'').join(' '),/Future recordings cannot be recognised/);
-  await modal.contentEl.all().find(e=>e.text==='Delete voice data').onclick();
-  assert.equal(f.requests.filter(r=>r.method==='DELETE').length,1);
-});
-
-
-test('People shows saved people and confirms how many recordings a voice combines',async()=>{
-  const unknownVoices={'unknown:12':{name:'Unknown voice 12',signatures:[sig('n1')],assignments:[{note_id:'n1',label:'Speaker 1'},{note_id:'n2',label:'Speaker 1'}]},'unknown:18':{name:'Unknown voice 18',signatures:[sig('n3')],assignments:[]}};
-  const f=await fixture(undefined,{unknownVoices,savedPeople:{alex:{name:'Alex',signatures:[sig('n4')],assignments:[]}}});
-  const view=f.factories['coppermind-people']({app:f.app});await view.show();
-  assert.ok(view.contentEl.all().some(e=>e.text==='Alex · Voice data saved'));
-  await view.show({id:'unknown:12',name:'Unknown voice 12',unknown:true});
-  const select=view.contentEl.all().find(e=>e.tag==='select');select.value='unknown:18';
-  view.contentEl.all().find(e=>e.text==='Choose and combine').onclick();
-  assert.equal(f.requests.filter(r=>r.method==='POST').length,0);
-  const modal=f.modals.at(-1);assert.ok(modal.contentEl.all().some(e=>e.text?.includes('Unknown voice 12 will become Unknown voice 18 in 2 recordings')));
-  await modal.contentEl.all().find(e=>e.text==='Combine voices').onclick();
-  assert.equal(f.requests.filter(r=>r.method==='POST').length,1);
-});
-
-test('People find-a-person shows results once, tells what will happen, and confirms it',async()=>{
-  const unknownVoices={'unknown:7':{name:'Unknown voice 7',signatures:[sig('n1')],assignments:[{note_id:'n1',label:'Speaker 1'},{note_id:'n2',label:'Speaker 1'}]}};
-  const f=await fixture(undefined,{unknownVoices,peopleResults:{items:[{id:'p1',name:'Scott Bowe',emails:['scott@a.test']},{id:'p2',name:'Scott Bowe',emails:['scott@b.test']},{id:'p1',name:'Scott Bowe',emails:['scott@a.test']}],next_cursor:null}});
-  const view=f.factories['coppermind-people']({app:f.app});await view.show({id:'unknown:7',name:'Unknown voice 7',unknown:true});
-  const all=()=>view.contentEl.all();const lookup=all().find(e=>e.text==='Find a person'&&e.tag==='button');
-  all().find(e=>e.tag==='input'&&e.attr?.placeholder?.startsWith('Type a name')).value='Scott';
-  await lookup.onclick();await lookup.onclick();await lookup.onclick();
-  const options=all().filter(e=>e.tag==='option').map(e=>e.text);
-  assert.deepEqual(options.filter(t=>t.startsWith('Scott')),['Scott Bowe (scott@a.test)','Scott Bowe (scott@b.test)']);
-  assert.ok(all().some(e=>e.text==='Found 2 people. Choose one from the list below.'));
-  const select=all().find(e=>e.tag==='select');select.value='person:p1';select.onchange();
-  assert.ok(all().some(e=>e.text==='Unknown voice 7 will become Scott Bowe (scott@a.test) in 2 recordings.'));
-  all().find(e=>e.text==='Choose and combine').onclick();
-  const modal=f.modals.at(-1);assert.ok(modal.contentEl.all().some(e=>e.text?.includes('Unknown voice 7 will become Scott Bowe (scott@a.test) in 2 recordings')));
-  await modal.contentEl.all().find(e=>e.text==='Combine voices').onclick();
-  assert.ok(all().some(e=>e.text?.startsWith('Done: Unknown voice 7 is now Scott Bowe')));
-});
-
-test('typing a name narrows matching people without clicking Find, and says when nobody matches',async()=>{
-  const unknownVoices={'unknown:7':{name:'Unknown voice 7',signatures:[sig('n1')],assignments:[]}};
-  const peopleResults=req=>{const q=decodeURIComponent(req.url.split('q=')[1]);return {items:q==='Sc'?[{id:'p1',name:'Scott Bowe',emails:[]}]:[],next_cursor:null};};
-  const f=await fixture(undefined,{unknownVoices,peopleResults});
-  const view=f.factories['coppermind-people']({app:f.app});await view.show({id:'unknown:7',name:'Unknown voice 7',unknown:true});
-  const all=()=>view.contentEl.all();const input=all().find(e=>e.tag==='input'&&e.attr?.placeholder?.startsWith('Type a name'));
-  input.value='Sc';input.oninput();await new Promise(r=>setTimeout(r,400));
-  assert.ok(all().some(e=>e.tag==='option'&&e.text==='Scott Bowe'));
-  input.value='Zz';input.oninput();await new Promise(r=>setTimeout(r,400));
-  assert.ok(all().some(e=>e.text==='No one named Zz found.'));assert.ok(!all().some(e=>e.tag==='option'&&e.text==='Scott Bowe'));
-});
-
-test('an older person search answering last does not replace the newer results',async()=>{
-  const unknownVoices={'unknown:7':{name:'Unknown voice 7',signatures:[sig('n1')],assignments:[]}};
-  const release={};
-  const peopleResults=req=>new Promise(resolve=>{const q=decodeURIComponent(req.url.split('q=')[1]);release[q]=()=>resolve({items:[{id:q==='Al'?'old':'new',name:q==='Al'?'Alan Old':'Alex New',emails:[]}],next_cursor:null});});
-  const f=await fixture(undefined,{unknownVoices,peopleResults});
-  const view=f.factories['coppermind-people']({app:f.app});await view.show({id:'unknown:7',name:'Unknown voice 7',unknown:true});
-  const all=()=>view.contentEl.all();const input=all().find(e=>e.tag==='input'&&e.attr?.placeholder?.startsWith('Type a name'));
-  const lookup=all().find(e=>e.text==='Find a person'&&e.tag==='button');
-  input.value='Al';const first=lookup.onclick();input.value='Alex';const second=lookup.onclick();
-  await new Promise(r=>setTimeout(r,0));
-  release.Alex();await second;release.Al();await first;
-  assert.deepEqual(all().filter(e=>e.tag==='option').map(e=>e.text).filter(t=>t.includes('A')&&t!=='Choose a voice or person'),['Alex New']);
-  assert.equal(all().find(e=>e.tag==='select').value,'person:new');
-});
-
-test('people who attended the voice\'s meetings are listed first, marked, and a listed match can be chosen',async()=>{
-  const unknownVoices={'unknown:7':{name:'Unknown voice 7',signatures:[sig('n1')],assignments:[{note_id:'n1',label:'Speaker 1'}]}};
-  const items=[{id:'a',name:'Sam Early',emails:['sam@a.test'],path:'People/Sam Early.md'},{id:'b',name:'Sam Linked',emails:['x@b.test'],path:'People/Sam Linked.md'},{id:'c',name:'Sam Mailed',emails:['mail@c.test'],path:'People/Sam Mailed.md'},{id:'d',name:'Sam Last',emails:[],path:'People/Sam Last.md'}];
-  const f=await fixture(undefined,{unknownVoices,title:'Planning',path:'Planning.md',frontmatter:{attendees:['[[People/Sam Linked]]','Mail@C.test',7]},peopleResults:{items,next_cursor:null}});
-  const view=f.factories['coppermind-people']({app:f.app});await view.show({id:'unknown:7',name:'Unknown voice 7',unknown:true});
-  const all=()=>view.contentEl.all();const input=all().find(e=>e.tag==='input'&&e.attr?.placeholder?.startsWith('Type a name'));
-  input.value='Sam';input.oninput();await new Promise(r=>setTimeout(r,400));
-  const listed=all().filter(e=>e.tag==='button'&&e.text?.startsWith('Sam')).map(e=>e.text);
-  assert.deepEqual(listed,['Sam Linked (x@b.test) · attended these meetings','Sam Mailed (mail@c.test) · attended these meetings','Sam Early (sam@a.test)','Sam Last']);
-  all().find(e=>e.text==='Sam Early (sam@a.test)'&&e.tag==='button').onclick();
-  assert.equal(all().find(e=>e.tag==='select').value,'person:a');
-  assert.ok(all().some(e=>e.text==='Unknown voice 7 will become Sam Early (sam@a.test) in 1 recording.'));
-  input.value='Samu';input.oninput();
-  assert.ok(!all().some(e=>e.tag==='button'&&e.text?.startsWith('Sam ')));
-});
-
-test('attendee-first ordering reads the configured attendees property, not a fixed name',async()=>{
-  const unknownVoices={'unknown:7':{name:'Unknown voice 7',signatures:[sig('n1')],assignments:[{note_id:'n1',label:'Speaker 1'}]}};
-  const items=[{id:'a',name:'Sam Early',emails:['sam@a.test'],path:'People/Sam Early.md'},{id:'b',name:'Sam Mailed',emails:['mail@c.test'],path:'People/Sam Mailed.md'}];
-  const f=await fixture(undefined,{unknownVoices,recognition:{enabled:true,attendees_field:'present'},title:'Planning',path:'Planning.md',frontmatter:{present:['mail@c.test'],attendees:['sam@a.test']},peopleResults:{items,next_cursor:null}});
-  const view=f.factories['coppermind-people']({app:f.app});await view.show({id:'unknown:7',name:'Unknown voice 7',unknown:true});
-  const all=()=>view.contentEl.all();const input=all().find(e=>e.tag==='input'&&e.attr?.placeholder?.startsWith('Type a name'));
-  input.value='Sam';input.oninput();await new Promise(r=>setTimeout(r,400));
-  assert.deepEqual(all().filter(e=>e.tag==='button'&&e.text?.startsWith('Sam')).map(e=>e.text),['Sam Mailed (mail@c.test) · attended these meetings','Sam Early (sam@a.test)']);
-});
-
-test('typing on while an earlier search is in flight never shows its results for the shorter entry',async()=>{
-  const unknownVoices={'unknown:7':{name:'Unknown voice 7',signatures:[sig('n1')],assignments:[]}};
-  const release={};
-  const peopleResults=req=>new Promise((resolve,reject)=>{const q=decodeURIComponent(req.url.split('q=')[1]);release[q]={ok:()=>resolve({items:[{id:'s',name:'Sam Short',emails:[]}],next_cursor:null}),fail:()=>reject(new Error('down'))};});
-  const f=await fixture(undefined,{unknownVoices,peopleResults});
-  const view=f.factories['coppermind-people']({app:f.app});await view.show({id:'unknown:7',name:'Unknown voice 7',unknown:true});
-  const all=()=>view.contentEl.all();const input=all().find(e=>e.tag==='input'&&e.attr?.placeholder?.startsWith('Type a name'));
-  input.value='S';input.oninput();await new Promise(r=>setTimeout(r,400));
-  input.value='Sc';input.oninput();
-  release.S.ok();await new Promise(r=>setTimeout(r,0));
-  assert.ok(!all().some(e=>e.tag==='option'&&e.text==='Sam Short'));
-  assert.equal(all().find(e=>e.tag==='select').value,'');
-  assert.ok(all().some(e=>e.text==='Searching…'));
-  await new Promise(r=>setTimeout(r,400));release.Sc.fail();await new Promise(r=>setTimeout(r,0));
-  assert.ok(!all().some(e=>e.text==='Searching…'));
-  assert.ok(!all().some(e=>e.tag==='option'&&e.text==='Sam Short'));
-});
-
 test('a read the server never answers is cut off with a plain error',async()=>{
   const f=await fixture(undefined,{page:()=>new Promise(()=>{})});
   f.plugin.requestTimeoutMs=20;
@@ -304,7 +168,7 @@ async function review(state={}){
     const p=url.pathname;
     if(s.respond){const answered=await s.respond(req,p);if(answered)return answered;}
     if(p==='/v1/recordings/waiting')return ok({meetings:[],failed:s.failed,processing:s.processing,missing_summaries:[]});
-    if(p==='/v1/review/notes')return ok({notes:s.notes,total:s.notes.length,next_cursor:null,writeup_on:true,choices:CHOICES});
+    if(p==='/v1/review/notes')return ok({notes:s.notes,total:s.notes.length,next_cursor:null,writeup_on:true,choices:{...CHOICES,...(s.choices||{})}});
     if(p==='/v1/review/models')return s.models===false?{status:500,json:{message:'down'}}:ok(s.models);
     if(req.method==='POST'){calls.push({path:p,body:req.body?JSON.parse(req.body):null});return ok({started:true,already:false,filed:true,reopened:true,meeting:'x'});}
     if(p.startsWith('/v1/notes/')&&req.method==='GET')return ok({path:s.filedPath||'work/2026/2026-11/Note.md'});
@@ -322,11 +186,11 @@ const BANNED=/needs you|needs attention|enrich|suggestion|stale|notes in review|
 
 test('one command and one ribbon icon open Review, and the older screens are let go',async()=>{
   const f=await fixture(undefined,{});
-  assert.deepEqual(Object.keys(f.plugin.commands).sort(),['manage-people','pair-device','review']);
+  assert.deepEqual(Object.keys(f.plugin.commands).sort(),['pair-device','review']);
   assert.equal(f.plugin.commands.review.name,'Review');
   assert.deepEqual(f.plugin.ribbons,['Review']);
-  assert.deepEqual(Object.keys(f.factories).sort(),['coppermind-people','coppermind-review']);
-  assert.deepEqual(f.detached,['coppermind-waiting','coppermind-notes-in-review','coppermind-imports']);
+  assert.deepEqual(Object.keys(f.factories),['coppermind-review']);
+  assert.deepEqual(f.detached,['coppermind-waiting','coppermind-notes-in-review','coppermind-people','coppermind-imports']);
   assert.equal(f.requests.length,0);
 });
 
@@ -435,11 +299,154 @@ test('a meeting that could not be changed says so in one sentence and the card s
   assert.ok(f.button('Reviewed'));
 });
 
-test('Who spoke has its place on the card and shows who was matched',async()=>{
-  const f=await review({notes:[note('n1','Acme call')],files:{'Review/Acme call.md':frontmatter({attendees:['[[People/Dana Whitfield]]','Priya Raman','Dana Whitfield'],type:'work'})}});
-  assert.ok(f.view.contentEl.all().some(e=>e.cls==='coppermind-who'));
+// ---- who spoke --------------------------------------------------------------------------------
+const KNOWN=[{id:'p1',name:'Tom Reed'},{id:'p2',name:'Priya Raman'},{id:'p3',name:'Ann Cole'}];
+const INVITED=[{name:'Dana Whitfield',email:'dana@acme.test',person_id:''},{name:'Priya Raman',email:'priya@acme.test',person_id:'p2'}];
+const heard=(over=[])=>[
+  {id:'j1|Speaker 1',label:'Voice 1',seconds:79,said:'We run vSphere 7 on the older cluster today.',said_at:'00:00:05',person:null,you:false,...over[0]},
+  {id:'j1|Speaker 2',label:'Voice 2',seconds:59,said:'Our upgrade is blocked by the support matrix.',said_at:'00:00:31',person:null,you:false,...over[1]}];
+const spoke=(over={},voices=heard(),choices={people:KNOWN,you:''})=>review({notes:[note('n1','Acme call',{voices,invitees:INVITED,...over})],choices});
+const pick=(f,label)=>f.view.contentEl.all().find(e=>e.tag==='select'&&e.attr?.['aria-label']==='Who is '+label);
+const values=select=>select.children.map(o=>o.value);
+
+test('Who spoke is one row per voice with its talk time, a line it said and one dropdown',async()=>{
+  const f=await spoke();
   assert.ok(f.texts().includes('Who spoke'));
-  assert.ok(f.texts().includes('Dana Whitfield, Priya Raman'));
+  assert.ok(f.texts().includes('Voice 1')&&f.texts().includes('Voice 2'));
+  assert.ok(f.texts().includes('1 min 19 s')&&f.texts().includes('59 s'));
+  assert.ok(f.texts().includes('“We run vSphere 7 on the older cluster today.”'));
+  assert.equal(f.view.contentEl.all().filter(e=>e.tag==='select'&&/^Who is/.test(e.attr?.['aria-label']||'')).length,2);
+  assert.ok(!f.texts().some(t=>/unknown voice/i.test(t)));
+});
+
+test('the dropdown lists the meeting\'s invitees first, then people already known, then someone new',async()=>{
+  const f=await spoke();
+  const select=pick(f,'Voice 1');
+  // Me stands in for You until the owner has said which voice is theirs; Priya is listed once, as an invitee.
+  assert.deepEqual(values(select),['','me','invitee:0','invitee:1','person:p1','person:p3','new']);
+  assert.deepEqual(select.children.map(o=>o.text),['Who is this?','Me','Dana Whitfield','Priya Raman','Tom Reed','Ann Cole','Someone new…']);
+});
+
+test('once the owner is known the dropdown offers You, and their own voice is called You',async()=>{
+  const f=await spoke({},heard([{person:{id:'p9',name:'Scott Bowe'},you:true}]),{people:[...KNOWN,{id:'p9',name:'Scott Bowe'}],you:'p9'});
+  assert.ok(f.texts().includes('You'));
+  assert.ok(!f.texts().includes('Voice 1'));
+  const mine=pick(f,'Voice 1'),other=pick(f,'Voice 2');
+  assert.equal(mine.value,'you');
+  assert.deepEqual(values(other),['','you','invitee:0','invitee:1','person:p1','person:p3','new']);
+  assert.ok(!values(other).includes('person:p9'),'the owner is offered once, as You');
+});
+
+test('a voice already named shows that person selected, even one who is on neither list',async()=>{
+  const f=await spoke({},heard([{person:{id:'p3',name:'Ann Cole'}},{person:{id:'p77',name:'Retired Person'}}]));
+  assert.equal(pick(f,'Voice 1').value,'person:p3');
+  const second=pick(f,'Voice 2');
+  assert.equal(second.value,'person:p77');
+  assert.ok(second.children.some(o=>o.text==='Retired Person'));
+  assert.ok(!values(second).includes(''),'a named voice has no "Who is this?" placeholder');
+});
+
+test('choosing an invitee, a known person or You tells Coppermind straight away',async()=>{
+  const f=await spoke({},heard(),{people:KNOWN,you:'p9'});
+  let select=pick(f,'Voice 1');select.value='invitee:0';await select.onchange();
+  select=pick(f,'Voice 2');select.value='person:p1';await select.onchange();
+  select=pick(f,'Voice 1');select.value='you';await select.onchange();
+  assert.deepEqual(f.calls,[
+    {path:'/v1/notes/n1/voices',body:{voice:'j1|Speaker 1',invitee:{name:'Dana Whitfield',email:'dana@acme.test'}}},
+    {path:'/v1/notes/n1/voices',body:{voice:'j1|Speaker 2',person:'p1'}},
+    {path:'/v1/notes/n1/voices',body:{voice:'j1|Speaker 1',you:true}}]);
+});
+
+test('Someone new asks for a name, and Save sends it; nothing is sent without one',async()=>{
+  const f=await spoke();
+  const select=pick(f,'Voice 2');select.value='new';await select.onchange();
+  assert.equal(f.calls.length,0);
+  const box=()=>f.view.contentEl.all().find(e=>e.tag==='input'&&e.attr?.placeholder==='Their name');
+  assert.ok(box());
+  await f.button('Save').onclick();
+  assert.equal(f.calls.length,0);
+  assert.ok(f.texts().includes('Type a name.'));
+  box().value='Lee Chen';box().oninput();
+  await f.button('Save').onclick();
+  assert.deepEqual(f.calls,[{path:'/v1/notes/n1/voices',body:{voice:'j1|Speaker 2',new_name:'Lee Chen'}}]);
+});
+
+test('Save and Enter send a typed name once while it is being saved',async()=>{
+  const f=await spoke();
+  let release;const held=new Promise(r=>{release=r;});
+  f.s.respond=async(req,p)=>{if(p.endsWith('/voices')&&req.method==='POST')await held;return null;};
+  const select=pick(f,'Voice 2');select.value='new';await select.onchange();
+  const box=f.view.contentEl.all().find(e=>e.tag==='input'&&e.attr?.placeholder==='Their name');
+  box.value='Lee Chen';box.oninput();
+  const save=f.button('Save');
+  const first=save.onclick();
+  const again=save.onclick();
+  box.onkeydown({key:'Enter'});
+  await new Promise(r=>setTimeout(r,10));
+  assert.equal(save.disabled,true);
+  release();await first;await again;
+  assert.equal(f.calls.filter(c=>c.path.endsWith('/voices')).length,1);
+});
+
+test('Me asks for your name once, and says this is the owner',async()=>{
+  const f=await spoke();
+  const select=pick(f,'Voice 1');select.value='me';await select.onchange();
+  const box=f.view.contentEl.all().find(e=>e.tag==='input'&&e.attr?.placeholder==='Your name');
+  box.value='Scott Bowe';box.oninput();
+  await f.button('Save').onclick();
+  assert.deepEqual(f.calls,[{path:'/v1/notes/n1/voices',body:{voice:'j1|Speaker 1',new_name:'Scott Bowe',me:true}}]);
+});
+
+test('a choice that is half made survives a background refresh and is not sent until saved',async()=>{
+  const f=await spoke();
+  const select=pick(f,'Voice 2');select.value='new';await select.onchange();
+  let box=f.view.contentEl.all().find(e=>e.tag==='input'&&e.attr?.placeholder==='Their name');
+  box.onfocus();box.value='Lee Ch';box.oninput();
+  f.s.processing=[{id:'r9',title:'New recording',message:'Waiting for its turn to be transcribed.'}];
+  await f.view.refresh(true);
+  assert.ok(f.view.contentEl.all().includes(box),'the name being typed was redrawn away');
+  assert.ok(!f.texts().includes('New recording'));
+  // Even when the screen is redrawn, the open choice and the typed text come back.
+  box.onblur();await new Promise(r=>setTimeout(r,20));
+  assert.ok(f.texts().includes('New recording'));
+  assert.equal(pick(f,'Voice 2').value,'new');
+  box=f.view.contentEl.all().find(e=>e.tag==='input'&&e.attr?.placeholder==='Their name');
+  assert.equal(box.value,'Lee Ch');
+  assert.equal(f.calls.length,0);
+});
+
+test('an open dropdown is not redrawn by a background refresh until it is left',async()=>{
+  const f=await spoke();
+  const select=pick(f,'Voice 1');select.onfocus();
+  f.s.processing=[{id:'r9',title:'New recording',message:'Waiting for its turn to be transcribed.'}];
+  await f.view.refresh(true);
+  assert.ok(f.view.contentEl.all().includes(select));
+  assert.ok(!f.texts().includes('New recording'));
+  select.onblur();await new Promise(r=>setTimeout(r,20));
+  assert.ok(f.texts().includes('New recording'));
+});
+
+test('after a voice is named the card shows who it is, and a refused name says why in one sentence',async()=>{
+  const f=await spoke({},heard(),{people:KNOWN,you:''});
+  f.s.respond=(req,p)=>{
+    if(p.endsWith('/voices')&&req.method==='POST'){
+      f.s.notes=[note('n1','Acme call',{voices:heard([{},{person:{id:'p1',name:'Tom Reed'}}]),invitees:INVITED})];
+      return null;}
+    return null;};
+  const select=pick(f,'Voice 2');select.value='person:p1';await select.onchange();
+  assert.equal(pick(f,'Voice 2').value,'person:p1');
+  const refused=await spoke({},heard(),{people:KNOWN,you:''});
+  refused.s.respond=(req,p)=>p.endsWith('/voices')?{status:422,json:{message:'More than one person is called Sam Lee. Choose one from the list.'}}:null;
+  const other=pick(refused,'Voice 2');other.value='person:p3';await other.onchange();
+  assert.ok(refused.texts().includes('More than one person is called Sam Lee. Choose one from the list.'));
+  assert.ok(pick(refused,'Voice 2'),'the dropdown is usable again');
+});
+
+test('a note with no recording voices shows no Who spoke, and talk time reads aloud',async()=>{
+  const f=await review({notes:[note('n1','Acme call')]});
+  assert.ok(!f.texts().includes('Who spoke'));
+  assert.equal(f.rules.spoke(48),'48 s');assert.equal(f.rules.spoke(130),'2 min 10 s');
+  assert.equal(f.rules.spoke(1200),'20 min');assert.equal(f.rules.spoke(3900),'1 h 05 min');
 });
 
 test('Reviewed sets the property, then the card says Filed with where, and Undo brings it back',async()=>{
