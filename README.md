@@ -417,8 +417,8 @@ Completed receipts clear after seven days; failures remain until dismissed. Uplo
 [calendar intake and upgrade](docs/calendar-enrichment.md) and the
 [API](docs/api.md#calendar-exports-and-dropbox-receipts).
 
-People and company dossiers live in `People/` and `Companies/`. Read them and
-correct a fact in Obsidian, or use the scoped entity API. Reviewed notes
+Each person has a plain page in `People/`; a company has none. Correct what Coppermind
+has learned about people and companies through the scoped entity API. Reviewed notes
 contribute evidence; there is no separate claim-acceptance step. See
 [dossiers and recovery](docs/dossiers.md) for the first slice and the remaining
 enrichment integration.

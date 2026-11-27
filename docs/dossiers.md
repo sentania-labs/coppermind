@@ -40,7 +40,7 @@ is as yours, Coppermind stops tending it, and deleting it later does not retire 
 Reviewed metadata contributes exact attendee emails, explicit account companies,
 attendee-to-company associations and explicit dossier wikilinks in list fields.
 Each attendee gets an "attended a meeting for" relationship to the company and the company a
-"met with" relationship to the attendee, both under Relationships. Attending never sets a
+"met with" relationship to the attendee, both kept in the ledger and read through the entity API. Attending never sets a
 person's `company`.
 
 A person's `company` is filled from their email domain when exactly one company holds it, or from an
