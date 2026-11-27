@@ -337,10 +337,13 @@ class ReviewView extends ItemView {
     if (voice.person && !options.some(o => o.value === current)) options.splice(1, 0, {value: current, label: voice.person.name});
     for (const o of options) {const el = select.createEl('option', {text: o.label, value: o.value}); if (o.title) el.setAttr?.('title', o.title);}
     select.value = shown;
+    let saving = false, go = null;
     const save = async value => {
+      if (saving) return;
+      saving = true;
       const text = mine.voices[voice.id]?.text ?? '';
       const body = rules.voiceRequest(voice, value, invitees, text.trim());
-      select.disabled = true;
+      select.disabled = true; if (go) go.disabled = true;
       try {
         await this.plugin.call('/v1/notes/' + encodeURIComponent(note.id) + '/voices', 'POST', body);
         delete mine.voices[voice.id]; this.say(note.id, ''); this.typing = false;
@@ -367,7 +370,7 @@ class ReviewView extends ItemView {
       typed.oninput = () => {mine.voices[voice.id] = {value: shown, text: typed.value};};
       typed.onfocus = () => {this.typing = true;};
       typed.onblur = () => {this.typing = false; if (this.deferred) {this.deferred = false; this.refresh(true);}};
-      const go = control.createEl('button', {text: 'Save', cls: 'mod-cta'});
+      go = control.createEl('button', {text: 'Save', cls: 'mod-cta'});
       go.onclick = () => {mine.voices[voice.id] = {value: shown, text: typed.value}; if (!typed.value.trim()) {this.say(note.id, 'Type a name.', true); this.render(); return;} return save(shown);};
       typed.onkeydown = event => {if (event.key === 'Enter') go.onclick();};
     }

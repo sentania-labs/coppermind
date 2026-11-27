@@ -309,7 +309,9 @@ async def test_the_same_new_name_sent_twice_at_once_makes_one_person(store, monk
             choose(context, note.id, "Voice 1", new_name="Tom Reed"),
         )
         assert [p for p in people(store) if p == "Tom Reed"] == ["Tom Reed"]
-        assert len([e for e in store.entities.load().entities.values() if e.name == "Tom Reed"]) == 1
+        assert (
+            len([e for e in store.entities.load().entities.values() if e.name == "Tom Reed"]) == 1
+        )
 
 
 async def test_two_people_with_one_name_are_not_guessed_between(store):
@@ -457,6 +459,31 @@ async def test_changing_who_a_voice_is_moves_it_and_takes_the_wrong_person_off_t
         assert any("Ann Cole" in v for v in attendees) and not any(
             "Tom Reed" in v for v in attendees
         )
+
+
+async def test_a_wrong_voice_on_a_filed_note_is_fixed_by_reopening_it_and_picking_again(store):
+    async with Service(reply=reply(TOM)) as service:
+        context = await lifecycle(store, service)
+        job, note = await record(store, context, "plaud/rec-1", AUDIO)
+        await choose(context, note.id, "Voice 1", new_name="Scott Bowe", me=True)
+        await choose(context, note.id, "Voice 2", new_name="Tom Reed")
+        reed = people(store)["Tom Reed"]
+        assert VoiceStore(context).summary(reed.id)["signatures"]
+        filed = await mark_reviewed(store, context, note.id)
+        assert filed.filed and not filed.path.startswith("Review/")
+        await context.note_reopen({"id": note.id})
+        await choose(context, note.id, "Voice 2", new_name="Ann Cole")
+        found = people(store)
+        assert row(context, note.id, "Voice 2")["person"]["name"] == "Ann Cole"
+        assert not VoiceStore(context).summary(reed.id)["signatures"]
+        assert not [
+            a
+            for a in VoiceStore(context).assignments("person:" + reed.id)
+            if a["note_id"] == note.id
+        ]
+        assert VoiceStore(context).summary(found["Ann Cole"].id)["signatures"]
+        transcript = await transcript_text(store, job)
+        assert "Ann Cole: Hi Scott." in transcript and "Tom Reed" not in transcript
 
 
 async def test_a_voice_with_too_little_speech_is_named_in_this_recording_only(store):

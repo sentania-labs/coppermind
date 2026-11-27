@@ -371,6 +371,23 @@ test('Someone new asks for a name, and Save sends it; nothing is sent without on
   assert.deepEqual(f.calls,[{path:'/v1/notes/n1/voices',body:{voice:'j1|Speaker 2',new_name:'Lee Chen'}}]);
 });
 
+test('Save and Enter send a typed name once while it is being saved',async()=>{
+  const f=await spoke();
+  let release;const held=new Promise(r=>{release=r;});
+  f.s.respond=async(req,p)=>{if(p.endsWith('/voices')&&req.method==='POST')await held;return null;};
+  const select=pick(f,'Voice 2');select.value='new';await select.onchange();
+  const box=f.view.contentEl.all().find(e=>e.tag==='input'&&e.attr?.placeholder==='Their name');
+  box.value='Lee Chen';box.oninput();
+  const save=f.button('Save');
+  const first=save.onclick();
+  const again=save.onclick();
+  box.onkeydown({key:'Enter'});
+  await new Promise(r=>setTimeout(r,10));
+  assert.equal(save.disabled,true);
+  release();await first;await again;
+  assert.equal(f.calls.filter(c=>c.path.endsWith('/voices')).length,1);
+});
+
 test('Me asks for your name once, and says this is the owner',async()=>{
   const f=await spoke();
   const select=pick(f,'Voice 1');select.value='me';await select.onchange();
