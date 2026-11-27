@@ -296,7 +296,12 @@ async def test_a_failed_summary_is_one_plain_sentence_whatever_the_model_said(tm
     (row,) = (await recordings.waiting())["failed"]
     assert row["message"] == "The summary did not finish. The recording and transcript are safe."
     assert row["can_retry"] is True
-    assert row["detail"] and "could not produce a note" not in row["detail"]
+    # The hover detail is the write-up's own reason, not the generic retry message.
+    assert row["detail"].startswith(
+        "The writing service sent an answer that could not be used as a complete note."
+    )
+    assert "Try the recording again" not in row["detail"]
+    assert "could not produce a note" not in row["detail"]
 
 
 @pytest.mark.asyncio

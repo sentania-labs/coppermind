@@ -440,7 +440,7 @@ class Recordings:
                         "id": job.id,
                         "title": job.title or job.filename,
                         "message": SUMMARY_DID_NOT_FINISH if summary_failed else message,
-                        "detail": message if summary_failed else "",
+                        "detail": job.display_error if summary_failed else "",
                         "stage": job.stage,
                         "field_problems": field_problems,
                         "field_problems_unavailable": job.error_rule == "note-rejected"
