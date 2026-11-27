@@ -27,6 +27,9 @@ class Memory:
     def write(self, name, value):
         self.data[name] = value
 
+    def jobs(self):
+        return []
+
     def config(self):
         enrichment = SimpleNamespace(attendees_field="", event_field="")
         return SimpleNamespace(assignments={"enrichment": enrichment})

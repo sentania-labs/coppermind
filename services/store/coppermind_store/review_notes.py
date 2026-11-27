@@ -421,8 +421,10 @@ class ReviewNotes:
             ReplaceNote(frontmatter={**note.frontmatter, **changes}, body=note.body),
             if_match=note.content_hash,
         )
+        before = note
         note = await context.store.get_note(note.id)
         filled_in.remember(context, note.id, note.frontmatter, changes)
+        await filled_in.keep_job_current(context, before, note)
         return note
 
     def in_review(self, note: Any) -> bool:

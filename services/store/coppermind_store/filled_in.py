@@ -169,12 +169,64 @@ def remember(context: Any, note_id: str, frontmatter: dict[str, Any], keys: Any)
 UPGRADED = "filled-in-upgrade"
 
 
+async def keep_job_current(context: Any, before: Any, after: Any) -> None:
+    """After Coppermind writes a note's properties, the pending suggestions made for the note as
+    it was still hold for the note as it is: a write that only fills properties must not make
+    them stale, or the summary and the speaker choices they carry would be lost."""
+    for job in context.jobs():
+        if (
+            job.note_id == after.id
+            and job.purpose != "dossier"
+            and job.state == "suggested"
+            and job.note_hash == before.content_hash
+        ):
+            job.note_hash = after.content_hash
+            job.evidence_hash = await context.note_evidence_hash(after)
+            context.save_job(job)
+
+
+def set_owned_fields(context: Any) -> None:
+    """Make sure the properties for people and the meeting are mapped. A deployment that never
+    turned the suggestion step on has them empty, and then naming a speaker at review would
+    leave the attendees alone."""
+    config = context.config()
+    enrichment = config.assignments["enrichment"]
+    wanted = {
+        "attendees_field": "attendees",
+        "invitees_field": "invitees",
+        "event_field": "calendar_event",
+    }
+    missing = {name: value for name, value in wanted.items() if not getattr(enrichment, name)}
+    if not missing:
+        return
+    context.store.admin.features.ensure_owned_properties()
+    for name, value in missing.items():
+        setattr(enrichment, name, value)
+    context.save_config(config)
+
+
+def declined(job: Any, schema: FrontmatterSchema) -> set[str]:
+    """The properties whose answer the owner has already settled on this note: rejected, or
+    taken. Everything in a job the owner closed with 'reject remaining' counts."""
+    if job is None or job.result is None:
+        return set()
+    decided = job.decided
+    return {
+        item.field
+        for index, item in enumerate(job.result.suggestions)
+        if item.kind == "field" and (job.state == "rejected" or index in decided)
+    }
+
+
 async def upgrade(context: Any) -> int:
     """Once, when Coppermind is first started with notes that arrive filled in: fill the notes
     already waiting in Review with the answers that were waiting for the owner to accept, where
-    the owner has put nothing of their own. Returns how many notes were filled in."""
+    the owner has put nothing of their own and has not rejected the answer. Returns how many
+    notes were filled in."""
     if context.read(UPGRADED, None) is not None:
         return 0
+    async with context.lock:
+        set_owned_fields(context)
     folder = sanitize_folder(context.store.control.settings().notes.review_folder)
     filled = 0
     if folder:
@@ -192,7 +244,7 @@ async def upgrade(context: Any) -> int:
             )
         newest: dict[str, Any] = {}
         for job in sorted(context.jobs(), key=lambda j: j.created_at):
-            if job.purpose != "dossier" and job.state == "suggested" and job.result:
+            if job.purpose != "dossier" and job.result:
                 newest[job.note_id] = job
         written = {
             r.note_id: r
@@ -213,9 +265,20 @@ async def _fill_waiting(context: Any, note_id: str, job: Any, written: dict[str,
     schema = context.store.control.schema()
     found: dict[str, Any] = {}
     recording = written.get(note_id)
+    settled = declined(job, schema)
     if recording is not None:
-        found = answers(context, context.read("recording-writeups/" + recording.id, {}))
-    if job is not None:
+        saved = context.read("recording-writeups/" + recording.id, {})
+        # An answer the owner rejected is never filled in, whichever way it reached the note.
+        saved = {
+            **saved,
+            "suggestions": [
+                item
+                for item in saved.get("suggestions", [])
+                if schema.roles.get(f"{item.get('field')}_key") not in settled
+            ],
+        }
+        found = {k: v for k, v in answers(context, saved).items() if k not in settled}
+    if job is not None and job.state == "suggested":
         allowed = context.allowed_fields(note_id)
         decided = {d.get("index") for d in job.decisions}
         for index, item in enumerate(job.result.suggestions):
@@ -235,4 +298,5 @@ async def _fill_waiting(context: Any, note_id: str, job: Any, written: dict[str,
     )
     after = await context.store.get_note(note_id)
     remember(context, note_id, after.frontmatter, changes)
+    await keep_job_current(context, note, after)
     return 1

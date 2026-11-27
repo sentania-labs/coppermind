@@ -202,6 +202,151 @@ async def test_upgrade_fills_what_was_waiting_once(store):
         assert (await store.get_note(note.id)).frontmatter["type"] == "personal"
 
 
+def waiting_job(note, **more):
+    return EnrichmentJob(
+        id=uuid.uuid4().hex + uuid.uuid4().hex,
+        note_id=note.id,
+        note_hash=note.content_hash,
+        evidence_hash="e",
+        config_hash="c",
+        schema_hash="s",
+        path=note.path,
+        created_at="2026-11-20T10:00:00+00:00",
+        **more,
+    )
+
+
+def writeup_answer(field, value):
+    return Suggestion(
+        kind="field",
+        field=field,
+        value=value,
+        reason="from the write-up",
+        confidence=0.9,
+        origin="writeup",
+    )
+
+
+async def waiting_note(store, context, answers):
+    answering(context, [])
+    job, note = await record(store, context, "plaud/rec-1", AUDIO)
+    key = "recording-writeups/" + job.id
+    saved = context.read(key, {})
+    saved["suggestions"] = answers
+    context.write(key, saved)
+    context.write("filled-in-upgrade", None)
+    return job, note
+
+
+WAITING = [
+    {"field": "account", "value": ["Acme"], "confidence": 0.9},
+    {"field": "type", "value": "work", "confidence": 0.9},
+    {"field": "tags", "value": ["vsphere"], "confidence": 0.9},
+]
+
+
+async def test_a_pending_job_is_not_made_stale_by_the_upgrade_fill(store):
+    async with Service(reply=reply(TOM)) as service:
+        context = await lifecycle(store, service)
+        _, note = await waiting_note(store, context, WAITING)
+        speaker = Suggestion(kind="speaker", field="Unknown voice 1", reason="a name")
+        pending = waiting_job(note, state="suggested", result=Suggestions(suggestions=[speaker]))
+        pending.evidence_hash = await context.note_evidence_hash(note)
+        context.save_job(pending)
+        before = await context.lifecycle.detail({"note_id": note.id})
+        assert [s["field"] for s in before["suggestions"]] == ["Unknown voice 1"]
+        assert await filled_in.upgrade(context) == 1
+        filled = await store.get_note(note.id)
+        assert filled.frontmatter["account"] == ["Acme"]
+        kept = context.load_job(pending.id)
+        assert kept.note_hash == filled.content_hash
+        assert kept.evidence_hash == await context.note_evidence_hash(filled)
+        # The voice the job carries is still offered after the fill.
+        after = await context.lifecycle.detail({"note_id": note.id})
+        assert [s["field"] for s in after["suggestions"]] == ["Unknown voice 1"]
+
+
+async def test_resummarize_fill_does_not_make_a_pending_job_stale(store):
+    async with Service(reply=reply(TOM)) as service:
+        context = await lifecycle(store, service)
+        answering(context, [])
+        job, note = await record(store, context, "plaud/rec-1", AUDIO)
+        speaker = Suggestion(kind="speaker", field="Unknown voice 1", reason="a name")
+        pending = waiting_job(note, state="suggested", result=Suggestions(suggestions=[speaker]))
+        pending.evidence_hash = await context.note_evidence_hash(note)
+        context.save_job(pending)
+        answering(context, ACME)
+        await context.review_notes.refill(
+            note, {"suggestions": [{"field": "account", "value": ["Acme"], "confidence": 0.9}]}
+        )
+        after = await store.get_note(note.id)
+        assert after.frontmatter["account"] == ["Acme"]
+        assert context.load_job(pending.id).note_hash == after.content_hash
+
+
+async def test_the_upgrade_maps_the_people_and_meeting_properties_when_they_are_empty(store):
+    async with Service(reply=reply(TOM)) as service:
+        context = await lifecycle(store, service)
+        _, note = await waiting_note(store, context, WAITING)
+        config = context.config()
+        for name in ("attendees_field", "invitees_field", "event_field"):
+            setattr(config.assignments["enrichment"], name, "")
+        context.save_config(config)
+        await filled_in.upgrade(context)
+        mapped = context.config().assignments["enrichment"]
+        assert (mapped.attendees_field, mapped.invitees_field, mapped.event_field) == (
+            "attendees",
+            "invitees",
+            "calendar_event",
+        )
+        keys = {k.name for k in store.control.schema().keys}
+        assert {"attendees", "invitees", "calendar_event"} <= keys
+
+
+async def test_the_upgrade_never_fills_an_answer_the_owner_rejected(store):
+    async with Service(reply=reply(TOM)) as service:
+        context = await lifecycle(store, service)
+        _, note = await waiting_note(store, context, [WAITING[0], WAITING[2]])
+        # The owner rejected the account (the first answer) and left the rest pending.
+        speaker = Suggestion(kind="speaker", field="Unknown voice 1", reason="a name")
+        job = waiting_job(
+            note,
+            state="suggested",
+            result=Suggestions(suggestions=[writeup_answer("account", ["Acme"]), speaker]),
+            decisions=[{"action": "reject", "index": 0, "at": "2026-11-20T10:00:00+00:00"}],
+        )
+        context.save_job(job)
+        assert await filled_in.upgrade(context) == 1
+        filled = await store.get_note(note.id)
+        assert not filled.frontmatter.get("account")
+        # What came from the account (the type) is not filled either; the tags still are.
+        assert filled.frontmatter["type"] == "reference"
+        assert filled.frontmatter["tags"] == ["vsphere"]
+
+
+async def test_the_upgrade_fills_nothing_from_a_job_closed_with_reject_remaining(store):
+    async with Service(reply=reply(TOM)) as service:
+        context = await lifecycle(store, service)
+        _, note = await waiting_note(store, context, WAITING)
+        job = waiting_job(
+            note,
+            state="rejected",
+            result=Suggestions(
+                suggestions=[
+                    writeup_answer("account", ["Acme"]),
+                    writeup_answer("type", "work"),
+                    writeup_answer("tags", ["vsphere"]),
+                ]
+            ),
+            decisions=[{"action": "reject remaining", "at": "2026-11-20T10:00:00+00:00"}],
+        )
+        context.save_job(job)
+        assert await filled_in.upgrade(context) == 0
+        left = await store.get_note(note.id)
+        assert not left.frontmatter.get("account") and not left.frontmatter.get("tags")
+        assert left.frontmatter["type"] == "reference"
+
+
 async def test_editing_a_note_leaves_nothing_stale_and_nothing_to_enrich(store):
     async with Service(reply=reply(TOM)) as service:
         context = await lifecycle(store, service)
