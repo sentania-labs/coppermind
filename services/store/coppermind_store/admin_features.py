@@ -80,83 +80,14 @@ class Features:
         except ValueError:
             return None
 
-    # -- what suggestions may fill in ------------------------------------------------------
+    # -- what suggestions fill in -----------------------------------------------------------
 
-    def fill_options(self) -> list[dict[str, str]]:
-        """Every blank suggestions may fill, built-in first, then the owner's own properties."""
-        schema = self.context.store.control.schema()
-        roles = {schema.role(r): r for r in schema.roles}
-        system = {
-            schema.role(r) for r in ("id_key", "reviewed_key", "sources_key", "schema_version_key")
-        } | {schema.optional_role("kind_key"), schema.optional_role("artifacts_key")}
-        named = {
-            "date_key": ("date", "Date", "When the meeting or note happened."),
-            "type_key": ("type", "Type", "Decides which folder the note is filed in."),
-            "context_key": (
-                "context",
-                "Context",
-                "Internal, personal, or with someone outside such as a customer.",
-            ),
-            "account_key": ("account", "Account", "Which customer or company it was with."),
-            "tags_key": ("tags", "Tags", "Your own labels."),
-        }
-        options = []
-        own = []
-        for key in schema.keys:
-            if key.name in system or key.name in {name for name, _, _ in OWNED} | set(RETIRED):
-                continue
-            role = roles.get(key.name)
-            if role in named:
-                ident, label, hint = named[role]
-                options.append({"key": ident, "label": label, "hint": hint, "field": key.name})
-            else:
-                own.append(
-                    {
-                        "key": "p:" + key.name,
-                        "label": key.name,
-                        "hint": (key.description + " " if key.description else "")
-                        + "Added by you.",
-                        "field": key.name,
-                    }
-                )
-        order = ["date", "type", "context", "account", "tags"]
-        options.sort(key=lambda item: order.index(item["key"]))
-        options += [
-            {
-                "key": "people",
-                "label": "Attendees",
-                "hint": "Who was there, matched to your calendar.",
-                "field": "",
-            },
-            {
-                "key": "event",
-                "label": "Meeting",
-                "hint": "Which calendar meeting the note belongs to.",
-                "field": "",
-            },
-        ]
-        return options + own
-
-    def fill_now(self, assignment: FeatureAssignment) -> dict[str, bool]:
-        ticked = {}
-        for option in self.fill_options():
-            if option["key"] == "people":
-                ticked["people"] = bool(assignment.attendees_field or assignment.invitees_field)
-            elif option["key"] == "event":
-                ticked["event"] = bool(assignment.event_field)
-            else:
-                ticked[option["key"]] = option["field"] in assignment.fields
-        return ticked
-
-    def _apply_fill(self, assignment: FeatureAssignment, keys: set[str]) -> None:
-        fields = []
-        for option in self.fill_options():
-            if option["field"] and option["key"] in keys:
-                fields.append(option["field"])
-        assignment.fields = fields[:20]
-        assignment.attendees_field = "attendees" if "people" in keys else ""
+    @staticmethod
+    def _fill_everything(assignment: FeatureAssignment) -> None:
+        """Point suggestions at the properties Coppermind owns. Nobody is asked what to fill."""
+        assignment.attendees_field = "attendees"
         assignment.invitees_field = ""
-        assignment.event_field = (assignment.event_field or "meeting") if "event" in keys else ""
+        assignment.event_field = assignment.event_field or "meeting"
 
     def ensure_owned_properties(self) -> None:
         """Create the properties Coppermind owns, and switch the note workflow on."""
@@ -254,8 +185,6 @@ class Features:
             "state": state,
             "service": service,
             "model": assignment.model,
-            "fill": self.fill_now(assignment),
-            "fill_options": self.fill_options(),
             "descr": assignment.send_calendar_descriptions,
             "wait_s": assignment.timeout_s,
             "max_output_tokens": assignment.max_output_tokens,
@@ -282,7 +211,7 @@ class Features:
         }
 
     async def suggestions_save(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Turn suggestions on, or save a change of service, model or what is filled in."""
+        """Turn suggestions on, or save a change of service or model."""
         service = self._service(str(payload.get("connection", "")))
         if service is None:
             raise Refused("service", "Choose a service first.")
@@ -296,7 +225,6 @@ class Features:
         model = str(payload.get("model", "")) or service["text"]["best"]
         if not service["text"]["ok"] or model not in working:
             raise Refused("model", "Choose one of the models that worked in the test.")
-        keys = {str(item) for item in payload.get("fill", [])}
         async with self.context.lock:
             self.ensure_owned_properties()
             config = self.context.config()
@@ -310,9 +238,9 @@ class Features:
                     "paused": old.enabled and old.paused,
                 }
             )
-            if "fill" in payload:
-                self._apply_fill(assignment, keys)
-                assignment.send_calendar_descriptions = bool(payload.get("descr"))
+            self._fill_everything(assignment)
+            if "descr" in payload:
+                assignment.send_calendar_descriptions = bool(payload["descr"])
             from coppermind_store.context_service import now
 
             assignment.automatic_after = old.automatic_after or now()
@@ -465,28 +393,19 @@ class Features:
         await self._update_enrichment(summary_directions=kept)
         return {"custom": sorted(kept), "emptied": emptied}
 
-    async def suggestions_fill(self, payload: dict[str, Any]) -> dict[str, Any]:
-        keys = {str(item) for item in payload.get("fill", [])}
+    async def suggestions_descr(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Whether the model may also read the descriptions of calendar meetings."""
         async with self.context.lock:
             self.ensure_owned_properties()
             config = self.context.config()
             assignment = config.assignments["enrichment"]
-            self._apply_fill(assignment, keys)
-            if "descr" in payload:
-                assignment.send_calendar_descriptions = bool(payload["descr"])
+            assignment.send_calendar_descriptions = bool(payload.get("descr"))
+            self._fill_everything(assignment)
             config.assignments["enrichment"] = FeatureAssignment.model_validate(
                 assignment.model_dump()
             )
             self.context.save_config(config)
-        return {"fill": self.fill_now(assignment)}
-
-    async def suggestions_tick(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Tick or untick one blank, from the property's own page or the Tags page."""
-        key, on = str(payload["key"]), bool(payload["on"])
-        config = self.context.config()
-        ticked = {k for k, v in self.fill_now(config.assignments["enrichment"]).items() if v}
-        ticked = ticked | {key} if on else ticked - {key}
-        return await self.suggestions_fill({"fill": sorted(ticked)})
+        return {"descr": assignment.send_calendar_descriptions}
 
     async def suggestions_older(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Ask for suggestions on waiting notes that never had any."""

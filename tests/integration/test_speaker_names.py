@@ -496,9 +496,6 @@ async def test_speakers_are_renamed_when_no_attendees_property_is_set_up(store, 
     context, result, note, job_id, _ = await recorded(
         store, standin, SHORT, speaker_answer(alex_id), attendees_field=""
     )
-    detail = await context.lifecycle_detail({"note_id": note.id})
-    assert "no attendees property is set up" in detail["speaker_attendees_notice"]
-    assert "What it fills in" in detail["speaker_attendees_notice"]
     completed = await context.complete_review(await completion(context, store, result, job_id))
     assert completed["state"] == "complete"
     text = (await store.get_source_artifact(result.source.id, 2, "transcript.txt")).content
@@ -575,7 +572,9 @@ async def test_speakers_and_an_attendee_suggestion_complete_together_without_los
         alex["id"], EntityChange(version=alex["version"], action="rename", name="Alexandra Morgan")
     )
     detail = await context.lifecycle_detail({"note_id": note.id})
-    by_kind = {s["kind"]: s["index"] for s in detail["suggestions"] if s["kind"] != "speaker"}
+    # The attendee answer is already in the note: nothing is left to accept but the voice.
+    assert {s["kind"] for s in detail["suggestions"]} == {"speaker"}
+    assert (await store.get_note(note.id)).frontmatter["attendees"] == ["Casey@EXAMPLE.COM"]
     speaker = next(s["index"] for s in detail["suggestions"] if s["kind"] == "speaker")
     note = await store.get_note(note.id)
     completed = await context.complete_review(
@@ -583,7 +582,7 @@ async def test_speakers_and_an_attendee_suggestion_complete_together_without_los
             "note_id": note.id,
             "if_match": note.content_hash,
             "job_id": job_id,
-            "selected": [by_kind["attendee"], speaker],
+            "selected": [speaker],
             "speaker_choices": {str(speaker): "person:" + alex["id"]},
             "confirmation": "Complete review",
         }
@@ -651,7 +650,7 @@ async def test_speaker_evidence_too_big_is_dropped_and_other_suggestions_still_a
         ]
 
     context, result, note, job_id, observed = await recorded(
-        store, standin, SHORT, answer, max_input_chars=2400
+        store, standin, SHORT, answer, max_input_chars=3100
     )
     job = context.load_job(job_id)
     assert job.state == "suggested", job.error

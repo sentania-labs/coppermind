@@ -91,19 +91,19 @@ KINDS = {
     "bool": ("Yes or no", "Example: follow-up needed."),
     "int": ("A number", "Example: an amount."),
 }
-# Properties Coppermind owns: the name a person reads, and which tick fills each.
+# Properties Coppermind owns, by the name a person reads.
 BUILT_ROLES = {
-    "date_key": ("Date", "date"),
-    "type_key": ("Type", "type"),
-    "context_key": ("Context", "context"),
-    "account_key": ("Account", "account"),
-    "tags_key": ("Tags", "tags"),
+    "date_key": "Date",
+    "type_key": "Type",
+    "context_key": "Context",
+    "account_key": "Account",
+    "tags_key": "Tags",
 }
 BUILT_OWNED = {
-    "attendees": ("Attendees", "people"),
-    "invitees": ("Invitees", "people"),
-    "meeting": ("Meeting", "event"),
-    "calendar_event": ("Meeting", "event"),
+    "attendees": "Attendees",
+    "invitees": "Invitees",
+    "meeting": "Meeting",
+    "calendar_event": "Meeting",
 }
 HIDDEN_ROLES = ("schema_version_key", "id_key", "reviewed_key", "sources_key")
 HIDDEN_NAMES = {"time_unknown", "kind", "artifacts"}
@@ -210,24 +210,22 @@ def properties(schema: FrontmatterSchema) -> list[dict[str, Any]]:
             continue
         role = roles.get(key.name)
         if role in BUILT_ROLES:
-            label, fill = BUILT_ROLES[role]
+            label = BUILT_ROLES[role]
             built.append(
                 {
                     "key": key,
                     "label": label,
-                    "fill": fill,
                     "built": True,
                     "tags": role == "tags_key",
                     "why": BUILT_WHY[label],
                 }
             )
         elif key.name in BUILT_OWNED:
-            label, fill = BUILT_OWNED[key.name]
+            label = BUILT_OWNED[key.name]
             built.append(
                 {
                     "key": key,
                     "label": label,
-                    "fill": fill,
                     "built": True,
                     "tags": False,
                     "why": key.description,
@@ -238,7 +236,6 @@ def properties(schema: FrontmatterSchema) -> list[dict[str, Any]]:
                 {
                     "key": key,
                     "label": key.name,
-                    "fill": "p:" + key.name,
                     "built": False,
                     "tags": False,
                     "why": key.description or "No description yet.",
@@ -670,18 +667,10 @@ the date</span><div class="chips">{chips}{adder}</div>
 
     # -- note properties -----------------------------------------------------------------
 
-    async def fill_state(ctx: Ctx) -> dict[str, Any] | None:
-        try:
-            return await ctx.act("suggestions", {})
-        except StoreError:
-            return None
-
     @routes.get("/admin/settings/properties", include_in_schema=False)
     async def properties_page(request: Request) -> Response:
         ctx = Ctx(request, wiring)
         _, schema = read_schema(ctx.control)
-        sugg = await fill_state(ctx)
-        on = bool(sugg and sugg["state"] != "none")
         rows = ""
         shown = properties(schema)
         for item in shown:
@@ -694,12 +683,6 @@ the date</span><div class="chips">{chips}{adder}</div>
                     f" Any tag is allowed; {len(schema.tags)} have a meaning written down."
                     if schema.tag_mode == "open"
                     else f" Only the {plural(len(schema.tags), 'tag')} on your list are allowed."
-                )
-            elif on and sugg:
-                detail += (
-                    " Suggestions fill it in."
-                    if sugg["fill"].get(item["fill"])
-                    else " Suggestions do not fill it in."
                 )
             here = "/admin/settings/properties/edit/" + segment(key.name)
             actions = (
@@ -754,13 +737,10 @@ edit their descriptions and options.</p></div>"""
         if target is None:
             return ctx.go("/admin/settings/properties")
         try:
-            # The tick goes first: suggestions cannot be left filling a property that is gone.
-            read_pinned(ctx)
-            await ctx.act("suggestions-tick", {"key": target["fill"], "on": False})
-            revision, schema = read_schema(ctx.control)
+            revision, schema = read_pinned(ctx)
             schema.keys = [key for key in schema.keys if key.name != name]
             write_schema(ctx.control, schema, revision)
-        except (StoreError, ValueError, RevisionConflict) as exc:
+        except (ValueError, RevisionConflict) as exc:
             return await ctx.refused(exc, "/admin/settings/properties")
         ctx.say("ok", f'Removed "{e(name)}". Existing notes were not changed.')
         return ctx.go("/admin/settings/properties")
@@ -777,8 +757,6 @@ edit their descriptions and options.</p></div>"""
         built = bool(item and item["built"])
         label = item["label"] if item else ""
         kind = values.get("kind", key.kind)
-        sugg = await fill_state(ctx)
-        on = bool(sugg and sugg["state"] != "none")
         if built:
             identity = ui.rows(
                 ui.row("Name", e(label)),
@@ -825,20 +803,6 @@ edit their descriptions and options.</p></div>"""
             hint="Shown to you here, and given to the AI model so it fills the property in "
             "sensibly.",
         )
-        if on and sugg:
-            ticked = True if new else bool(sugg["fill"].get(item["fill"] if item else ""))
-            fill = ui.check(
-                "fill",
-                "Let suggestions fill this in",
-                "The same tick as on the Suggestions page; change it in either place.",
-                checked=("fill" in values) if values else ticked,
-            ) + ui.hidden({"fill_shown": 1})
-        else:
-            fill = (
-                '<p class="muted">Suggestions are off, so nothing fills this in for you. '
-                + ui.a("Turn on suggestions", "/admin/suggestions")
-                + "</p>"
-            )
         title = "Add a property" if new else f'Edit "{e(label)}"'
         lede = (
             "One more piece of information your notes can carry."
@@ -849,7 +813,7 @@ edit their descriptions and options.</p></div>"""
         body = f"""{ui.head(title, lede, ("/admin/settings/properties", "Note properties"))}
 <div class="stack">{ui.banner("bad", errors["save"]) if errors.get("save") else ""}{
             ui.card(f'''<form method="post"
-action="/admin/settings/properties/edit/{segment(name)}">{identity}{options}{why}{fill}
+action="/admin/settings/properties/edit/{segment(name)}">{identity}{options}{why}
 <div class="actions">{ui.submit("Add property" if new else "Save")}
 {ui.go("Cancel", "/admin/settings/properties")}</div></form>''')
         }</div>"""
@@ -929,21 +893,6 @@ action="/admin/settings/properties/edit/{segment(name)}">{identity}{options}{why
             if new
             else f'Saved "{e(item["label"] if item else wanted)}".'
         )
-        if form.get("fill_shown"):
-            fill_key = item["fill"] if built and item else "p:" + wanted
-            try:
-                await ctx.act("suggestions-tick", {"key": fill_key, "on": "fill" in form})
-                said += (
-                    " Suggestions will fill it in."
-                    if "fill" in form and new
-                    else " Suggestions will not fill it in."
-                    if new
-                    else " Suggestions fill it in."
-                    if "fill" in form
-                    else " Suggestions do not fill it in."
-                )
-            except StoreError:
-                said += " The suggestions tick could not be saved; set it on the Suggestions page."
         ctx.say("ok", said)
         return ctx.go("/admin/settings/properties")
 
@@ -953,8 +902,6 @@ action="/admin/settings/properties/edit/{segment(name)}">{identity}{options}{why
     async def tags(request: Request) -> Response:
         ctx = Ctx(request, wiring)
         _, schema = read_schema(ctx.control)
-        sugg = await fill_state(ctx)
-        on = bool(sugg and sugg["state"] != "none")
         editing = ctx.q("edit")
         mode = ui.card(
             '<form method="post" action="/admin/settings/tags/mode">'
@@ -974,19 +921,6 @@ action="/admin/settings/properties/edit/{segment(name)}">{identity}{options}{why
                 schema.tag_mode == "closed",
             )
             + f'<div class="actions">{ui.submit("Save", "")}</div></form>'
-        )
-        tick = (
-            '<form class="act" method="post" action="/admin/settings/tags/fill">'
-            + ui.check(
-                "fill",
-                "Let suggestions add tags",
-                "The same tick as on the Suggestions page."
-                if on
-                else "Suggestions are off, so nothing adds tags for you.",
-                checked=bool(sugg and sugg["fill"].get("tags")),
-                disabled=not on,
-            ).replace("<input ", "<input data-auto ", 1)
-            + '<noscript><button class="lat-btn">Save</button></noscript></form>'
         )
         blank = '<span class="subtle">Not written down</span>'
         nothing = '<span class="subtle">Nothing</span>'
@@ -1057,7 +991,7 @@ action="/admin/settings/properties/edit/{segment(name)}">{identity}{options}{why
                 ("/admin/settings/properties", "Note properties"),
             )
         }
-<div class="stack">{ctx.flash()}{mode}{ui.card(tick + listing + form, "Your tags")}</div>"""
+<div class="stack">{ctx.flash()}{mode}{ui.card(listing + form, "Your tags")}</div>"""
         return await ctx.page("Tags", body, "settings", dialog=dialog)
 
     def tag_change(ctx: Ctx, change: Any) -> str:
@@ -1087,22 +1021,6 @@ action="/admin/settings/properties/edit/{segment(name)}">{identity}{options}{why
                 else f"Tags saved. Only the {plural(len(schema.tags), 'tag')} on your list are "
                 "allowed from now on.",
             )
-        return ctx.go("/admin/settings/tags")
-
-    @routes.post("/admin/settings/tags/fill", include_in_schema=False)
-    async def tags_fill(request: Request) -> Response:
-        ctx = Ctx(request, wiring)
-        form = await ctx.form()
-        try:
-            await ctx.act("suggestions-tick", {"key": "tags", "on": "fill" in form})
-        except StoreError as exc:
-            return await ctx.refused(exc, "/admin/settings/tags")
-        ctx.say(
-            "ok",
-            "Saved. Suggestions may add tags."
-            if "fill" in form
-            else "Saved. Suggestions no longer add tags.",
-        )
         return ctx.go("/admin/settings/tags")
 
     @routes.post("/admin/settings/tags/save", include_in_schema=False)

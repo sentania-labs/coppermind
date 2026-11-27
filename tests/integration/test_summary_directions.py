@@ -202,7 +202,7 @@ async def test_a_summary_already_made_is_not_written_again_by_a_change_of_instru
     await save(store, summary=OWN)
     # The pending suggestions stay good: nothing about them went stale.
     assert context.config_hash() == before
-    assert (await context.lifecycle_detail({"note_id": note.id}))["stale"] is False
+    assert "stale" not in await context.lifecycle_detail({"note_id": note.id})
     # And when suggestions are asked for again in the ordinary way, the summary is carried.
     again = context.load_job(await context.queue_note(note.id, force=True))
     await context.run_job(again)
@@ -288,9 +288,12 @@ async def test_the_earlier_summary_is_dropped_once_the_note_is_reviewed(store, s
     await context.run_job(max(context.jobs(), key=lambda item: item.created_at))
     kept = context.root / f"{EARLIER_SUMMARY}{note.id}.json"
     assert kept.exists()
-    await store.admin.act("note-check", {"id": note.id, "reviewed": True})
-    assert not kept.exists()
+    current = await store.get_note(note.id)
+    await store.patch_frontmatter(
+        note.id, PatchFrontmatter(set={"reviewed": True}), if_match=current.content_hash
+    )
     assert (await store.admin.act("note-summary", {"id": note.id}))["earlier"] is None
+    assert not kept.exists()
 
 
 async def test_a_reviewed_note_is_never_summarized_again(store, standin):

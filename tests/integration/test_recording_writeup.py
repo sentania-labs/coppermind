@@ -158,24 +158,17 @@ async def test_finished_body_without_suggestions_then_review(store):
         speaker = next(s for s in detail["suggestions"] if s["kind"] == "speaker")
         assert speaker["value"] is None and speaker["candidates"] == []
         assert detail["unnamed_voices"] == voices
-        selected = [
-            i
-            for i, suggestion in enumerate(review.result.suggestions)
-            if suggestion.field == "type"
-        ]
-        assert selected
-        # Heard and recognised by voice, so the write-up suggested them as an attendee, and
-        # the confident suggestion filled the blank field the way any other does.
-        assert any(
-            s.field == "attendees" and s.origin == "writeup" for s in review.result.suggestions
+        # The type answer was filled in on its own, so there is nothing left to select.
+        assert all(
+            s.field != "type" or i in review.decided
+            for i, s in enumerate(review.result.suggestions)
         )
         note = await store.get_note(note.id)
-        assert note.frontmatter["attendees"] == ["[[People/Alex Example]]"]
         await context.complete_review(
             {
                 "note_id": note.id,
                 "if_match": note.content_hash,
-                "selected": selected,
+                "selected": [],
                 "job_id": review.id,
                 "confirmation": "Complete review",
             }
@@ -808,7 +801,7 @@ def note_answer(extra=""):
     return build
 
 
-async def test_customer_call_arrives_with_suggested_fields_in_the_review_flow(store):
+async def test_customer_call_arrives_with_its_fields_filled_in(store):
     block = suggestion_block(
         [
             {"field": "account", "value": "halcyon", "confidence": "high", "reason": "named twice"},
@@ -830,25 +823,17 @@ async def test_customer_call_arrives_with_suggested_fields_in_the_review_flow(st
         assert saved["suggestion_error"] == ""
         assert {(s["field"], s["confidence"]) for s in saved["suggestions"]} == {
             ("account", 0.9),
-            ("context", 0.9),
+            ("tags", 0.9),
         }
-
-        async def suggest(*args):
-            return {"suggestions": [], "unresolved": []}, {}
-
-        context.provider.suggest = suggest
-        review = context.load_job(await context.queue_note(job.note_id))
-        await context.run_job(review)
-        assert review.state in {"suggested", "applying", "applied"}, review.error
-        by_field = {s.field: s for s in review.result.suggestions if s.kind == "field"}
-        assert by_field["account"].value == ["Halcyon Systems"]
-        assert by_field["context"].value == "external"
-        assert by_field["account"].reason == "named twice" and by_field["account"].confidence == 0.9
+        # The note arrives with them: a company by its own spelling, a new tag accepted, and
+        # a low-confidence answer left out. A customer call is work.
         note = await store.get_note(job.note_id)
         assert note.frontmatter["account"] == ["Halcyon Systems"]
+        assert note.frontmatter["tags"] == ["orbit", "not-a-tag"]
+        assert note.frontmatter["type"] == "work"
 
 
-async def test_a_company_that_does_not_exist_is_offered_as_a_new_account_and_not_written(store):
+async def test_a_company_that_does_not_exist_is_written_as_it_was_heard(store):
     block = suggestion_block(
         [{"field": "account", "value": "Brand New Corp", "confidence": "high", "reason": "named"}]
     )
@@ -856,76 +841,8 @@ async def test_a_company_that_does_not_exist_is_offered_as_a_new_account_and_not
         context, job, _ = await customer_recording(store, service, note_answer("\n" + block))
         saved = context.read("recording-writeups/" + job.id, {})
         account = next(s for s in saved["suggestions"] if s["field"] == "account")
-        assert account["new"] and account["confidence"] < 0.8
-        assert account["reason"].startswith("New account?")
-
-        async def suggest(*args):
-            return {"suggestions": [], "unresolved": []}, {}
-
-        context.provider.suggest = suggest
-        review = context.load_job(await context.queue_note(job.note_id))
-        await context.run_job(review)
-        assert "account" not in (await store.get_note(job.note_id)).frontmatter
-        assert any(s.field == "account" for s in review.result.suggestions)
-
-
-async def test_an_enrichment_account_keeps_the_context_suggestion_and_is_guarded(store):
-    block = suggestion_block(
-        [
-            {"field": "account", "value": "Halcyon", "confidence": "high", "reason": "named"},
-            {"field": "context", "value": "external", "confidence": "high", "reason": "customer"},
-        ]
-    )
-    async with Service(reply=CUSTOMER) as service:
-        context, job, _ = await customer_recording(store, service, note_answer("\n" + block))
-
-        async def suggest(*args):
-            return {
-                "suggestions": [
-                    {
-                        "kind": "field",
-                        "field": "account",
-                        "value": ["Halcyon Systems"],
-                        "confidence": 0.95,
-                        "quote": "Halcyon runs Orbit 7.2",
-                        "reason": "named",
-                    }
-                ],
-                "unresolved": [],
-            }, {}
-
-        context.provider.suggest = suggest
-        review = context.load_job(await context.queue_note(job.note_id))
-        await context.run_job(review)
-        fields = {s.field: s for s in review.result.suggestions if s.kind == "field"}
-        assert fields["context"].value == "external"
-
-
-async def test_an_enrichment_account_that_does_not_exist_is_offered_as_new_not_filled(store):
-    async with Service(reply=CUSTOMER) as service:
-        context, job, _ = await customer_recording(store, service, note_answer("\n"))
-
-        async def invent(*args):
-            return {
-                "suggestions": [
-                    {
-                        "kind": "field",
-                        "field": "account",
-                        "value": ["Brand New Corp"],
-                        "confidence": 0.99,
-                        "quote": "Halcyon runs Orbit 7.2",
-                        "reason": "named",
-                    }
-                ],
-                "unresolved": [],
-            }, {}
-
-        context.provider.suggest = invent
-        review = context.load_job(await context.queue_note(job.note_id))
-        await context.run_job(review)
-        account = next(s for s in review.result.suggestions if s.field == "account")
-        assert account.confidence < 0.8 and account.reason.startswith("New account?")
-        assert "account" not in (await store.get_note(job.note_id)).frontmatter
+        assert account["value"] == ["Brand New Corp"] and account["confidence"] == 0.9
+        assert (await store.get_note(job.note_id)).frontmatter["account"] == ["Brand New Corp"]
 
 
 async def test_a_suggestion_block_that_cannot_be_read_never_costs_the_note(store):

@@ -1,4 +1,4 @@
-"""Notes: find a note, see why one is stuck, fix it, and review one without Obsidian.
+"""Notes: find a note, see why one is stuck, and fix it.
 
 Notes live in Obsidian. This part of Admin says where a note is and deals with
 the ones Coppermind could not handle by itself. Nothing is done to a note
@@ -12,14 +12,12 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import Response
 
-from coppermind.meeting_summary import SECTIONS
-from coppermind.schema import normalize_note_time, note_date, note_start_time
 from coppermind.settings import Wiring
 from coppermind.statefiles import RevisionConflict
-from coppermind.store_protocol import PatchFrontmatter, StoreError
+from coppermind.store_protocol import StoreError
 from coppermind_admin import model, ui
 from coppermind_admin.pages.common import folder_words, obsidian
-from coppermind_admin.pages.settings import duration, folder_dialog, read_schema
+from coppermind_admin.pages.settings import duration, folder_dialog
 from coppermind_admin.shell import Ctx, explain, not_saved
 from coppermind_admin.ui import e, plural
 
@@ -47,20 +45,6 @@ ALONE_LEDE = (
 )
 
 
-def context_still_required(schema: Any, roles: dict[str, str], note_type: str) -> bool:
-    """Whether the saved schema asks for context on a note of this type. An installation
-    that edited its context definition may still require it everywhere."""
-    definition = next((k for k in schema.keys if k.name == roles["context_key"]), None)
-    if definition is None:
-        return False
-    if definition.required:
-        return True
-    return (
-        definition.required_when == roles["type_key"]
-        and note_type in definition.required_when_values
-    )
-
-
 def alone_why(reason: str) -> str:
     """Why a file is left alone, from the rule the last scan recorded for it."""
     if reason.startswith("folder: "):
@@ -79,38 +63,23 @@ def alone_why(reason: str) -> str:
     return e(reason)
 
 
-def summary_text(summary: dict[str, Any]) -> str:
-    """A proposed meeting summary, shown the way it will read in the note."""
-    return "".join(
-        f'<div class="row-l">{title}</div><div class="summary">{e(summary[key].strip())}</div>'
-        for key, title in ((part.key, part.name) for part in SECTIONS)
-        if str(summary.get(key) or "").strip()
-    )
-
-
-def summary_card(
-    summary: dict[str, Any], values: dict[str, str], here: str
-) -> tuple[str, str, int]:
-    """The summary part of a review: the card, a notice to show above the form, a refresh."""
+def summary_card(summary: dict[str, Any], here: str) -> tuple[str, str, int]:
+    """The meeting summary of a note written from a recording: the card, a notice, a refresh."""
     if not summary.get("recording"):
         return "", "", 0
-    title = "The meeting summary"
     state, service = summary["state"], summary.get("service")
     again = ""
     notice = ""
     if state == "on":
-        again = (
-            '<button class="lat-btn" type="submit" form="summary-again-form" '
-            'data-busy="Starting…">Write the summary again</button>'
-        )
+        again = ui.btn("Write the summary again", f"{here}/summary-again", "", busy="Starting…")
         how = (
-            " Writing it again uses the transcript Coppermind already has (the recording is "
+            "Writing it again uses the transcript Coppermind already has (the recording is "
             "not sent anywhere again) and the directions as they are now. "
             + ui.a("Change the directions", "/admin/suggestions/summary")
         )
     elif state == "failing" and service:
         how = (
-            f" It cannot be written again right now, because {e(service['name'])} is not answering."
+            f"It cannot be written again right now, because {e(service['name'])} is not answering."
         )
         notice = ui.banner(
             "bad",
@@ -120,138 +89,37 @@ def summary_card(
                 "Test now",
                 f"/admin/services/{ui.segment(service['id'])}/test",
                 "",
-                {"back": here + "/review"},
+                {"back": here},
                 busy="Testing…",
             )
             + ui.go(
                 "Edit this service",
-                ui.url(f"/admin/services/{ui.segment(service['id'])}", back=here + "/review"),
+                ui.url(f"/admin/services/{ui.segment(service['id'])}", back=here),
             ),
         )
     else:
         how = (
-            " It cannot be written again right now, because suggestions are "
+            "It cannot be written again right now, because suggestions are "
             f"{'paused' if state == 'paused' else 'off'}. "
             + ui.a("Open Suggestions", "/admin/suggestions")
         )
-    proposed, earlier = summary.get("proposed"), summary.get("earlier")
-
-    def earlier_choice(picked: str) -> str:
-        """The summary from before, shown and on offer while there is no newer one."""
-        if not earlier:
-            return ui.hidden({"summary": "none"})
-        return (
-            '<div class="row-l" style="margin-top:10px">The summary from before</div>'
-            f"{summary_text(earlier)}"
-            + ui.choice(
-                "summary",
-                "earlier",
-                "Add the summary from before to the note",
-                "It goes at the end of the note when you mark it reviewed.",
-                picked != "none",
-            )
-            + ui.choice(
-                "summary",
-                "none",
-                "Leave the summary out",
-                "The note is filed without one.",
-                picked == "none",
-            )
-        )
-
     if summary["writing"]:
         body = (
             '<p><span class="lat-badge lat-badge--accent">Writing</span> Coppermind is writing '
             "the summary now. It usually takes a minute or two, and this page updates by "
-            "itself. Nothing is added to the note until you mark it reviewed.</p>"
-            + (
-                '<p class="muted">The summary from before is kept. If you mark the note '
-                "reviewed before the new one is here, it is the one that is used unless you "
-                "choose to leave the summary out.</p>"
-                if earlier
-                else ""
-            )
-            + earlier_choice(values.get("summary", ""))
+            "itself.</p>"
         )
-        return ui.card(body, title), notice, 8
-    if not proposed:
-        body = (
-            "<p>"
-            + (
-                "The summary could not be written"
-                + (" again. The one from before is still here." if earlier else ".")
-                + ("" if earlier else " The note can still be reviewed and filed without one.")
-                if summary["failed"]
-                else "There is no summary for this note yet."
-            )
-            + how
-            + "</p>"
-            + (f'<div class="actions">{again}</div>' if again else "")
-            + earlier_choice(values.get("summary", ""))
-        )
-        return ui.card(body, title), notice, 0
-    picked = values.get("summary") or "new"
-    choices = ui.choice(
-        "summary",
-        "new",
-        "Add this summary to the note",
-        "It goes at the end of the note when you mark it reviewed.",
-        picked == "new",
-    )
-    if earlier:
-        choices += ui.choice(
-            "summary",
-            "earlier",
-            "Use the earlier summary instead",
-            "The one from before you asked for it to be written again.",
-            picked == "earlier",
-        ) + ui.reveal("Show the earlier summary", summary_text(earlier))
-    choices += ui.choice(
-        "summary",
-        "none",
-        "Leave the summary out",
-        "The note is filed without one.",
-        picked == "none",
-    )
-    kept = (
-        " The earlier summary is kept until you mark the note reviewed, so you can still "
-        "choose it below."
-        if earlier
-        else ""
-    )
-    body = (
-        f"{summary_text(proposed)}"
-        '<p class="muted" style="margin-top:10px">Nothing is written to the note until you '
-        f"mark it reviewed.{kept}{how}</p>"
-        + (f'<div class="actions">{again}</div>' if again else "")
-        + f'<div style="margin-top:10px">{choices}</div>'
-    )
-    return ui.card(body, title), notice, 0
-
-
-def invited(meeting: dict[str, Any]) -> int:
-    """How many people a meeting invited, each counted once: the organizer is often listed twice."""
-    people = meeting.get("people") or []
-    return len(
-        {
-            str(person.get("address") or person.get("name") or "").strip().lower()
-            if isinstance(person, dict)
-            else str(person).strip().lower()
-            for person in people
-        }
-        - {""}
-    )
+        return ui.card(body, "The meeting summary"), notice, 8
+    said = "The summary could not be written. " if summary["failed"] else ""
+    body = f"<p>{said}{how}</p>" + (f'<div class="actions">{again}</div>' if again else "")
+    return ui.card(body, "The meeting summary"), notice, 0
 
 
 def history_line(entry: dict[str, Any], here: str) -> str:
     """One line of a note's history: a plain sentence, with any raw text kept for support."""
     line = e(entry["text"])
     if entry.get("summary_again"):
-        line += (
-            " To have Coppermind try once more, open "
-            + ui.a("its review page", f"{here}/review")
-            + " and press Write the summary again."
-        )
+        line += " To have Coppermind try once more, press Write the summary again on this page."
     if entry.get("plain"):
         line += f"<div>{e(entry['plain'])}</div>"
     if entry.get("answer"):
@@ -295,8 +163,8 @@ def router(wiring: Wiring) -> APIRouter:
         except StoreError:
             return await ctx.unavailable("Notes", LEDE, "notes")
         waiting = waiting["items"]
-        stuck, unsure = view["notes"]["stuck"], view["notes"]["unsure"]
-        need = len(stuck) + len(unsure)
+        stuck = view["notes"]["stuck"]
+        need = len(stuck)
         if not (waiting or alone or stuck) and not query:
             connect = (
                 ui.go("Connect Obsidian Sync", "/admin/sync", "primary")
@@ -322,17 +190,10 @@ def router(wiring: Wiring) -> APIRouter:
         def waiting_row(note: dict[str, Any], prefix: str = "") -> str:
             link = model.note_path(note["id"])
             title = prefix + ui.a(e(note["title"]), link)
-            if note["unsure"]:
-                title += " " + ui.badge("warn", f"{note['unsure']} to check")
             detail = (
                 f"Arrived {ui.when(note['arrived'], ctx.zone)}. Waiting for you to check it "
                 "in Obsidian."
             )
-            if note["unsure"]:
-                detail += (
-                    f" Coppermind was not sure about {plural(note['unsure'], 'suggestion')} "
-                    f"and needs your answer."
-                )
             missing = note["no_suggestions"]
             if missing and view["sugg"]["state"] == "none":
                 detail += " No suggestions: suggestions are off."
@@ -344,13 +205,7 @@ def router(wiring: Wiring) -> APIRouter:
                 detail += " No suggestions: it was too long for this model."
             elif missing == "soon" and sugg_on:
                 detail += " Suggestions are being written."
-            actions = (
-                ui.go(
-                    "Check it" if note["unsure"] == 1 else "Check them", link + "/review", "primary"
-                )
-                if note["unsure"]
-                else ui.go("Review here", link + "/review")
-            )
+            actions = ""
             if missing in {"before", "failed", "toolong"} and sugg_on:
                 actions += ui.btn(
                     "Get suggestions",
@@ -401,17 +256,6 @@ def router(wiring: Wiring) -> APIRouter:
                 fix + obsidian(view, note["path"]),
             )
 
-        def unsure_row(note: dict[str, Any]) -> str:
-            link = model.note_path(note["id"])
-            return ui.item(
-                ui.a(e(note["title"]), link) + " " + ui.badge("warn", f"{note['count']} to check"),
-                f"Coppermind was not sure about {plural(note['count'], 'suggestion')} and "
-                "needs your answer. Nothing is filled in until you say.",
-                ui.go(
-                    "Check it" if note["count"] == 1 else "Check them", link + "/review", "primary"
-                ),
-            )
-
         if query:
             by_id = {note["id"]: note for note in waiting}
             lines = ""
@@ -451,14 +295,8 @@ def router(wiring: Wiring) -> APIRouter:
                 "problem. " + ui.a("Change which files are left alone", "/admin/notes/leave-alone"),
             }[tab]
             if tab == "notfiled":
-                lines = "".join(stuck_row(n) for n in stuck) + "".join(
-                    unsure_row(n) for n in unsure
-                )
-                none = ui.empty(
-                    "Nothing needs you",
-                    "Every note you reviewed has been filed, and no suggestion is waiting for "
-                    "your answer.",
-                )
+                lines = "".join(stuck_row(n) for n in stuck)
+                none = ui.empty("Nothing needs you", "Every note you reviewed has been filed.")
             elif tab == "waiting":
                 lines = "".join(waiting_row(n) for n in waiting[:100])
                 if len(waiting) > 100:
@@ -846,28 +684,27 @@ name="csrf" value="{{csrf}}">Save</button>
                 ui.btn("Check again now", f"{here}/check", busy="Checking…"),
             )
         else:
-            unsure = data["unsure"]
             top = ui.status(
                 "off",
                 "Waiting for your review",
                 f"In {folder_words(data['path'].rsplit('/', 1)[0])} since "
                 f"{ui.when(data['arrived'], ctx.zone)}. Open it in Obsidian, check it and tick "
-                "Reviewed."
-                + (
-                    f" Coppermind was not sure about {plural(unsure, 'suggestion')}."
-                    if unsure
-                    else ""
-                ),
-                obsidian(view, data["path"], kind="" if unsure else "primary")
-                + ui.go(
-                    "Check them here" if unsure else "Review it here instead",
-                    f"{here}/review",
-                    "primary" if unsure else "",
-                ),
+                "Reviewed.",
+                obsidian(view, data["path"], kind="primary"),
             )
+        summary, notice, refresh = "", "", 0
+        if data["state"] == "waiting" and not stuck:
+            summary, notice, refresh = summary_card(await note_summary(ctx, identity), here)
+        live = f"<div data-live>{summary}</div>" if summary else ""
         voices = ui.unnamed_voices(data.get("unnamed_voices", []))
-        body = f'{head}<div class="stack">{ctx.flash()}{top}{voices}{history}</div>'
-        return await ctx.page(data["title"], body, "notes")
+        body = f'{head}<div class="stack">{ctx.flash()}{notice}{top}{live}{voices}{history}</div>'
+        return await ctx.page(data["title"], body, "notes", refresh=refresh)
+
+    async def note_summary(ctx: Ctx, identity: str) -> dict[str, Any]:
+        try:
+            return await ctx.act("note-summary", {"id": identity})
+        except StoreError:
+            return {"recording": False}
 
     async def fix(ctx: Ctx, identity: str, action: str, payload: dict[str, Any]) -> Any:
         try:
@@ -938,257 +775,13 @@ name="csrf" value="{{csrf}}">Save</button>
             ctx.say("ok", said)
         return ctx.go(model.note_path(identity))
 
-    # -- review a note here --------------------------------------------------------------
-
-    async def review_data(ctx: Ctx, identity: str) -> dict[str, Any]:
-        return await ctx.store.context_action("lifecycle", {"note_id": identity})
-
-    async def note_summary(ctx: Ctx, identity: str) -> dict[str, Any]:
-        try:
-            return await ctx.act("note-summary", {"id": identity})
-        except StoreError:
-            return {"recording": False}
-
-    def confident_speaker(suggestion: dict[str, Any]) -> bool:
-        return bool(
-            suggestion.get("value")
-            and suggestion.get("confidence", 0) >= 0.8
-            and any(c["id"] == suggestion["value"] for c in suggestion.get("candidates", []))
-        )
-
-    def open_questions(data: dict[str, Any]) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
-        """What Coppermind was not sure about: which meeting, and each open suggestion."""
-        meeting = data.get("recording_meeting")
-        ask_meeting = None
-        if meeting and len(meeting["candidates"]) > 1 and not meeting.get("selected_event_id"):
-            ask_meeting = meeting
-        suggestions = [
-            s for s in data["suggestions"] if s["kind"] != "filename" and not data["stale"]
-        ]
-        return ask_meeting, suggestions
-
-    async def review_page(
-        ctx: Ctx, identity: str, values: dict[str, str], errors: dict[str, str], status: int = 200
-    ) -> Response:
-        view = await ctx.view()
-        try:
-            data = await review_data(ctx, identity)
-        except StoreError:
-            return ctx.go("/admin/notes")
-        note = data["note"]
-        here = model.note_path(identity)
-        _, schema = read_schema(ctx.control)
-        roles = data["roles"]
-        front = note["frontmatter"]
-        if front.get(roles["reviewed_key"]) is True:
-            ctx.say("info", "That note has already been reviewed.")
-            return ctx.go(here)
-        day = note_date(front, schema)
-        start = note_start_time(front, schema)
-        type_key = next(key for key in schema.keys if key.name == roles["type_key"])
-        context_key = next(key for key in schema.keys if key.name == roles["context_key"])
-        kind = str(front.get(roles["type_key"]) or "")
-        types = list(type_key.vocabulary) + (
-            [kind] if kind and kind not in type_key.vocabulary else []
-        )
-
-        def work_only(part: str) -> str:
-            """A field only a work note asks for: hidden for any other type."""
-            shown = values.get("type", kind) == "work"
-            return f'<div data-if="type=work"{"" if shown else " hidden"}>{part}</div>'
-
-        def listed(name: str) -> str:
-            value = front.get(name)
-            if isinstance(value, list):
-                return ", ".join(str(item) for item in value)
-            return str(value or "")
-
-        def field(name: str, label: str, value: str, kind: str = "text", hint: str = "") -> str:
-            return ui.text_input(
-                name,
-                label,
-                values.get(name, value),
-                kind=kind,
-                hint=hint,
-                error=errors.get(name, ""),
-            )
-
-        meeting, suggestions = open_questions(data)
-        unsure = ""
-        if meeting:
-            options = "".join(
-                ui.choice(
-                    "meeting",
-                    candidate["event_id"],
-                    e(candidate["title"]),
-                    f"{ui.when(candidate['start'], ctx.zone)}. "
-                    f"{plural(invited(candidate), 'person', 'people')} invited.",
-                    values.get("meeting") == candidate["event_id"],
-                )
-                for candidate in meeting["candidates"]
-            ) + ui.choice("meeting", "none", "None of these", "", values.get("meeting") == "none")
-            unsure += (
-                '<div class="field field--wide"><span class="lat-label">Which meeting was '
-                f"this? {plural(len(meeting['candidates']), 'meeting')} on your calendar "
-                f"could be it.</span>{options}{ui.field_error(errors.get('meeting', ''))}</div>"
-            )
-        for suggestion in suggestions:
-            name = f"s_{suggestion['index']}"
-            answer = values.get(name, "")
-            if suggestion["kind"] == "speaker" and not confident_speaker(suggestion):
-                voice = next(
-                    (v for v in data.get("unnamed_voices", []) if v["name"] == suggestion["field"]),
-                    None,
-                )
-                question = f"Who is {e(suggestion['field'])}? There is no confident match."
-                options = (
-                    ui.a(
-                        "Name this voice",
-                        ui.voice_name_path(voice["id"]) if voice else "/admin/people?tab=voices",
-                    )
-                    + '<p class="hint">You can finish this review and name the voice later.</p>'
-                )
-            elif suggestion["kind"] == "speaker":
-                people = "".join(
-                    ui.choice(name, c["id"], f"Yes, that was {e(c['name'])}", "", answer == c["id"])
-                    for c in suggestion.get("candidates", [])
-                    if not suggestion["value"] or c["id"] == suggestion["value"]
-                )
-                question = f"Who is {e(suggestion['field'])}? {e(suggestion['reason'])}"
-                options = people + ui.choice(
-                    name, "no", "No, leave that speaker unnamed", "", answer == "no"
-                )
-            else:
-                shown = e(suggestion.get("display_value", ""))
-                what = e(suggestion["field"] or suggestion["kind"])
-                question = f"{what[0].upper() + what[1:]}: {shown}? {e(suggestion['reason'])}"
-                options = ui.choice(name, "yes", "Yes, use it", "", answer == "yes") + ui.choice(
-                    name, "no", "No, leave it out", "", answer == "no"
-                )
-            quote = (
-                f'<div class="quote">{e(suggestion["quote"])}</div>'
-                if suggestion.get("quote")
-                else ""
-            )
-            unsure += (
-                f'<div class="field field--wide"><span class="lat-label">{question}</span>'
-                f"{quote}{options}{ui.field_error(errors.get(name, ''))}</div>"
-            )
-        unsure_card = (
-            ui.card(unsure, "Coppermind was not sure about these. Nothing is chosen for you.")
-            if unsure
-            else ""
-        )
-        left = (
-            field("date", "Date", day.isoformat() if day else "", "date")
-            + field(
-                "time",
-                "Start time, if it was a meeting",
-                start.strftime("%H:%M") if start else "",
-                "time",
-                "Leave empty if there was no set time.",
-            )
-            + ui.select(
-                "type",
-                "Type",
-                [(item, item) for item in types],
-                values.get("type", kind),
-                hint="Decides the folder. These are the types you already use.",
-            )
-            + work_only(
-                ui.select(
-                    "context",
-                    "Context",
-                    [(item, item) for item in context_key.vocabulary],
-                    values.get("context", str(front.get(roles["context_key"]) or "")),
-                    hint="Work notes only: internal, or external for a customer.",
-                )
-            )
-        )
-        right = (
-            work_only(
-                field(
-                    "account",
-                    "Account",
-                    listed(roles["account_key"]),
-                    hint="Work notes only: customers or companies, separated by commas.",
-                )
-            )
-            + field("tags", "Tags", listed(roles["tags_key"]), hint="Separated by commas.")
-            + (
-                field(
-                    "attendees",
-                    "Attendees",
-                    listed("attendees"),
-                    hint="Who was there, separated by commas.",
-                )
-                if any(key.name == "attendees" for key in schema.keys)
-                else ""
-            )
-        )
-        problem = ui.banner("warn", e(data["review_problem"])) if data.get("review_problem") else ""
-        summary_part, summary_notice, refresh = summary_card(
-            await note_summary(ctx, identity), values, here
-        )
-        live_summary = f"<div data-live>{summary_part}</div>" if summary_part else ""
-        again_form = (
-            f'<form id="summary-again-form" method="post" action="{here}/summary-again"></form>'
-            if summary_part
-            else ""
-        )
-        if data.get("suggestion_plain"):
-            # Whole sentences, then the one action this page really has.
-            if again_form:
-                step = " To try again, press Write the summary again at the bottom of this page."
-                action = ""
-            elif data.get("suggestions_enabled"):
-                step = " To try again, press Get suggestions."
-                action = ui.btn(
-                    "Get suggestions",
-                    "/admin/suggestions/older",
-                    "",
-                    {"note": identity, "back": here + "/review"},
-                    busy="Asking…",
-                )
-            else:
-                step, action = "", ""
-            suggestion_error = ui.banner(
-                "warn",
-                e(data["suggestion_plain"] + step) + (f"<div>{action}</div>" if action else ""),
-            )
-        elif data.get("suggestion_error"):
-            suggestion_error = ui.banner(
-                "warn", ui.linked_answer_limit_error(data["suggestion_error"])
-            )
-        else:
-            suggestion_error = ""
-        lede = (
-            "The same check you would do in Obsidian, for when Obsidian is not to hand. "
-            "Nothing is filed until you press the button at the bottom."
-        )
-        body = f"""{ui.head(f'Review "{e(note["title"])}"', lede, (here, "the note"))}
-<div class="stack">{ctx.flash()}{problem}{suggestion_error}{summary_notice}
-<form method="post" action="{here}/review" class="stack">
-{ui.hidden({"if_match": note["content_hash"]})}{unsure_card}{live_summary}
-{
-            ui.card(
-                f'<div class="two"><div>{left}</div><div>{right}</div></div>',
-                "What Coppermind filled in. Correct anything that is wrong.",
-            )
-        }
-<div class="actions">
-{ui.submit("Mark as reviewed and file it", name="how", value="file", busy="Filing…")}
-{ui.submit("Save, but do not file yet", "", name="how", value="save", busy="Saving…")}
-{obsidian(view, note["path"])}</div></form>{again_form}</div>"""
-        return await ctx.page(
-            "Review a note", body, "notes", status=status, refresh=refresh if status == 200 else 0
-        )
+    # -- the meeting summary -------------------------------------------------------------
 
     @routes.post("/admin/notes/{identity}/summary-again", include_in_schema=False)
     async def summary_again(identity: str, request: Request) -> Response:
         ctx = Ctx(request, wiring)
         await ctx.form()
-        back = model.note_path(identity) + "/review"
+        back = model.note_path(identity)
         try:
             result = await ctx.act("note-summary-again", {"id": identity})
         except StoreError as exc:
@@ -1198,258 +791,12 @@ name="csrf" value="{{csrf}}">Save</button>
         elif result["already"]:
             ctx.say("info", "Coppermind is already writing the summary. This page shows it soon.")
         else:
-            ctx.say(
-                "ok",
-                "Coppermind is writing the summary again from the same transcript. The one "
-                "you had is kept, and you can still choose it when the new one is here. "
-                "Anything you had typed on this page was not saved.",
-            )
+            ctx.say("ok", "Coppermind is writing the summary again from the same transcript.")
         return ctx.go(back)
 
     @routes.get("/admin/notes/{identity}/review", include_in_schema=False)
     async def review(identity: str, request: Request) -> Response:
-        return await review_page(Ctx(request, wiring), identity, {}, {})
-
-    @routes.post("/admin/notes/{identity}/review", include_in_schema=False)
-    async def review_save(identity: str, request: Request) -> Response:
-        ctx = Ctx(request, wiring)
-        form = await ctx.form()
-        here = model.note_path(identity)
-        try:
-            data = await review_data(ctx, identity)
-        except StoreError:
-            return ctx.go("/admin/notes")
-        meeting, suggestions = open_questions(data)
-        errors: dict[str, str] = {}
-        if meeting and not form.get("meeting"):
-            errors["meeting"] = "Choose one, so Coppermind is not guessing."
-        for suggestion in suggestions:
-            if suggestion["kind"] == "speaker" and not confident_speaker(suggestion):
-                continue
-            if not form.get(f"s_{suggestion['index']}"):
-                errors[f"s_{suggestion['index']}"] = "Choose one, so Coppermind is not guessing."
-        if not form.get("date"):
-            errors["date"] = "Pick the date of the note."
-        if errors:
-            return await review_page(ctx, identity, form, errors, 422)
-        roles = data["roles"]
-        note = data["note"]
-        front = note["frontmatter"]
-        if form.get("if_match") and form["if_match"] != note["content_hash"]:
-            # The note was edited somewhere else after this page was drawn. What is on the
-            # page is older than the note, so none of it is written over the newer edit.
-            ctx.say(
-                "warn",
-                "This note was changed somewhere else while the page was open, so nothing "
-                "was saved. The page now shows the note as it is; check it and press the "
-                "button again.",
-            )
-            return ctx.go(here + "/review")
-        _, schema = read_schema(ctx.control)
-
-        def split(text: str) -> list[str]:
-            return [part.strip() for part in text.split(",") if part.strip()]
-
-        entered = form["date"] + (f"T{form['time']}:00" if form.get("time") else "")
-        changes: dict[str, Any] = {
-            roles["date_key"]: normalize_note_time(entered) if form.get("time") else entered,
-            roles["type_key"]: form.get("type", ""),
-            roles["tags_key"]: split(form.get("tags", "")),
-        }
-        # Context and account belong to work notes. The page does not send them for any
-        # other type, so a note that is not work keeps whatever it carries, except the
-        # recording default (internal) a note arrives with as work, which is dropped when
-        # the note is moved off work. Notes that were never work are left as they are.
-        unset_default: list[str] = []
-        if form.get("type") == "work":
-            changes[roles["context_key"]] = form.get("context", "")
-            changes[roles["account_key"]] = split(form.get("account", ""))
-        elif (
-            front.get(roles["type_key"]) == "work"
-            and front.get(roles["context_key"]) == "internal"
-            and not context_still_required(schema, roles, form.get("type", ""))
-        ):
-            unset_default.append(roles["context_key"])
-        if "attendees" in form:
-            changes["attendees"] = split(form["attendees"])
-        current_day, current_start = note_date(front, schema), note_start_time(front, schema)
-        same_time = (
-            current_day is not None
-            and current_day.isoformat() == form["date"]
-            and (current_start.strftime("%H:%M") if current_start else "") == form.get("time", "")
-        )
-        if same_time:
-            changes.pop(roles["date_key"])
-        # Only what its owner actually changed is written. An empty box is the same as a
-        # property the note does not have, so it never adds an empty property to the note.
-        changes = {
-            key: value
-            for key, value in changes.items()
-            if front.get(key) != value and (value or front.get(key))
-        }
-        selected: list[int] = []
-        speakers: dict[str, str] = {}
-        for suggestion in suggestions:
-            if suggestion["kind"] == "speaker" and not confident_speaker(suggestion):
-                continue
-            answer = form.get(f"s_{suggestion['index']}", "no")
-            if answer == "no":
-                continue
-            selected.append(suggestion["index"])
-            if suggestion["kind"] == "speaker":
-                speakers[str(suggestion["index"])] = answer
-        picked = form.get("meeting", "")
-        choose = picked if meeting and picked != "none" else ""
-        # The summary its owner chose: the one proposed now, the earlier one, or none.
-        offered = await note_summary(ctx, identity)
-        wanted = form.get("summary", "new")
-        summary = None
-        # The review a summary is added through: the current one, or, when the newer summary
-        # is not here (still being written, or it failed), the one the earlier summary came with.
-        review_job = data["job_id"]
-        current = offered.get("proposed") if not offered.get("writing") else None
-        if offered.get("recording"):
-            if wanted == "new" and current:
-                summary = current
-            elif wanted == "earlier" and offered.get("earlier"):
-                summary = offered["earlier"]
-                if not current:
-                    review_job = offered["earlier_job"]
-        # The first write is held to the note as the page showed it; later ones follow on.
-        expected = form.get("if_match", "") or note["content_hash"]
-        calendar_hash = (data.get("recording_meeting") or {}).get("calendar_hash", "")
-
-        async def fresh() -> None:
-            nonlocal data, note, expected, calendar_hash
-            data = await review_data(ctx, identity)
-            note = data["note"]
-            expected = note["content_hash"]
-            calendar_hash = (data.get("recording_meeting") or {}).get(
-                "calendar_hash", calendar_hash
-            )
-
-        async def apply_edits() -> None:
-            """The person's own corrections, then the meeting they picked."""
-            if changes or unset_default:
-                await ctx.store.patch_frontmatter(
-                    identity,
-                    PatchFrontmatter(
-                        set=changes,
-                        unset=unset_default + ([] if same_time else ["time", "timezone"]),
-                    ),
-                    if_match=expected,
-                )
-                await fresh()
-            if choose:
-                await ctx.store.context_action(
-                    "choose-recording-meeting",
-                    {
-                        "note_id": identity,
-                        "if_match": expected,
-                        "calendar_hash": calendar_hash,
-                        "event_id": choose,
-                    },
-                )
-                await fresh()
-
-        async def complete(
-            chosen: list[int], voices: dict[str, str], prose: dict[str, Any] | None = None
-        ) -> None:
-            request: dict[str, Any] = {
-                "note_id": identity,
-                "if_match": expected,
-                "job_id": review_job if prose is not None else data["job_id"],
-                "confirmation": "Complete review",
-                "accept_link_risk": False,
-                "selected": chosen,
-                "speaker_choices": voices,
-            }
-            if prose is not None:
-                request["meeting_summary"] = prose
-            await ctx.store.context_action("complete-review", request)
-            await fresh()
-
-        review_here = here + "/review"
-        try:
-            if form.get("how") == "file":
-                if selected or summary:
-                    # Suggestions and the summary were written for the note as it stands, so
-                    # they are taken before anything else changes it.
-                    try:
-                        await complete(selected, speakers, summary)
-                    except StoreError:
-                        if not (changes or unset_default or choose):
-                            raise
-                        await apply_edits()
-                        ctx.say(
-                            "warn",
-                            "Saved your corrections, but the note is not filed yet. The "
-                            "suggestions and summary were written for the note as it was, so "
-                            "Coppermind is writing them again. They are back on this page "
-                            "within a minute or two; then press Mark as reviewed and file it.",
-                        )
-                        return ctx.go(review_here)
-                    try:
-                        await apply_edits()
-                    except StoreError as exc:
-                        ctx.say(
-                            "warn",
-                            explain(
-                                exc,
-                                "Reviewed, with what you accepted. One of your own "
-                                "corrections could not be saved, so check the note in Obsidian.",
-                            ),
-                        )
-                        return ctx.go(here)
-                else:
-                    await apply_edits()
-                    await complete([], {})
-                result = await ctx.act("note-check", {"id": identity, "reviewed": True})
-                if result.get("filed"):
-                    where = folder_words(str(result["path"]).rsplit("/", 1)[0])
-                    ctx.say("ok", f'Reviewed and filed. "{e(note["title"])}" is now in {where}.')
-                elif result.get("settling"):
-                    ctx.say(
-                        "ok",
-                        f'Reviewed. "{e(note["title"])}" is filed within a minute, once '
-                        "Coppermind has seen that the file has stopped changing.",
-                    )
-                else:
-                    ctx.say(
-                        "warn",
-                        f'Reviewed. "{e(note["title"])}" could not be filed yet; this page '
-                        "says why.",
-                    )
-                return ctx.go(here)
-            kept_for_later = 0
-            for suggestion in suggestions:
-                answer = form.get(f"s_{suggestion['index']}", "")
-                if suggestion["kind"] == "speaker":
-                    kept_for_later += 1
-                    continue
-                await ctx.store.context_action(
-                    "approve" if answer == "yes" else "reject",
-                    {
-                        "id": data["job_id"],
-                        "index": suggestion["index"],
-                        "confirmation": "Apply selected suggestion",
-                    },
-                )
-                await fresh()
-            await apply_edits()
-        except StoreError as exc:
-            ctx.say("bad", explain(exc, "That could not be saved."))
-            return await review_page(ctx, identity, form, {}, 422)
-        ctx.say(
-            "ok",
-            "Saved. The note is still waiting for review and has not been filed."
-            + (
-                " Speakers are named when the note is marked reviewed, so that question will "
-                "be asked again then."
-                if kept_for_later
-                else ""
-            ),
-        )
-        return ctx.go(here)
+        """Notes are reviewed in Obsidian now. An old link lands on the note's own page."""
+        return Ctx(request, wiring).go(model.note_path(identity))
 
     return routes

@@ -1,8 +1,9 @@
-"""Notes in Review: one list of every note waiting there, and the two things an owner asks of it.
+"""Notes in Review: one list of every note waiting there, and what an owner asks of it.
 
 *Resummarize* writes a recording's note up again from the transcript already saved, with no new
-transcription. *Enrich* runs the suggestion step on the note again (the same request the review
-panel makes). Neither changes the note's fields or whether it is reviewed.
+transcription. It fills the note's properties again from the new write-up, but only the ones the
+owner has not put their own value in (see `filled_in`); it never changes whether the note is
+reviewed.
 
 A note written up in one step has its write-up as its body. A rewrite replaces that body only
 while it is still exactly what was generated; the version it replaces is kept. A body the owner
@@ -34,26 +35,12 @@ if TYPE_CHECKING:
 log = logging.getLogger("coppermind.store.review_notes")
 
 STATE = "note-resummarize/"
-# The few facts the list needs about a recording's write-up, kept small so the list never opens
-# the saved write-up, which holds the whole transcript.
-STATUS = "recording-writeup-status/"
 PROPOSED = "recording-writeup-proposed/"
 PAGE = 100
 MAX_PAGE = 200
 DIFF_LINES = 400
 EARLIER_KEPT = 5
 SAME_BODY = "The note already says what the new write-up says."
-
-
-def write_status(context: Any, recording_id: str, saved: dict[str, Any]) -> None:
-    """Record, when a write-up is made, whether it has suggestions or why it has none."""
-    context.write(
-        STATUS + recording_id,
-        {
-            "suggestions": bool(saved.get("suggestions")),
-            "suggestion_error": str(saved.get("suggestion_error") or ""),
-        },
-    )
 
 
 def _now() -> str:
@@ -101,7 +88,7 @@ class ReviewNotes:
     # -- the list ------------------------------------------------------------------------
 
     async def listing(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Every note in the Review folder, with where its write-up and suggestions stand."""
+        """Every note in the Review folder, with where its write-up stands."""
         context = self.context
         folder = sanitize_folder(context.store.control.settings().notes.review_folder)
         limit, start = payload.get("limit", PAGE), payload.get("cursor") or "0"
@@ -114,7 +101,6 @@ class ReviewNotes:
                 "notes": [],
                 "total": 0,
                 "next_cursor": None,
-                "suggestions_on": False,
                 "writeup_on": False,
             }
         where = (Note.state == "ok", Note.path.startswith(f"{folder}/"))
@@ -146,7 +132,6 @@ class ReviewNotes:
             "notes": notes,
             "total": total or 0,
             "next_cursor": str(following) if following < (total or 0) and rows else None,
-            "suggestions_on": suggestions_on,
             "writeup_on": writeup_on,
         }
 
@@ -172,12 +157,10 @@ class ReviewNotes:
             "can_resummarize": job is not None
             and not row.reviewed
             and (writeup_on if job.generation_mode == "markdown-v1" else suggestions_on),
-            "can_enrich": suggestions_on and not row.reviewed,
         }
         if row.reviewed and (problem := self.filing_problem(row.id)):
             item["filing"] = {"problem": problem}
         item["writeup"] = self.writeup_step(row.id, job, enrichment)
-        item["suggestions"] = self.suggestions_step(row.id, job, enrichment, suggestions_on)
         kept = self.context.read(STATE + row.id, {})
         if kept.get("state") == "kept":
             item["kept"] = {
@@ -258,31 +241,6 @@ class ReviewNotes:
         if job.state != "succeeded":
             return _step("missing")
         return _step("written", when=record.get("finished_at") or job.succeeded_at)
-
-    def suggestions_step(
-        self, note_id: str, job: Any, enrichment: Any, suggestions_on: bool
-    ) -> dict[str, Any]:
-        if enrichment is not None:
-            if enrichment.state in {"queued", "running"}:
-                return _step("working", when=enrichment.created_at)
-            ended = enrichment.ended
-            if ended == "failed":
-                return _step(
-                    "failed",
-                    enrichment.plain or enrichment.error or "The AI service did not answer.",
-                    enrichment.finished_at,
-                )
-            if ended == "succeeded":
-                return _step("written", when=enrichment.finished_at)
-            if ended == "skipped":
-                return _step("missing", "There was nothing to suggest.", enrichment.finished_at)
-        if job is not None and job.generation_mode == "markdown-v1":
-            status = self.context.read(STATUS + job.id, {})
-            if status.get("suggestions"):
-                return _step("written", when=job.succeeded_at)
-            if status.get("suggestion_error"):
-                return _step("failed", status["suggestion_error"], job.succeeded_at)
-        return _step("missing" if suggestions_on else "off")
 
     # -- resummarize ---------------------------------------------------------------------
 
@@ -417,6 +375,7 @@ class ReviewNotes:
                 "error": "The note was reviewed or moved out of Review while it was being "
                 "written up, so the new write-up was not applied. The note is unchanged.",
             }
+        note = await self.refill(note, fresh)
         baseline = saved.get("voice_body", saved.get("filed_body", ""))
         finished = _now()
         if note.body.strip() == body.strip():
@@ -443,6 +402,31 @@ class ReviewNotes:
         await self.put(note, job, saved, fresh, body)
         return {"state": "done", "finished_at": finished}
 
+    async def refill(self, note: Any, written: dict[str, Any]) -> Any:
+        """Fill the note's properties from the new write-up where the owner has not put their
+        own value, and return the note as it now stands."""
+        from coppermind_store import filled_in
+
+        context = self.context
+        changes = filled_in.fill(
+            context,
+            note.frontmatter,
+            filled_in.answers(context, written),
+            filled_in.recorded(context, note.id),
+        )
+        if not changes:
+            return note
+        await context.store.replace_note(
+            note.id,
+            ReplaceNote(frontmatter={**note.frontmatter, **changes}, body=note.body),
+            if_match=note.content_hash,
+        )
+        before = note
+        note = await context.store.get_note(note.id)
+        filled_in.remember(context, note.id, note.frontmatter, changes)
+        await filled_in.keep_job_current(context, before, note)
+        return note
+
     def in_review(self, note: Any) -> bool:
         """Whether the note is still waiting in Review: not reviewed, not moved elsewhere."""
         reviewed = self.context.store.control.schema().role("reviewed_key")
@@ -463,7 +447,6 @@ class ReviewNotes:
             ReplaceNote(frontmatter=note.frontmatter, body=body),
             if_match=note.content_hash,
         )
-        write_status(context, job.id, fresh)
         context.write(
             "recording-writeups/" + job.id,
             {**fresh, "filed_body": body, "earlier_bodies": earlier[-EARLIER_KEPT:]},

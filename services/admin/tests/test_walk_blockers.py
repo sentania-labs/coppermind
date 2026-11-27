@@ -338,6 +338,7 @@ def failed_line(store, **extra) -> str:
 
 def test_a_failed_suggestion_is_a_plain_sentence_with_the_raw_text_for_support_only(admin):
     client, _, store = admin
+    store.views["note-summary"] = {"recording": False}
     page = client.get(f"/admin/notes/{failed_line(store, summary_again=False)}").text
     seen = shown(page)
     assert "Suggestions could not be written for this note." in seen
@@ -352,8 +353,9 @@ def test_a_failed_suggestion_on_a_recording_note_points_at_write_the_summary_aga
     client, _, store = admin
     identity = failed_line(store, summary_again=True)
     page = client.get(f"/admin/notes/{identity}").text
-    assert "press Write the summary again" in shown(page)
-    assert f'href="/admin/notes/{identity}/review"' in page
+    assert "press Write the summary again on this page" in shown(page)
+    form = next(f for f in forms(page) if f["action"] == f"/admin/notes/{identity}/summary-again")
+    assert form["buttons"] == ["Write the summary again"]
 
 
 # -- B9: an address that was just changed and does not answer ---------------------------------
@@ -465,26 +467,6 @@ def test_a_note_that_cannot_ask_again_shows_no_button(admin):
     identity = failed_line(store, plain=PLAIN, summary_again=False, get_suggestions=False)
     page = client.get(f"/admin/notes/{identity}").text
     assert "Get suggestions" not in shown(page)
-
-
-def test_the_review_page_says_it_in_plain_words_and_names_a_button_that_exists(admin):
-    client, _, store = admin
-    lifecycle = store.views["lifecycle"]
-    lifecycle["suggestion_error"] = (
-        "The model's answer was not in the expected format (answer-shape): x. Retry the job."
-    )
-    lifecycle["suggestion_plain"] = PLAIN
-    lifecycle["suggestions_enabled"] = True
-    page = client.get(f"/admin/notes/{lifecycle['note']['id']}/review").text
-    seen = shown(page)
-    assert PLAIN in seen
-    assert "answer-shape" not in seen and "Retry the job" not in seen
-    # Whichever way to try again is named, it is on this page.
-    if "press Write the summary again" in seen:
-        assert 'id="summary-again-form"' in page
-    else:
-        assert "press Get suggestions" in seen
-        assert "/admin/suggestions/older" in page
 
 
 def test_a_waiting_note_the_model_refused_as_too_long_says_so(admin):

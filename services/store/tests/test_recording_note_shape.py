@@ -22,7 +22,6 @@ from coppermind.recording_writeup import (
 VOCAB: dict[str, Any] = {
     "accounts": {"halcyon systems": "Halcyon Systems", "halcyon": "Halcyon Systems"},
     "tags": {"orbit": "orbit", "obs": "orbit"},
-    "contexts": ["internal", "external", "personal"],
     "types": ["work", "personal", "reference"],
 }
 
@@ -102,91 +101,44 @@ def test_renaming_a_recording_note_leaves_no_title_in_the_body():
     assert body.startswith("# New title")
 
 
-def test_a_weak_account_hint_leaves_context_to_its_own_suggestion():
-    found = {
-        s["field"]: s
-        for s in read(
-            [
-                {
-                    "field": "account",
-                    "value": "halcyon",
-                    "confidence": "medium",
-                    "reason": "mentioned",
-                },
-                {
-                    "field": "context",
-                    "value": "internal",
-                    "confidence": "high",
-                    "reason": "team sync",
-                },
-            ]
-        )
-    }
-    assert found["context"]["value"] == "internal"
+def test_context_is_not_asked_for_and_not_read():
+    assert read([{"field": "context", "value": "internal", "confidence": "high"}]) == []
 
 
-def test_a_known_company_is_suggested_by_its_own_name_and_implies_external():
-    found = {
-        s["field"]: s
-        for s in read(
-            [
-                {
-                    "field": "account",
-                    "value": "halcyon",
-                    "confidence": "high",
-                    "reason": "named 6 times",
-                },
-                {"field": "context", "value": "internal", "confidence": "high", "reason": "x"},
-            ]
-        )
-    }
-    assert found["account"]["value"] == ["Halcyon Systems"] and not found["account"]["new"]
-    assert found["context"]["value"] == "external" and found["context"]["confidence"] == 0.9
-    assert list(found) == ["account", "context"]
+def test_a_known_company_is_answered_by_its_own_name():
+    (account,) = read([{"field": "account", "value": "halcyon", "confidence": "high"}])
+    assert account["value"] == ["Halcyon Systems"]
 
 
-def test_a_new_company_is_offered_as_new_and_never_sure_enough_to_fill_itself():
-    (account,) = read(
-        [{"field": "account", "value": "Brand New Corp", "confidence": "high", "reason": "named"}]
-    )
-    assert account["new"] and account["reason"].startswith("New account?")
-    assert account["confidence"] < 0.8
+def test_a_company_nobody_listed_is_answered_as_it_was_heard():
+    (account,) = read([{"field": "account", "value": "Brand New Corp", "confidence": "high"}])
+    assert account["value"] == ["Brand New Corp"] and account["confidence"] == 0.9
 
 
-def test_low_confidence_unknown_values_and_missing_reasons_leave_the_field_empty():
+def test_a_low_confidence_answer_or_an_unknown_type_leaves_the_field_empty():
     assert (
         read(
             [
-                {"field": "account", "value": "Halcyon", "confidence": "low", "reason": "maybe"},
-                {"field": "tags", "value": ["unlisted"], "confidence": "high", "reason": "x"},
-                {"field": "context", "value": "elsewhere", "confidence": "high", "reason": "x"},
-                {"field": "type", "value": "work", "confidence": "high", "reason": "x"},
-                {"field": "tags", "value": ["orbit"], "confidence": "high", "reason": ""},
+                {"field": "account", "value": "Halcyon", "confidence": "low"},
+                {"field": "type", "value": "elsewhere", "confidence": "high"},
+                {"field": "type", "value": "journal", "confidence": "high"},
             ]
         )
         == []
     )
 
 
-def test_tags_come_from_the_vocabulary_only_by_name_or_alias():
+def test_tags_are_spelled_as_listed_and_new_ones_are_accepted():
     (tags,) = read(
-        [
-            {
-                "field": "tags",
-                "value": ["OBS", "orbit", "made-up"],
-                "confidence": "medium",
-                "reason": "topics",
-            }
-        ]
+        [{"field": "tags", "value": ["OBS", "orbit", "#Made Up", "  "], "confidence": "medium"}]
     )
-    assert tags["value"] == ["orbit"] and tags["confidence"] == 0.7
+    assert tags["value"] == ["orbit", "made-up"]
 
 
-def test_personal_is_the_only_type_proposed():
-    (found,) = read(
-        [{"field": "type", "value": "personal", "confidence": "high", "reason": "a call to mum"}]
-    )
-    assert found["value"] == "personal"
+@pytest.mark.parametrize("kind", ["work", "personal"])
+def test_work_and_personal_are_both_answered_as_a_type(kind):
+    (found,) = read([{"field": "type", "value": kind, "confidence": "high"}])
+    assert found["value"] == kind
 
 
 @pytest.mark.parametrize("text", ["nope", "[1, 2", '{"suggestions": 4}'])

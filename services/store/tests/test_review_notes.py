@@ -6,6 +6,8 @@ import pytest
 from coppermind_store import review_notes
 from coppermind_store.review_notes import STATE, ReviewNotes
 
+from coppermind.schema import default_schema
+
 JOB = "a" * 64
 NOTE = "01HZ" + "0" * 22
 OLD = "# Old\n\nBody\n\n## References\n\n- Source transcript: [[Sources/call]]\n"
@@ -24,6 +26,13 @@ class Memory:
 
     def write(self, name, value):
         self.data[name] = value
+
+    def jobs(self):
+        return []
+
+    def config(self):
+        enrichment = SimpleNamespace(attendees_field="", event_field="")
+        return SimpleNamespace(assignments={"enrichment": enrichment})
 
 
 def build(tmp_path, *, body=OLD, baseline=OLD, mode="markdown-v1"):
@@ -51,6 +60,8 @@ def build(tmp_path, *, body=OLD, baseline=OLD, mode="markdown-v1"):
 
     async def replace_note(note_id, request, if_match):
         replaced.append((request.body, if_match))
+        note.body, note.frontmatter = request.body, dict(request.frontmatter)
+        note.content_hash = f"sha256:{len(replaced) + 1}"
 
     async def references(job, fresh, text):
         return (
@@ -72,7 +83,8 @@ def build(tmp_path, *, body=OLD, baseline=OLD, mode="markdown-v1"):
     memory.in_review_folder = lambda path: path.startswith("Review/")
     note.path = "Review/Call.md"
     memory.store = SimpleNamespace(
-        control=SimpleNamespace(schema=lambda: SimpleNamespace(role=lambda _: "reviewed")),
+        control=SimpleNamespace(schema=default_schema),
+        entities=SimpleNamespace(load=lambda: SimpleNamespace(entities={})),
         get_note=lambda _: asyncio.sleep(0, note),
         get_source=lambda _: asyncio.sleep(0, SimpleNamespace(projection_path="Sources/call.md")),
         replace_note=replace_note,
@@ -80,14 +92,19 @@ def build(tmp_path, *, body=OLD, baseline=OLD, mode="markdown-v1"):
     return ReviewNotes(memory), memory, job, note, replaced
 
 
-def fake_generate(monkeypatch, body="# New\n\nBetter body", fails=None):
+def fake_generate(monkeypatch, body="# New\n\nBetter body", fails=None, answers=()):
     calls: list[Any] = []
 
     async def generate(context, job, transcript, voice_map):
         calls.append((job.id, transcript, voice_map))
         if fails:
             raise fails
-        return {"body": body, "boundaries": [], "suggestions": [], "transcript": transcript}
+        return {
+            "body": body,
+            "boundaries": [],
+            "suggestions": list(answers),
+            "transcript": transcript,
+        }
 
     monkeypatch.setattr("coppermind_store.recording_writeup.generate", generate)
     return calls
@@ -181,29 +198,6 @@ def test_where_a_write_up_stands(tmp_path):
     assert reviewer.writeup_step(NOTE, job, None)["state"] == "missing"
 
 
-def test_where_the_suggestions_stand(tmp_path):
-    reviewer, memory, job, _, _ = build(tmp_path)
-    working = SimpleNamespace(state="running", created_at="t", ended="")
-    assert reviewer.suggestions_step(NOTE, job, working, True)["state"] == "working"
-    failed = SimpleNamespace(
-        state="failed",
-        created_at="t",
-        ended="failed",
-        plain="Not answering.",
-        error="",
-        finished_at="f",
-    )
-    assert reviewer.suggestions_step(NOTE, job, failed, True) == {
-        "state": "failed",
-        "reason": "Not answering.",
-        "when": "f",
-    }
-    done = SimpleNamespace(state="suggested", created_at="t", ended="succeeded", finished_at="f")
-    assert reviewer.suggestions_step(NOTE, job, done, True)["state"] == "written"
-    assert reviewer.suggestions_step(NOTE, job, None, True)["state"] == "missing"
-    assert reviewer.suggestions_step(NOTE, job, None, False)["state"] == "off"
-
-
 @pytest.mark.asyncio
 async def test_a_note_that_did_not_come_from_a_recording_is_refused(tmp_path):
     reviewer, memory, job, note, _ = build(tmp_path)
@@ -245,10 +239,6 @@ async def test_rewrites_run_one_at_a_time(tmp_path, monkeypatch):
 
 def test_the_list_never_opens_the_saved_write_up_with_its_transcript(tmp_path):
     reviewer, memory, job, _, _ = build(tmp_path)
-    memory.data["recording-writeup-status/" + JOB] = {
-        "suggestions": False,
-        "suggestion_error": "The write-up did not include field suggestions.",
-    }
     plain_read = memory.read
 
     def read(name, default):
@@ -257,10 +247,7 @@ def test_the_list_never_opens_the_saved_write_up_with_its_transcript(tmp_path):
 
     memory.read = read
     assert reviewer.writeup_step(NOTE, job, None)["state"] == "written"
-    step = reviewer.suggestions_step(NOTE, job, None, True)
-    assert step["state"] == "failed" and "field suggestions" in step["reason"]
-    memory.data["recording-writeup-status/" + JOB] = {"suggestions": True, "suggestion_error": ""}
-    assert reviewer.suggestions_step(NOTE, job, None, True)["state"] == "written"
+    assert "suggestions" not in reviewer.writeup_step(NOTE, job, None)
 
 
 @pytest.mark.asyncio
@@ -316,3 +303,69 @@ async def test_resummarize_is_offered_only_when_the_service_that_does_it_is_on(
     row = SimpleNamespace(id=NOTE, title="Call", path="Review/Call.md", date=None, reviewed=False)
     item = await reviewer.row(row, job, None, suggestions_on, writeup_on)
     assert item["can_resummarize"] is offered
+
+
+ANSWERS = (
+    {"field": "account", "value": ["Acme"], "confidence": 0.9},
+    {"field": "type", "value": "work", "confidence": 0.9},
+    {"field": "tags", "value": ["vsphere", "brand-new-tag"], "confidence": 0.9},
+)
+
+
+@pytest.mark.asyncio
+async def test_resummarize_fills_the_blanks_and_the_default_type(tmp_path, monkeypatch):
+    reviewer, memory, job, note, replaced = build(tmp_path)
+    note.frontmatter = {"type": "reference", "tags": [], "reviewed": False}
+    fake_generate(monkeypatch, answers=ANSWERS)
+    await reviewer.write_again(NOTE, JOB)
+    assert note.frontmatter["type"] == "work"
+    assert note.frontmatter["account"] == ["Acme"]
+    # A tag nobody listed is accepted.
+    assert note.frontmatter["tags"] == ["vsphere", "brand-new-tag"]
+    assert memory.data["what-was-filled/" + NOTE]["account"] == ["Acme"]
+
+
+@pytest.mark.asyncio
+async def test_resummarize_never_overwrites_what_the_owner_typed(tmp_path, monkeypatch):
+    reviewer, memory, job, note, replaced = build(tmp_path)
+    mine = {"type": "personal", "account": ["Contoso"], "tags": ["mine"], "reviewed": False}
+    note.frontmatter = dict(mine)
+    fake_generate(monkeypatch, answers=ANSWERS)
+    await reviewer.write_again(NOTE, JOB)
+    assert note.frontmatter == mine
+
+
+@pytest.mark.asyncio
+async def test_resummarize_refreshes_only_what_coppermind_filled_and_the_owner_left(
+    tmp_path, monkeypatch
+):
+    reviewer, memory, job, note, replaced = build(tmp_path)
+    note.frontmatter = {"type": "work", "account": ["Acme"], "tags": ["a"], "reviewed": False}
+    memory.data["what-was-filled/" + NOTE] = {
+        "type": "work",
+        "account": ["Acme"],
+        "tags": ["a"],
+    }
+    # The owner changes the tags; the account and type are as Coppermind left them.
+    note.frontmatter["tags"] = ["a", "mine"]
+    fake_generate(
+        monkeypatch,
+        answers=(
+            {"field": "account", "value": ["Fabrikam"], "confidence": 0.9},
+            {"field": "tags", "value": ["other"], "confidence": 0.9},
+        ),
+    )
+    await reviewer.write_again(NOTE, JOB)
+    assert note.frontmatter["account"] == ["Fabrikam"]
+    assert note.frontmatter["tags"] == ["a", "mine"]
+
+
+@pytest.mark.asyncio
+async def test_a_note_the_owner_edited_still_has_its_blanks_filled(tmp_path, monkeypatch):
+    reviewer, memory, job, note, replaced = build(tmp_path, body=OLD + "\nMy own line\n")
+    note.frontmatter = {"type": "reference", "tags": [], "reviewed": False}
+    fake_generate(monkeypatch, answers=ANSWERS)
+    outcome = await reviewer.write_again(NOTE, JOB)
+    assert outcome["state"] == "kept"
+    assert note.frontmatter["account"] == ["Acme"]
+    assert note.body.endswith("My own line\n")

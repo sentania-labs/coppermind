@@ -32,6 +32,7 @@ class ReviewCompletion(BaseModel):
     manual_speakers: dict[str, str] = Field(default_factory=dict, max_length=30)
     manual_source_revision: int | None = Field(default=None, ge=1)
     manual_source_id: str | None = None
+    # No longer used; an earlier companion still sends it.
     accept_link_risk: bool = False
 
 
@@ -126,30 +127,13 @@ async def finish(
     )
 
 
-@router.post("/notes/{note_id}/suggestions")
-async def refresh(
-    note_id: str,
-    client: HttpStoreClient = Depends(store),
-    _: Principal = Depends(require_scopes("notes:write", "notes:read", "sources:read")),
-) -> Response:
-    return await call(
-        client,
-        "enqueue",
-        {
-            "note_ids": [note_id],
-            "regenerate": True,
-            "confirmation": "Send selected notes for enrichment",
-        },
-    )
-
-
 @router.get("/jobs/{job_id}")
 async def job_outcome(
     job_id: str,
     client: HttpStoreClient = Depends(store),
     _: Principal = Depends(require_scopes("notes:read")),
 ) -> Response:
-    """What became of a job id returned by a request for suggestions: `pending`, `running`, or
+    """What became of a job id returned by a request to fill in a note: `pending`, `running`, or
     how it ended (`succeeded`, `failed`, `superseded`, `skipped`) and why."""
     return await call(client, "job-outcome", {"id": job_id})
 
@@ -177,8 +161,8 @@ async def review_notes(
     client: HttpStoreClient = Depends(store),
     _: Principal = Depends(require_scopes("notes:read", "sources:read")),
 ) -> Response:
-    """Every note in the Review folder, a page at a time, with where its write-up and
-    suggestions stand. Send `next_cursor` back as `cursor` until it is null."""
+    """Every note in the Review folder, a page at a time, with where its write-up
+    stands. Send `next_cursor` back as `cursor` until it is null."""
     return await call(client, "review-notes", {"cursor": cursor, "limit": limit})
 
 

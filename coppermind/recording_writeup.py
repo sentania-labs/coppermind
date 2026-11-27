@@ -197,20 +197,20 @@ The readable Recording boundaries section must still explain any boundaries in t
 
 SUGGESTION_START = "<<<FIELD_SUGGESTIONS>>>"
 SUGGESTION_END = "<<<END_FIELD_SUGGESTIONS>>>"
-SUGGESTION_RULES = """Also append exactly one machine-readable block of suggested note fields,
+SUGGESTION_RULES = """Also append exactly one machine-readable block of the note's properties,
 immediately before the recording boundaries block:
 <<<FIELD_SUGGESTIONS>>>
 {"suggestions": []}
 <<<END_FIELD_SUGGESTIONS>>>
-Replace [] with a JSON list. Each item has field, value, confidence (low, medium or high),
-reason (a few words, like "customer named 6 times") and quote (one exact line of the
-transcript that supports it). Fields:
-- account: a company the recording is about. Use a name from `known_accounts` exactly. A
-  company that is not in that list may still be suggested, with "new": true.
-- context: external when an account is suggested or people from outside the owner's
-  organization are heard; otherwise internal.
-- type: personal only when the recording is clearly not a work meeting; omit otherwise.
-- tags: a list, only from `known_tags`.
+Replace [] with a JSON list. Each item has field, value, confidence (low, medium or high)
+and quote (one exact line of the transcript that supports it). Fields:
+- account: the customer company the recording is about. Prefer a name from `known_accounts`
+  exactly; a company that is not in that list is fine too. Leave it out for a meeting with
+  no customer.
+- type: work for a work meeting, personal only when the recording is clearly not a work
+  meeting. Omit it when unsure.
+- tags: a list of short lowercase tags for what was discussed. Prefer `known_tags`; a new
+  tag is fine when none fits.
 Leave a field out when the transcript does not support it. This block is the only other
 JSON in the response and is not wrapped in a code fence. The application removes it
 before filing the note."""
@@ -375,13 +375,12 @@ def calendar_status(evidence: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Suggested note fields, read from the write-up answer.
+# The note's properties, read from the write-up answer.
 
 CONFIDENCE_WORDS = {"low": 0.3, "medium": 0.7, "high": 0.9}
-# A suggestion at or above this is filled in on its own when the field is blank. A new
-# account is never that sure: someone must confirm a company that does not exist yet.
-NEW_ACCOUNT_CAP = 0.7
-SUGGESTED_FIELDS = ("account", "context", "type", "tags")
+ANSWERED_FIELDS = ("account", "type", "tags")
+# What a tag may be made of; the note schema's own pattern is the final word.
+TAG_CHARS = re.compile(r"[^\w/-]+")
 
 
 def _plain(value: object, limit: int) -> str:
@@ -393,16 +392,15 @@ def read_field_suggestions(
     *,
     accounts: dict[str, str],
     tags: dict[str, str],
-    contexts: list[str],
     types: list[str],
+    **_: object,
 ) -> list[dict]:
-    """The usable suggestions in the model's block, each as
-    {field, value, confidence, reason, quote, new}. Only values that already exist are
-    suggested as they are: an account that is in `accounts` (lowercase name or alias to its
-    name), tags in `tags` (lowercase tag or alias to its tag), a context or type in the
-    lists. A company that is not known is suggested as new, below the confidence at which a
-    field fills itself. A low confidence field, one without a reason, or one that does not
-    fit is left out. Raises ValueError when the block cannot be read at all."""
+    """The usable answers in the model's block, each as {field, value, confidence, quote}.
+
+    An account is the known company's own spelling when the name or an alias of one is given,
+    and the name as given otherwise. Tags are the owner's spelling when they match a listed tag
+    or alias and are otherwise made into a plain tag. The type is one of `types`. A low
+    confidence answer is left out. Raises ValueError when the block cannot be read at all."""
     raw = (text or "").strip()
     fence = re.fullmatch(r"```[\w-]*\s*(.*?)\s*```", raw, re.S)
     if fence:
@@ -426,63 +424,34 @@ def read_field_suggestions(
             continue
         field = str(item.get("field", "")).strip().lower()
         confidence = CONFIDENCE_WORDS.get(str(item.get("confidence", "")).strip().lower(), 0)
-        reason = _plain(item.get("reason", ""), 160)
-        if field not in SUGGESTED_FIELDS or confidence < CONFIDENCE_WORDS["medium"] or not reason:
+        if field not in ANSWERED_FIELDS or confidence < CONFIDENCE_WORDS["medium"]:
             continue
         value = item.get("value")
-        new = False
         if field == "account":
             name = _plain(value[0] if isinstance(value, list) and value else value, 100)
             if not name or name.lower() in {"none", "null", "unknown"}:
                 continue
-            known = accounts.get(name.casefold())
-            if known:
-                value = [known]
-            else:
-                value, new = [name], True
-                confidence = min(confidence, NEW_ACCOUNT_CAP)
-                reason = "New account? " + reason
-        elif field == "context":
-            chosen = next(
-                (c for c in contexts if c.casefold() == str(value).strip().casefold()), ""
-            )
-            if not chosen:
-                continue
-            value = chosen
+            value = [accounts.get(name.casefold()) or name]
         elif field == "type":
             chosen = next((t for t in types if t.casefold() == str(value).strip().casefold()), "")
-            if chosen.casefold() != "personal":
+            if chosen.casefold() not in {"work", "personal"}:
                 continue
             value = chosen
         else:
             wanted = value if isinstance(value, list) else [value]
             kept: list[str] = []
             for tag in wanted:
-                canonical = tags.get(str(tag).strip().lstrip("#").casefold())
-                if canonical and canonical not in kept:
-                    kept.append(canonical)
+                word = str(tag).strip().lstrip("#").casefold()
+                tag = tags.get(word) or TAG_CHARS.sub("-", word).strip("-")[:50]
+                if tag and tag not in kept:
+                    kept.append(tag)
             if not kept:
                 continue
-            value = kept
+            value = kept[:10]
         found[field] = {
             "field": field,
             "value": value,
             "confidence": confidence,
-            "reason": reason,
             "quote": _plain(item.get("quote", ""), 300),
-            "new": new,
         }
-    account = found.get("account")
-    # A company that dominates the recording makes it external. A weaker hint, such as an
-    # internal meeting that mentions a customer, leaves context to its own suggestion.
-    if account and account["confidence"] >= 0.9 and "external" in {c.casefold() for c in contexts}:
-        external = next(c for c in contexts if c.casefold() == "external")
-        found["context"] = {
-            "field": "context",
-            "value": external,
-            "confidence": account["confidence"],
-            "reason": "An account is suggested: " + account["reason"],
-            "quote": account["quote"],
-            "new": False,
-        }
-    return [found[field] for field in SUGGESTED_FIELDS if field in found]
+    return [found[field] for field in ANSWERED_FIELDS if field in found]

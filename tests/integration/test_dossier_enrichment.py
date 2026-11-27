@@ -346,7 +346,7 @@ async def test_review_extracts_projects_and_enriches_without_an_acceptance_step(
 
 @pytest.mark.parametrize(
     "confidence,owned,folder",
-    [(0.3, False, "Review"), (0.95, True, "Review"), (0.95, False, "Other")],
+    [(0.95, True, "Review"), (0.95, False, "Other")],
 )
 async def test_held_or_owned_values_never_write(store, confidence, owned, folder):
     context = await configure(store)
@@ -383,10 +383,10 @@ async def test_held_or_owned_values_never_write(store, confidence, owned, folder
         assert "account" not in {f["name"] for f in seen[0]["allowed_fields"]}
 
 
-async def test_dossier_correction_invalidates_a_held_suggestion(store):
-    context, _, _, person, _ = await contribute(store)
+async def test_a_low_confidence_answer_still_fills_a_blank(store):
+    context = await configure(store)
     note = await store.create_note(
-        CreateNote(title="Discussion", folder="Review", body="casey@example.test")
+        CreateNote(title="Discussion", folder="Review", body="Talk about sailing.")
     )
     provider(
         context,
@@ -396,32 +396,18 @@ async def test_dossier_correction_invalidates_a_held_suggestion(store):
                     "kind": "field",
                     "field": "account",
                     "value": ["Sailing"],
-                    "entity_ids": [person.id],
                     "quote": "sailing",
                     "confidence": 0.3,
-                    "reason": "Interest",
+                    "reason": "Topic",
                 }
-            ]
+            ],
+            "unresolved": [],
         },
     )
     job = context.load_job(await context.queue_note(note.id))
     await context.run_job(job)
-    current = await store.entities.get(person.id)
-    await store.entities.change(
-        person.id,
-        EntityChange(
-            version=current["version"],
-            action="correct",
-            fact_id=next(f["id"] for f in current["facts"] if f["predicate"] == "interest"),
-            predicate="interest",
-            value="hiking",
-        ),
-    )
-    with pytest.raises(ValueError, match="stale"):
-        await context.approve(
-            {"id": job.id, "index": 0, "confirmation": "Apply selected suggestion"}
-        )
-    assert (await store.get_note(note.id)).content_hash == note.content_hash
+    assert job.state == "applied", job.error
+    assert (await store.get_note(note.id)).frontmatter["account"] == ["Sailing"]
 
 
 async def test_extraction_uses_frontmatter_evidence_and_withdraws_on_deletion(store):
@@ -586,9 +572,6 @@ async def test_mapped_attendees_accept_dossier_links_without_calendar_contacts(s
 
 async def test_multiple_blank_fields_fill_from_one_model_answer(store):
     context = await configure(store)
-    config = context.config()
-    config.assignments["enrichment"].fields = ["account", "tags"]
-    context.save_config(config)
     note = await store.create_note(CreateNote(title="Two fields", folder="Review", body="sailing"))
     seen = provider(
         context,
@@ -845,7 +828,7 @@ async def test_ordinary_note_wikilink_in_an_unmapped_field_is_accepted(store):
     )
     job = context.load_job(await context.queue_note(note.id))
     await context.run_job(job)
-    assert job.state == "suggested", job.error
+    assert job.state == "applied", job.error
 
 
 async def test_unfillable_suggestion_is_skipped_without_failing_the_job_or_later_fills(store):
@@ -991,10 +974,10 @@ async def test_review_detail_does_not_fail_on_oversized_source_metadata(store, m
         CreateNote(title="Planning", body="Casey attended", frontmatter={"date": "2026-10-14"})
     )
     job = context.load_job(await context.queue_note(note.id))
-    assert (await context.lifecycle_detail({"note_id": note.id}))["stale"] is False
+    assert "stale" not in await context.lifecycle_detail({"note_id": note.id})
     _fake_transcript(store, monkeypatch, "x", size_bytes=10_000_000)
     detail = await context.lifecycle_detail({"note_id": note.id})
-    assert detail["stale"] is False and detail["job_id"] == job.id
+    assert "stale" not in detail and detail["job_id"] == job.id
 
 
 async def test_written_fill_is_acknowledged_when_evidence_can_no_longer_be_rebuilt(
@@ -1096,7 +1079,6 @@ async def test_applied_extraction_job_keeps_identifiers_not_the_note_or_dossier_
 async def test_a_model_filling_every_advertised_field_is_not_rejected(store):
     context = await configure(store)
     config = context.config()
-    config.assignments["enrichment"].fields = ["account"]
     config.assignments["enrichment"].invitees_field = "tags"
     config.assignments["enrichment"].event_field = "context"
     context.save_config(config)
@@ -1110,7 +1092,7 @@ async def test_a_model_filling_every_advertised_field_is_not_rejected(store):
                 {
                     "kind": "field",
                     "field": field["name"],
-                    "value": ["Sailing"],
+                    "value": "work" if field["name"] == "type" else ["Sailing"],
                     "quote": "sailing",
                     "confidence": 0.5,
                     "reason": "Topic",
@@ -1122,9 +1104,12 @@ async def test_a_model_filling_every_advertised_field_is_not_rejected(store):
     seen = provider(context, answer)
     job = context.load_job(await context.queue_note(note.id))
     await context.run_job(job)
-    assert [f["name"] for f in seen[0]["allowed_fields"]] == ["account"]
-    assert job.state == "suggested", job.error
-    assert [s.field for s in job.result.suggestions] == ["account"]
+    # Everything the note has except what Coppermind keeps and the two properties mapped to
+    # the meeting and the invitation.
+    offered = [f["name"] for f in seen[0]["allowed_fields"]]
+    assert offered == ["type", "account"]
+    assert job.state in {"suggested", "applied"}, job.error
+    assert [s.field for s in job.result.suggestions] == offered
 
 
 async def test_a_retired_identity_in_a_note_does_not_block_the_other_people_in_it(store):

@@ -1,8 +1,8 @@
 # Calendar intake and enrichment
 
 Calendar intake and optional enrichment operate independently of note sync.
-Enrichment never writes the note body. Explicit review completion can accept
-selected proposals and mark the note reviewed. See [Note workflow](note-workflow.md)
+Enrichment never writes the note body. Review completion applies the speaker names
+the owner picks and marks the note reviewed. See [Note workflow](note-workflow.md)
 for the shared Dropbox, Obsidian companion and lifecycle setup.
 
 ## One calendar, automatic intake
@@ -131,15 +131,15 @@ Supported connections:
 Suggestions (**Admin > Suggestions**) choose their service and model from that
 list and cannot be turned on with a service that is not answering.
 
-Select the metadata suggestions may fill under **Suggestions > Fill**
-(`/admin/suggestions/fill`), using schema-backed checkboxes. Optional field
-mappings are separate: attendee and invitee lists contain email addresses,
-contact references contain contact IDs, and the event reference is a string
-ID. Dossier-backed attendee/contact suggestions can also use exact People/
-wikilinks in these list fields, with attendance quotations still required.
-Mappings must name existing fields of the appropriate kind. System fields,
-including note ID, source associations, and reviewed state, cannot be enriched.
-No production schema keys are created automatically.
+Nobody chooses what suggestions fill in. Turning suggestions on (or changing their
+service or model) creates Coppermind's own `attendees`, `invitees` and
+`calendar_event` properties when they are missing and points suggestions at them:
+attendee and invitee lists contain email addresses, contact references contain contact
+IDs, and the event reference is a string ID. Dossier-backed attendee/contact
+suggestions can also use exact People/wikilinks in these list fields, with attendance
+quotations still required. System fields, including note ID, source associations, and
+reviewed state, cannot be enriched. The only other choice on the page is whether the
+model may also read meeting descriptions from the calendar.
 
 Enablement records the existing note population. Those notes require a
 separate explicit backlog selection, up to 50 at a time. New valid unreviewed
@@ -246,19 +246,17 @@ is (Reset to default adopts the new one). Saving the Admin page with the directi
 untouched keeps following the default. The glossary is saved on the same `writeup`
 assignment (`writeup_glossary`, up to 8,000 characters).
 
-The same answer carries suggested note fields. Each is read against what already exists
-and arrives in the ordinary review suggestions, with a short reason and a confidence:
-`account` only from an existing company (by name or alias), or offered as "New account?"
-below the confidence at which a field fills itself, never written silently; `context`
-`external` when an account is suggested or outside people are heard; `type` `personal`
-only for a recording that is clearly not a work meeting; `tags` only from the tag
-vocabulary (by name or alias); `attendees`, where the Suggestions page maps that field, are
-the people recognised by voice (names that were only mentioned are not attendees). A
-low-confidence field is left empty, and suggestions are made with or without a calendar
-match. They are saved with the write-up and added to the note's suggestion job when
-enrichment runs, whatever fields enrichment is set to fill for other notes. A block that
-cannot be read costs the note nothing: the note is filed, the problem is logged and kept
-as `suggestion_error` with the saved write-up.
+The same answer carries the note's properties, and the note is made with them (see
+[Notes arrive filled in](note-workflow.md#notes-arrive-filled-in)): `account` (the company
+as it was heard, in an existing company's own spelling when the name or an alias matches),
+`type` (`work` or `personal`; an account makes the type `work` when none is given), `tags`
+(a listed tag by its own spelling, a new tag as a plain tag, unless tags are closed) and,
+where the schema has the property, `attendees` (the people recognised by voice and the people
+on the matched invitation; names that were only mentioned are not attendees) and the
+matched meeting. A low-confidence answer is left out. Each goes only where the owner has put
+nothing of their own, on arrival and again on Resummarize. A block that cannot be read costs
+the note nothing: the note is filed, the problem is logged and kept as `suggestion_error`
+with the saved write-up.
 Offering facts to the account's dossier is not part of this: dossiers take evidenced claims
 directly and have no suggested state.
 
@@ -336,35 +334,24 @@ unavailable becomes discovered. Reviewed notes' failed dossier jobs
 are requeued automatically when the configuration or schema changes; otherwise
 they are retried by hand.
 
-In the configured review folder (`Review/` by default), validated suggestions with model-reported confidence of at least
-0.8 automatically fill blank configured fields. They never replace existing
-values or change body bytes, filenames or reviewed notes. Lower confidence and
-uncertainties stay in Admin. Review the visible fields in Obsidian, then mark the
-note reviewed; that also accepts its evidenced contributions to dossiers.
-The following manual Admin operations remain available for repair.
+In the configured review folder (`Review/` by default), validated suggestions fill the
+blank properties of the waiting note, at any confidence. They never replace a value the owner
+put in, and they never change body bytes, filenames or reviewed notes. A value that is still
+the default every note starts with, such as the `type`, counts as blank. Review the visible
+properties in Obsidian, then mark the note reviewed; that also accepts its evidenced
+contributions to dossiers. A suggestion for a voice stays a choice: it is offered while the
+note is as it was when the suggestion was made.
 
-Review current values, proposed values, reasons, and source evidence in Admin.
-Approve, edit, or reject a proposal. Filename approval explicitly acknowledges
-that existing filename links may need manual repair; it preserves the original
-heading and every body byte. Frontmatter edits also preserve the body.
-
-Approving contact, attendee or invitee suggestions adds identities to the mapped
-list, preserving human-authored entries, their order, and earlier approvals.
-Repeated approved identities are not appended again.
-
-Apply selected suggestions individually. Each completed choice remains in the
-audit history. Changing the note date makes remaining suggestions stale and
-requires fresh calendar matching.
+Attendee and invitee answers add identities to the mapped list, preserving human-authored
+entries and their order. Repeated identities are not appended again. A suggested new title
+is not made: the title follows the meeting.
 An explicit note review remains separate. Reviewed notes are never eligible
 for automatic field enrichment (they only contribute dossier facts), and human values are not overwritten automatically.
 
 The job binds the note version and path, calendar/contact and dossier evidence, schema,
-provider configuration, and source revisions. Changed evidence makes a proposal
-stale. Rejections suppress identical inputs; new input versions can be considered
-again. An approval receipt is durable before a file write. An interrupted
-approval can be resumed, but only if the file matches its recorded before or
-after state. Automatic fills resume through the same receipt without another
-model call. It never overwrites a divergent edit.
+provider configuration, and source revisions. Changed evidence makes the job stale: its
+speaker choices and legacy summary are no longer offered, and a new job is made as described
+above. Suggestions are filled into the note when the job finishes, never over a divergent edit.
 
 Back up the complete `/data/state/calendars` and `/data/state/context` trees.
 They contain originals, catalog, receipts, contact corrections, suggestions,
@@ -393,15 +380,6 @@ Provider contract references:
 [OpenAI Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create),
 [Anthropic models](https://platform.claude.com/docs/en/api/models/list), and
 [Anthropic Messages](https://platform.claude.com/docs/en/api/messages/create).
-
-Mistaken approved associations can be removed from a job's review page. The
-correction records authorization before changing the association ledger or
-mapped frontmatter. It preserves unrelated human field values and body bytes.
-An interrupted correction has a separate resume action. Rejecting one suggestion
-preserves the remaining choices; rejecting the remaining proposal stops all
-undecided choices. Semantically unchanged calendar re-exports do not invalidate
-accepted or rejected decisions solely because a new import receipt exists.
-
 
 ## Memory and deployment sizing
 

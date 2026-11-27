@@ -434,7 +434,6 @@ class AdminService:
                 "search": {key: search[key] for key in ("state", "service")},
                 "notes": {
                     "stuck": await timing.read("stuck", self.notes.stuck(problems)),
-                    "unsure": await timing.read("unsure", self.notes.unsure()),
                     "waiting": len(waiting),
                 },
                 "incoming": {
@@ -869,8 +868,6 @@ class AdminService:
             return f'Calendar file "{result["name"]}" was added.'
         if action in FILING_ACTIONS and result.get("filed"):
             folder = str(Path(result["path"]).parent)
-            if result.get("reviewed"):
-                return f'You reviewed "{result["name"]}". Filed in {folder}.'
             return f'"{result["name"]}" was filed in {folder}.'
         if action == "note-restore" and result.get("title"):
             return f'You brought back the note "{result["title"]}".'
@@ -930,8 +927,7 @@ class AdminService:
             "suggestions-pause": features.suggestions_pause,
             "suggestions-wait": features.suggestions_wait,
             "suggestions-response-limit": features.suggestions_response_limit,
-            "suggestions-fill": features.suggestions_fill,
-            "suggestions-tick": features.suggestions_tick,
+            "suggestions-descr": features.suggestions_descr,
             "suggestions-older": features.suggestions_older,
             "writeup-settings": plain(features.writeup_settings),
             "writeup-save": features.writeup_save,

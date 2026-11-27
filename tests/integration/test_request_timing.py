@@ -63,7 +63,6 @@ async def test_slow_handler_logs_read_steps_without_changing_response(
                 "apps",
                 "waiting",
                 "stuck",
-                "unsure",
                 "companion_placed",
                 "recent",
                 "sync",

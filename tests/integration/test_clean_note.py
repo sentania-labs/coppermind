@@ -683,3 +683,17 @@ async def test_a_note_with_the_old_meeting_property_keeps_one_property_and_a_rem
     )
     after = (await store.get_note(note.id)).frontmatter
     assert "meeting" not in after and "calendar_event" not in after  # it does not come back
+
+
+async def test_filling_in_a_note_with_the_old_meeting_property_never_adds_a_second(store):
+    from coppermind_store import filled_in
+
+    await store.context.setup_lifecycle({"revision": 0})
+    assert store.context.config().assignments["enrichment"].event_field == "meeting"
+    # The owner's meeting is kept as it is; a blank old property is filled under its own name.
+    kept = filled_in.fill(store.context, {"calendar_event": "E1"}, {"meeting": "E2"}, {})
+    assert "meeting" not in kept and "calendar_event" not in kept
+    blank = filled_in.fill(store.context, {"calendar_event": ""}, {"meeting": "E2"}, {})
+    assert blank == {"calendar_event": "E2"}
+    fresh = filled_in.fill(store.context, {}, {"meeting": "E2"}, {})
+    assert fresh == {"meeting": "E2"}
