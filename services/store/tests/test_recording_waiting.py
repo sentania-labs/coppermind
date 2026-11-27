@@ -283,6 +283,36 @@ async def test_retry_advice_waits_for_transcription_to_be_set_up(tmp_path, enabl
 
 
 @pytest.mark.asyncio
+async def test_a_failed_summary_is_one_plain_sentence_whatever_the_model_said(tmp_path):
+    failures = [
+        job(
+            1,
+            state="failed",
+            error_rule="writeup-invalid",
+            error="The model answered: I could not produce a note.",
+        )
+    ]
+    recordings, _, _ = waiting_recordings(tmp_path, failures, enabled=True)
+    (row,) = (await recordings.waiting())["failed"]
+    assert row["message"] == "The summary did not finish. The recording and transcript are safe."
+    assert row["can_retry"] is True
+    # The hover detail is the write-up's own reason, not the generic retry message.
+    assert row["detail"].startswith(
+        "The writing service sent an answer that could not be used as a complete note."
+    )
+    assert "Try the recording again" not in row["detail"]
+    assert "could not produce a note" not in row["detail"]
+
+
+@pytest.mark.asyncio
+async def test_a_failure_that_is_not_a_summary_carries_no_hover_detail(tmp_path):
+    failures = [job(1, state="failed", error_rule="transcription-no_speech")]
+    recordings, _, _ = waiting_recordings(tmp_path, failures, enabled=True)
+    (row,) = (await recordings.waiting())["failed"]
+    assert row["detail"] == ""
+
+
+@pytest.mark.asyncio
 async def test_a_service_that_runs_one_model_needs_no_model_name_to_retry(tmp_path):
     failures = [job(1, state="failed", error_rule="transcription-http")]
     recordings, _, _ = waiting_recordings(tmp_path, failures, enabled=True)

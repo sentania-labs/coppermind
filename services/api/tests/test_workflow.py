@@ -406,33 +406,12 @@ def test_a_refused_summary_comes_back_as_the_plain_message():
 @pytest.mark.parametrize(
     "scopes,expected",
     [
-        (["notes:read", "sources:read"], 403),
-        (["notes:write", "sources:read"], 403),
-        (["notes:write", "notes:read"], 403),
-        (["notes:read", "notes:write", "sources:read"], 200),
-    ],
-)
-def test_writing_up_every_note_without_a_summary_is_scoped_like_writing_one_again(scopes, expected):
-    app = FastAPI()
-    fake = Store()
-    app.include_router(router)
-    app.dependency_overrides[store] = lambda: fake
-    app.dependency_overrides[authenticated_key] = lambda: Principal("test", frozenset(scopes))
-    with TestClient(app) as client:
-        result = client.post("/v1/recordings/summaries-again")
-    assert result.status_code == expected
-    assert fake.calls == ([("write-up-missing-summaries", {})] if expected == 200 else [])
-
-
-@pytest.mark.parametrize(
-    "scopes,expected",
-    [
         (["notes:read"], 403),
         (["sources:read"], 403),
         (["notes:read", "sources:read"], 200),
     ],
 )
-def test_the_list_of_notes_in_review_needs_only_reads(scopes, expected):
+def test_the_list_of_waiting_notes_needs_only_reads(scopes, expected):
     app = FastAPI()
     fake = Store()
     app.include_router(router)
@@ -463,15 +442,18 @@ def test_resummarize_is_scoped_like_the_other_review_writes(scopes, expected):
     with TestClient(app) as client:
         plain = client.post("/v1/notes/note/resummarize")
         held = client.post(
-            "/v1/notes/note/resummarize", json={"replace": True, "if_match": "sha256:x"}
+            "/v1/notes/note/resummarize", json={"model": "claude-opus-5-5", "overwrite": True}
         )
         extra = client.post("/v1/notes/note/resummarize", json={"body": "no"})
     assert plain.status_code == held.status_code == expected
     assert extra.status_code == (422 if expected == 200 else 403)
     assert fake.calls == (
         [
-            ("note-resummarize", {"id": "note", "replace": False, "if_match": ""}),
-            ("note-resummarize", {"id": "note", "replace": True, "if_match": "sha256:x"}),
+            ("note-resummarize", {"id": "note", "model": "", "overwrite": False}),
+            (
+                "note-resummarize",
+                {"id": "note", "model": "claude-opus-5-5", "overwrite": True},
+            ),
         ]
         if expected == 200
         else []
@@ -510,3 +492,71 @@ def test_the_review_list_passes_its_page_and_refuses_a_page_too_large():
         assert client.get("/v1/review/notes?cursor=100&limit=50").status_code == 200
         assert client.get("/v1/review/notes?limit=201").status_code == 422
     assert fake.calls == [("review-notes", {"cursor": "100", "limit": 50})]
+
+
+@pytest.mark.parametrize(
+    "scopes,expected",
+    [
+        (["notes:read"], 403),
+        (["sources:read"], 403),
+        (["notes:read", "sources:read"], 200),
+    ],
+)
+def test_the_models_to_choose_from_are_read_like_the_review_list(scopes, expected):
+    app = FastAPI()
+    fake = Store()
+    app.include_router(router)
+    app.dependency_overrides[store] = lambda: fake
+    app.dependency_overrides[authenticated_key] = lambda: Principal("test", frozenset(scopes))
+    with TestClient(app) as client:
+        result = client.get("/v1/review/models")
+    assert result.status_code == expected
+    assert fake.calls == ([("review-models", {})] if expected == 200 else [])
+
+
+@pytest.mark.parametrize(
+    "scopes,expected",
+    [
+        (["notes:read", "sources:read"], 403),
+        (["notes:read", "notes:write"], 403),
+        (["notes:read", "notes:write", "sources:read"], 200),
+    ],
+)
+def test_choosing_another_meeting_is_scoped_like_the_other_review_writes(scopes, expected):
+    app = FastAPI()
+    fake = Store()
+    app.include_router(router)
+    app.dependency_overrides[store] = lambda: fake
+    app.dependency_overrides[authenticated_key] = lambda: Principal("test", frozenset(scopes))
+    with TestClient(app) as client:
+        result = client.post("/v1/notes/note/meeting", json={"event_id": "e1"})
+        empty = client.post("/v1/notes/note/meeting", json={"event_id": ""})
+    assert result.status_code == expected
+    assert empty.status_code == expected
+    assert fake.calls == (
+        [
+            ("note-set-meeting", {"id": "note", "event_id": "e1"}),
+            ("note-set-meeting", {"id": "note", "event_id": ""}),
+        ]
+        if expected == 200
+        else []
+    )
+
+
+@pytest.mark.parametrize(
+    "scopes,expected",
+    [
+        (["notes:read", "notes:write"], 403),
+        (["notes:read", "notes:write", "notes:move"], 200),
+    ],
+)
+def test_undoing_reviewed_needs_to_move_the_note_back(scopes, expected):
+    app = FastAPI()
+    fake = Store()
+    app.include_router(router)
+    app.dependency_overrides[store] = lambda: fake
+    app.dependency_overrides[authenticated_key] = lambda: Principal("test", frozenset(scopes))
+    with TestClient(app) as client:
+        result = client.post("/v1/notes/note/reopen")
+    assert result.status_code == expected
+    assert fake.calls == ([("note-reopen", {"id": "note"})] if expected == 200 else [])

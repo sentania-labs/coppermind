@@ -434,13 +434,13 @@ class Recordings:
                     else:
                         message += " Try the recording again."
                 scheduled = enabled and not paused and job.attempts < job.attempt_limit
+                summary_failed = job.error_rule.startswith("writeup-")
                 failed.append(
                     {
                         "id": job.id,
                         "title": job.title or job.filename,
-                        "message": job.display_error
-                        if job.error_rule.startswith("writeup-")
-                        else message,
+                        "message": SUMMARY_DID_NOT_FINISH if summary_failed else message,
+                        "detail": job.display_error if summary_failed else "",
                         "stage": job.stage,
                         "field_problems": field_problems,
                         "field_problems_unavailable": job.error_rule == "note-rejected"
@@ -514,8 +514,7 @@ class Recordings:
                     "date": job.captured_at,
                     "message": why
                     + (
-                        " Open Notes in Review and press Resummarize to write it again from the "
-                        "same transcript."
+                        " Press Resummarize on its card to write it again from the same transcript."
                         if ready
                         else " Turn suggestions on and make sure the AI service answers, then "
                         "retry."
@@ -1687,6 +1686,8 @@ def repeats_only(rule: str) -> bool:
 
 
 SET_UP_FIRST = "Set up and turn on transcription before retrying."
+# What the Review screen says of a recording whose summary failed; the reason is the hover detail.
+SUMMARY_DID_NOT_FINISH = "The summary did not finish. The recording and transcript are safe."
 _RESEND = "the same way recordings normally arrive."
 _CHECK_SERVICE = "Check the transcription connection and model in settings, then retry."
 

@@ -28,7 +28,6 @@ import httpx
 
 from coppermind import frontmatter as fm
 from coppermind.naming import sanitize_folder
-from coppermind.store_protocol import StoreError
 from coppermind_store.fs import resolve
 
 if TYPE_CHECKING:
@@ -159,35 +158,6 @@ class OwnerAlerts:
             "recordings_failed": len(waiting["failed"]),
             "notes_without_summary": len(waiting["missing_summaries"]),
         }
-
-    async def write_up_missing(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Write up every recording note that has no summary, in one step.
-
-        Each note goes through Write the summary again, so there is one way a summary is
-        made. That never writes into a note: the new summary waits in the note's review
-        and joins the body when the note is reviewed, which keeps every byte already there,
-        so a body the owner edited by hand is never overwritten.
-        """
-        from coppermind_store.ai_services import Refused
-
-        notes = self.context.store.admin.notes
-        queued = already = skipped = 0
-        for item in await self.context.recordings.missing_summaries():
-            try:
-                result = await notes.summary_again({"id": item["id"]})
-            except Refused as refusal:
-                if not item["can_retry"]:
-                    raise ValueError(refusal.message) from refusal
-                skipped += 1
-                continue
-            except StoreError:
-                skipped += 1
-                continue
-            if result.get("already"):
-                already += 1
-            else:
-                queued += 1
-        return {"queued": queued, "already": already, "skipped": skipped}
 
     # -- the old problems note ----------------------------------------------------------
 

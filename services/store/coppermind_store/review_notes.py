@@ -1,20 +1,21 @@
-"""Notes in Review: one list of every note waiting there, and what an owner asks of it.
+"""The notes waiting in Review: one list of them, and what an owner asks of a card.
 
 *Resummarize* writes a recording's note up again from the transcript already saved, with no new
 transcription. It fills the note's properties again from the new write-up, but only the ones the
 owner has not put their own value in (see `filled_in`); it never changes whether the note is
 reviewed.
 
-A note written up in one step has its write-up as its body. A rewrite replaces that body only
-while it is still exactly what was generated; the version it replaces is kept. A body the owner
-edited is never touched: the new write-up waits beside the note, and replacing the owner's
-version takes an explicit second request. A failed rewrite leaves the note as it was.
+A note written up in one step has its write-up as its body. A rewrite replaces that body while it
+is still exactly what was generated, and the version it replaces is kept. A body the owner edited
+is replaced only when the request says `overwrite`, which the companion sends after one short
+confirm; the replaced version is kept the same way. A failed rewrite leaves the note as it was.
+
+One run can use another model than the configured one (`model`); nothing else changes.
 """
 
 from __future__ import annotations
 
 import asyncio
-import difflib
 import json
 import logging
 from datetime import UTC, datetime
@@ -26,7 +27,14 @@ from coppermind.db.models import Note
 from coppermind.ids import is_valid_id
 from coppermind.naming import sanitize_folder
 from coppermind.recording_writeup import failure_reason
-from coppermind.store_protocol import NotFound, ReplaceNote, StoreError
+from coppermind.store_protocol import (
+    MoveNote,
+    NotFound,
+    PatchFrontmatter,
+    RenameNote,
+    ReplaceNote,
+    StoreError,
+)
 from coppermind_store.note_lifecycle import SETTLING
 
 if TYPE_CHECKING:
@@ -35,16 +43,27 @@ if TYPE_CHECKING:
 log = logging.getLogger("coppermind.store.review_notes")
 
 STATE = "note-resummarize/"
-PROPOSED = "recording-writeup-proposed/"
 PAGE = 100
 MAX_PAGE = 200
-DIFF_LINES = 400
 EARLIER_KEPT = 5
-SAME_BODY = "The note already says what the new write-up says."
+EDITED = "You edited this note while it was being written up, so it was left as it is."
 
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _instant(value: Any) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else None
+
+
+def _distance(event: dict[str, Any], captured: datetime) -> float:
+    start = _instant(event.get("start"))
+    return abs((start - captured).total_seconds()) if start else float("inf")
 
 
 def _step(state: str, reason: str = "", when: str = "", **more: Any) -> dict[str, Any]:
@@ -133,6 +152,30 @@ class ReviewNotes:
             "total": total or 0,
             "next_cursor": str(following) if following < (total or 0) and rows else None,
             "writeup_on": writeup_on,
+            "choices": self.choices(),
+        }
+
+    def choices(self) -> dict[str, Any]:
+        """What a card's pickers offer, and the names of the properties they write."""
+        from coppermind_store.recording_writeup import vocabulary
+
+        context = self.context
+        schema = context.store.control.schema()
+        vocab = vocabulary(context)
+        assignment = context.config().assignments["enrichment"]
+        return {
+            "keys": {
+                "type": schema.role("type_key"),
+                "account": schema.role("account_key"),
+                "tags": schema.role("tags_key"),
+                "reviewed": schema.role("reviewed_key"),
+                "meeting": assignment.event_field or "calendar_event",
+                "attendees": assignment.attendees_field or "attendees",
+            },
+            "types": vocab["types"],
+            "accounts": sorted(set(vocab["accounts"].values()), key=str.casefold),
+            "tags": sorted(set(vocab["tags"].values()), key=str.casefold),
+            "tags_closed": schema.tag_mode == "closed",
         }
 
     def writeup_ready(self) -> bool:
@@ -154,6 +197,7 @@ class ReviewNotes:
             "date": (job.captured_at if job and job.captured_at else "")
             or (row.date.isoformat() if row.date else ""),
             "from_recording": job is not None,
+            "takes_model": job is not None and job.generation_mode == "markdown-v1",
             "can_resummarize": job is not None
             and not row.reviewed
             and (writeup_on if job.generation_mode == "markdown-v1" else suggestions_on),
@@ -161,14 +205,52 @@ class ReviewNotes:
         if row.reviewed and (problem := self.filing_problem(row.id)):
             item["filing"] = {"problem": problem}
         item["writeup"] = self.writeup_step(row.id, job, enrichment)
-        kept = self.context.read(STATE + row.id, {})
-        if kept.get("state") == "kept":
-            item["kept"] = {
-                "when": kept.get("finished_at", ""),
-                "difference": kept.get("difference", []),
-                "if_match": kept.get("if_match", ""),
-            }
+        if job is not None and not row.reviewed:
+            try:
+                note = await self.context.store.get_note(row.id)
+            except StoreError:
+                note = None
+            if note is not None:
+                item["edited"] = self.edited(note, job)
+                item["meeting"] = await self.meeting(note, job)
         return item
+
+    def edited(self, note: Any, job: Any) -> bool:
+        """Whether the owner has changed the body Coppermind wrote."""
+        if job.generation_mode != "markdown-v1":
+            return False
+        saved = self.context.read("recording-writeups/" + job.id, {})
+        baseline = saved.get("voice_body", saved.get("filed_body"))
+        return baseline is not None and note.body.strip() != baseline.strip()
+
+    def meeting_key(self, frontmatter: dict[str, Any]) -> str:
+        assignment = self.context.config().assignments["enrichment"]
+        return assignment.event_key(frontmatter) or "calendar_event"
+
+    async def meeting(self, note: Any, job: Any) -> dict[str, Any] | None:
+        """The meeting the note names and the meetings of that day, nearest the recording first."""
+        context = self.context
+        field = self.meeting_key(note.frontmatter)
+        try:
+            events = await context.calendar_candidates(note)
+        except Exception:  # noqa: BLE001
+            return None
+        selected = note.frontmatter.get(field) or ""
+        captured = _instant(job.captured_at)
+        if captured is not None:
+            events = sorted(events, key=lambda e: _distance(e, captured))
+        return {
+            "selected": selected if isinstance(selected, str) else "",
+            "candidates": [
+                {
+                    "event_id": e["event_id"],
+                    "title": e.get("title", ""),
+                    "start": e.get("start", ""),
+                    "end": e.get("end", ""),
+                }
+                for e in events
+            ],
+        }
 
     def filing_problem(self, note_id: str) -> str:
         """What stopped a reviewed note from being filed, in a sentence, or nothing.
@@ -247,8 +329,8 @@ class ReviewNotes:
     async def resummarize(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Write a recording's note up again from its saved transcript.
 
-        `replace` with the `if_match` the list gave swaps in a rewrite that was held back
-        because the owner had edited the note."""
+        `model` is used for this run only. A body the owner edited is replaced only with
+        `overwrite`."""
         note_id = str(payload.get("id", ""))
         if not is_valid_id(note_id):
             raise ValueError("That note is no longer listed.")
@@ -277,8 +359,9 @@ class ReviewNotes:
                 "This note has been reviewed, so its write-up is yours now and Coppermind "
                 "does not write it again."
             )
-        if payload.get("replace") is True:
-            return await self.replace(row, job, str(payload.get("if_match", "")))
+        model = str(payload.get("model") or "").strip()
+        if len(model) > 200 or any(c in model for c in "\r\n\0"):
+            raise ValueError("Use a model name of up to 200 characters, on one line.")
         record = self.context.read(STATE + note_id, {})
         if record.get("state") == "running" and note_id in self.live:
             return {"started": True, "already": True}
@@ -288,16 +371,21 @@ class ReviewNotes:
                 "write-ups on in Coppermind Admin, under How recordings are written up."
             )
         self.context.write(STATE + note_id, {"state": "running", "started_at": _now()})
-        task = asyncio.create_task(self.rewrite(note_id, job.id), name="coppermind-resummarize")
+        task = asyncio.create_task(
+            self.rewrite(note_id, job.id, model, payload.get("overwrite") is True),
+            name="coppermind-resummarize",
+        )
         self.live[note_id] = task
         task.add_done_callback(lambda _: self.live.pop(note_id, None))
         return {"started": True, "already": False}
 
-    async def rewrite(self, note_id: str, recording_id: str) -> None:
+    async def rewrite(
+        self, note_id: str, recording_id: str, model: str = "", overwrite: bool = False
+    ) -> None:
         started = self.context.read(STATE + note_id, {}).get("started_at", _now())
         try:
             async with self.turn:
-                outcome = await self.write_again(note_id, recording_id)
+                outcome = await self.write_again(note_id, recording_id, model, overwrite)
             self.context.write(STATE + note_id, {**outcome, "started_at": started})
         except asyncio.CancelledError:
             raise
@@ -322,7 +410,9 @@ class ReviewNotes:
                 },
             )
 
-    async def write_again(self, note_id: str, recording_id: str) -> dict[str, Any]:
+    async def write_again(
+        self, note_id: str, recording_id: str, model: str = "", overwrite: bool = False
+    ) -> dict[str, Any]:
         from coppermind_store.recording_writeup import generate
 
         context = self.context
@@ -356,17 +446,20 @@ class ReviewNotes:
         # The write-up is made under its own name, so the one the note was filed from is
         # untouched unless the new one is good.
         trial = job.model_copy(update={"id": job.id + "-again"})
+        meeting = await self.chosen_meeting(note_id)
         try:
-            fresh = await generate(context, trial, transcript, voice_map)
+            fresh = await generate(
+                context, trial, transcript, voice_map, model=model, meeting=meeting
+            )
         finally:
             for name in ("recording-writeups/", "recording-writeup-parts/"):
                 (context.root / f"{name}{trial.id}.json").unlink(missing_ok=True)
         body = await recordings.with_references(job, fresh, fresh["body"])
         manifest = await context.store.get_source(job.source_id)
         link = str(manifest.projection_path or "").removesuffix(".md")
-        from coppermind.recording_writeup import SOURCE_LINK_TOKEN
+        from coppermind.recording_writeup import SOURCE_LINK_TOKEN, SOURCE_TARGET_TOKEN
 
-        body = body.replace(SOURCE_LINK_TOKEN, f"[[{link}]]")
+        body = body.replace(SOURCE_LINK_TOKEN, f"[[{link}]]").replace(SOURCE_TARGET_TOKEN, link)
         note = await context.store.get_note(note_id)
         if not self.in_review(note):
             return {
@@ -380,27 +473,26 @@ class ReviewNotes:
         finished = _now()
         if note.body.strip() == body.strip():
             return {"state": "done", "finished_at": finished}
-        edited = note.body.strip() != baseline.strip()
-        if edited:
-            context.write(PROPOSED + note_id, {**fresh, "filed_body": body})
-            difference = list(
-                difflib.unified_diff(
-                    note.body.splitlines(),
-                    body.splitlines(),
-                    "your note",
-                    "new write-up",
-                    lineterm="",
-                    n=1,
-                )
-            )[:DIFF_LINES]
-            return {
-                "state": "kept",
-                "finished_at": finished,
-                "if_match": note.content_hash,
-                "difference": difference,
-            }
+        if note.body.strip() != baseline.strip() and not overwrite:
+            return {"state": "failed", "finished_at": finished, "error": EDITED}
         await self.put(note, job, saved, fresh, body)
         return {"state": "done", "finished_at": finished}
+
+    async def chosen_meeting(self, note_id: str) -> str | None:
+        """The meeting the owner settled on for this note: its id, "" when they removed the
+        match, None when the recording is left to find one."""
+        from coppermind_store import filled_in
+        from coppermind_store.dossier_context import blank
+
+        note = await self.context.store.get_note(note_id)
+        key = self.meeting_key(note.frontmatter)
+        named = note.frontmatter.get(key)
+        if isinstance(named, str) and named:
+            return named
+        filled = filled_in.recorded(self.context, note_id)
+        if blank(named) and not blank(filled.get(key, filled.get("meeting"))):
+            return ""
+        return None
 
     async def refill(self, note: Any, written: dict[str, Any]) -> Any:
         """Fill the note's properties from the new write-up where the owner has not put their
@@ -451,26 +543,147 @@ class ReviewNotes:
             "recording-writeups/" + job.id,
             {**fresh, "filed_body": body, "earlier_bodies": earlier[-EARLIER_KEPT:]},
         )
-        (context.root / f"{PROPOSED}{note.id}.json").unlink(missing_ok=True)
         job.boundaries = [RecordingBoundary.model_validate(b) for b in fresh["boundaries"]]
         context.recordings.save(job)
 
-    async def replace(self, row: Note, job: Any, if_match: str) -> dict[str, Any]:
-        """The owner chose the new write-up over their edited note."""
+    # -- the card's other actions --------------------------------------------------------
+
+    async def models(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """The models the write-up connection offers, and the one it uses unless told otherwise."""
+        from coppermind_store.model_provider import ProviderError
+        from coppermind_store.recording_writeup import assignment
+
         context = self.context
-        record = context.read(STATE + row.id, {})
-        proposed = context.read(PROPOSED + row.id, {})
-        if record.get("state") != "kept" or not proposed:
-            raise ValueError("There is no new write-up waiting. Write it up again first.")
-        note = await context.store.get_note(row.id)
-        if note.content_hash != if_match or note.content_hash != record.get("if_match"):
-            raise ValueError("The note changed since this write-up was made. Write it up again.")
-        if not self.in_review(note):
-            raise ValueError(
-                "This note has been reviewed or moved out of Review, so it is left as it is."
-            )
+        async with context.lock:
+            limits = assignment(context)
+        offered: list[str] = []
+        problem = ""
+        if limits.connection:
+            try:
+                offered = await context.provider.models(
+                    context.connection(limits.connection), context.key(limits.connection)
+                )
+            except (ProviderError, KeyError, ValueError):
+                problem = "The AI server did not list its models."
+        if limits.model and limits.model not in offered:
+            offered = [limits.model, *offered]
+        return {"default": limits.model, "models": offered, "problem": problem}
+
+    async def set_meeting(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """The owner picked another meeting for a waiting note, or none.
+
+        The note names the meeting, the people on its invitation fill in the attendees where
+        the owner has not put their own, and the title follows the meeting unless the owner
+        changed the title."""
+        import re
+
+        from coppermind_store import filled_in
+        from coppermind_store.recording_writeup import clean_title
+
+        context = self.context
+        note_id, event_id = str(payload.get("id", "")), str(payload.get("event_id", ""))
+        if not is_valid_id(note_id):
+            raise ValueError("That note is no longer listed.")
+        job = next((j for j in context.recordings.jobs() if j.note_id == note_id), None)
+        note = await context.store.get_note(note_id)
+        if job is None or not self.in_review(note):
+            raise ValueError("This note is not waiting for review.")
+        field = self.meeting_key(note.frontmatter)
+        if not event_id:
+            named = note.frontmatter.get(field)
+            if named is not None:
+                await context.store.patch_frontmatter(
+                    note_id, PatchFrontmatter(unset=[field]), if_match=note.content_hash
+                )
+                associations = context.read("associations", {})
+                events = associations.get(note_id, {}).get("events", [])
+                if named in events:
+                    events.remove(named)
+                    context.write("associations", associations)
+                names = {field, "meeting"}
+                filled_in.remember(context, note_id, dict.fromkeys(names, named), names)
+            return {"meeting": ""}
+        events = await context.calendar_candidates(note)
+        event = next((e for e in events if e["event_id"] == event_id), None)
+        if event is None:
+            raise ValueError("That meeting is not on the calendar for this day.")
+        assignment = context.config().assignments["enrichment"]
+        attendees = assignment.attendees_field or "attendees"
+        previous = next((e for e in events if e["event_id"] == note.frontmatter.get(field)), None)
         saved = context.read("recording-writeups/" + job.id, {})
-        body = proposed.pop("filed_body")
-        await self.put(note, job, saved, proposed, body)
-        context.write(STATE + row.id, {"state": "done", "finished_at": _now()})
-        return {"started": False, "replaced": True}
+        found = filled_in.attendees(
+            context, {"voice_map": saved.get("voice_map", {}), "calendar": {"event": event}}
+        )
+        changes: dict[str, Any] = {field: event_id}
+        if found:
+            changes.update(
+                filled_in.fill(
+                    context,
+                    note.frontmatter,
+                    {attendees: found},
+                    filled_in.recorded(context, note_id),
+                )
+            )
+        await context.store.patch_frontmatter(
+            note_id, PatchFrontmatter(set=changes), if_match=note.content_hash
+        )
+        for key in changes:
+            if key != field:
+                after = await context.store.get_note(note_id)
+                filled_in.remember(context, note_id, after.frontmatter, [key])
+        # The note is linked to the meeting now chosen, and only to it, as choosing one at
+        # review has always done; speaker candidates and calendar matches read this list.
+        async with context.lock:
+            associations = context.read("associations", {})
+            record = associations.setdefault(
+                note_id, {"events": [], "contacts": [], "attendees": []}
+            )
+            record["events"] = [event_id]
+            context.write("associations", associations)
+        # The title follows the meeting only while it is still the one Coppermind made.
+        stamp = re.match(r"\d{4}-\d{2}-\d{2}(?= )", note.title)
+        if stamp:
+
+            def titled(name: str) -> str:
+                name = re.sub(r"^\d{4}-\d{2}-\d{2}\s+", "", name.strip())
+                return f"{stamp[0]} {' '.join(name.split()).lstrip('# ') or 'Recording'}"
+
+            from datetime import date
+
+            made = (
+                titled(previous["title"])
+                if previous
+                else f"{stamp[0]} {clean_title(job.title, date.fromisoformat(stamp[0]))}"
+            )
+            if note.title == made and titled(event["title"]) != note.title:
+                try:
+                    current = await context.store.get_note(note_id)
+                    await context.store.rename_note(
+                        note_id, RenameNote(title=titled(event["title"])), current.content_hash
+                    )
+                except StoreError:
+                    log.info("the title of %s was left as it is", note_id)
+        return {"meeting": event_id}
+
+    async def reopen(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Undo Reviewed: the note goes back to Review, waiting to be checked again."""
+        context = self.context
+        note_id = str(payload.get("id", ""))
+        if not is_valid_id(note_id):
+            raise ValueError("That note is no longer listed.")
+        note = await context.store.get_note(note_id)
+        reviewed = context.store.control.schema().role("reviewed_key")
+        folder = sanitize_folder(context.store.control.settings().notes.review_folder)
+        if not folder:
+            raise ValueError("There is no Review folder to put the note back in.")
+        if note.frontmatter.get(reviewed) is True:
+            note = await context.store.patch_frontmatter(
+                note_id, PatchFrontmatter(set={reviewed: False}), if_match=note.content_hash
+            )
+        if not note.path.startswith(f"{folder}/"):
+            note = await context.store.move_note(note_id, MoveNote(target_folder=folder), None)
+        # A receipt of the earlier filing would make the next one look like a hand move.
+        state = context.store.control.store.state_dir
+        for kind in ("filing", "reviews"):
+            (state / kind / f"{note_id}.json").unlink(missing_ok=True)
+        return {"reopened": True, "path": note.path}

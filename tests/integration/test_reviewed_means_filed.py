@@ -2,7 +2,7 @@
 
 No start time, context or account is asked for, a name already taken adds " (2)" and nothing
 is ever overwritten, notes held by the old rules file on the next pass, and a real failure is a
-row on Notes in Review with Try again.
+card on the Review screen with Try again.
 """
 
 import json
@@ -14,7 +14,7 @@ from coppermind_store.reconciler import reconcile_once
 
 from coppermind.ids import new_id
 from coppermind.schema import WORK_ONLY_CONTEXT_KEY, shipped_key_upgrades
-from coppermind.store_protocol import NoteQuery, NotesFilesystemUnavailable
+from coppermind.store_protocol import NoteQuery, NotesFilesystemUnavailable, PatchFrontmatter
 
 
 def hand_written(store, name: str, front: str, folder: str = "Review", body: str = "Words.\n"):
@@ -246,3 +246,30 @@ async def test_a_recording_that_changed_after_review_is_unticked_and_files_when_
     assert await file_everything(store, monkeypatch) == {"filed": 1, "filing_failed": 0}
     assert not (await path_of(store, note.id)).startswith("Review/")
     assert note.id not in {n["id"] for n in (await review.listing({}))["notes"]}
+
+
+async def test_undo_puts_a_filed_note_back_in_review_and_ticking_again_files_it_again(
+    store, monkeypatch
+):
+    note_id = hand_written(store, "Acme call", "type: work\nreviewed: true\ndate: 2026-11-26\n")
+    assert await file_everything(store, monkeypatch) == {"filed": 1, "filing_failed": 0}
+    assert (await path_of(store, note_id)).startswith("work/2026/2026-11/")
+    answer = await store.context.review_notes.reopen({"id": note_id})
+    reopened = await store.get_note(note_id)
+    assert answer == {"reopened": True, "path": reopened.path}
+    assert reopened.path.startswith("Review/")
+    assert reopened.frontmatter["reviewed"] is False
+    # The note waits like any other, and ticking Reviewed files it again.
+    await store.patch_frontmatter(
+        note_id, PatchFrontmatter(set={"reviewed": True}), reopened.content_hash
+    )
+    assert await file_everything(store, monkeypatch) == {"filed": 1, "filing_failed": 0}
+    assert (await path_of(store, note_id)).startswith("work/2026/2026-11/")
+
+
+async def test_undo_on_a_note_that_is_still_waiting_only_unticks_it(store, monkeypatch):
+    note_id = hand_written(store, "Waiting", "type: work\nreviewed: true\ndate: 2026-11-26\n")
+    await reconcile_once(store)
+    await store.context.review_notes.reopen({"id": note_id})
+    note = await store.get_note(note_id)
+    assert note.path.startswith("Review/") and note.frontmatter["reviewed"] is False

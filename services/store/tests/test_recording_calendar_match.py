@@ -259,3 +259,44 @@ async def test_speaker_hint_reads_a_naive_capture_time_in_the_lab_zone(context, 
         time.tzset()
     assert asked == ["2026-11-24T02:00:00"]
     assert hint == 1
+
+
+async def event_id(context, title):
+    context.calendar_candidates = lambda note, d=False: ContextService.calendar_candidates(
+        context, note, d
+    )
+    day = await context.calendar_candidates(SimpleNamespace(frontmatter={"date": "2026-11-19"}))
+    return next(e["event_id"] for e in day if e["title"] == title)
+
+
+async def resolve_owned(context, captured_at, meeting, transcript="A greeting."):
+    context.calendar_candidates = lambda note, d=False: ContextService.calendar_candidates(
+        context, note, d
+    )
+    return await resolve_title(context, job(captured_at), transcript, meeting)
+
+
+async def test_the_meeting_the_owner_chose_is_used_even_when_it_was_not_on_at_the_time(context):
+    # Recorded at 8:01 on the 19th, the owner says it was the evening review that day.
+    late = await event_id(context, "Evening review")
+    resolved, evidence = await resolve_owned(context, "2026-11-19T08:01:00-06:00", late)
+    assert evidence["matched"] and evidence["event"]["event_id"] == late
+    assert resolved == "2026-11-19 Evening review"
+    # Left to itself the recording matches the customer sync.
+    _, own = await resolve_owned(context, "2026-11-19T08:01:00-06:00", None, "Customer sync.")
+    assert own["event"]["event_id"] == await event_id(context, "Customer sync")
+
+
+async def test_a_match_the_owner_removed_is_not_made_again(context):
+    resolved, evidence = await resolve_owned(
+        context, "2026-11-19T08:01:00-06:00", "", "Welcome to the Customer sync."
+    )
+    assert not evidence["matched"]
+    assert resolved == "2026-11-19 Recorder title"
+
+
+async def test_a_meeting_that_is_gone_from_the_calendar_leaves_the_recording_to_find_one(context):
+    _, evidence = await resolve_owned(
+        context, "2026-11-19T08:01:00-06:00", "not-there", "Welcome to the Customer sync."
+    )
+    assert evidence["event"]["event_id"] == await event_id(context, "Customer sync")

@@ -178,7 +178,7 @@ async def test_notes_without_a_summary_are_listed_once_and_only_while_the_owner_
     jobs[3].state = "succeeded"  # summary written
     found = await fixture.recordings.missing_summaries()
     assert {item["id"] for item in found} == {"n1", "n2"}
-    assert all(item["can_retry"] and "press Resummarize" in item["message"] for item in found)
+    assert all(item["can_retry"] and "Press Resummarize" in item["message"] for item in found)
     assert found[0]["path"].startswith("Review/")
     waiting = await fixture.recordings.waiting()
     assert {i["id"] for i in waiting["missing_summaries"]} == {"n1", "n2"}
@@ -195,42 +195,6 @@ async def test_a_summary_service_that_is_off_says_so_and_offers_no_retry(tmp_pat
     found = await fixture.recordings.missing_summaries()
     assert found[0]["can_retry"] is False
     assert "Turn suggestions on" in found[0]["message"]
-
-
-@pytest.mark.asyncio
-async def test_writing_up_every_note_without_a_summary_touches_no_note(tmp_path):
-    jobs = [job(1), job(2), job(3)]
-    fixture = Fixture(tmp_path, jobs)
-    for i, item in enumerate(jobs, 1):
-        fixture.summary_failed(item, f"n{i}")
-    fixture.notes["n2"].busy = True
-    fixture.notes["n3"].refuse = "This note has already been reviewed."
-    before = {k: dict(v.frontmatter) for k, v in fixture.notes.items()}
-    result = await fixture.alerts.write_up_missing({})
-    assert result == {"queued": 1, "already": 1, "skipped": 1}
-    assert sorted(fixture.asked) == ["n1", "n2", "n3"]
-    assert {k: dict(v.frontmatter) for k, v in fixture.notes.items()} == before
-
-
-@pytest.mark.asyncio
-async def test_writing_up_all_says_why_when_the_service_is_not_on(tmp_path):
-    jobs = [job(1)]
-    fixture = Fixture(tmp_path, jobs)
-    fixture.summary_failed(jobs[0], "n1")
-    fixture.context.store.admin.notes.summary_service_state = lambda: "none"
-    fixture.notes["n1"].refuse = "Suggestions are off."
-    with pytest.raises(ValueError, match="Suggestions are off"):
-        await fixture.alerts.write_up_missing({})
-
-
-@pytest.mark.asyncio
-async def test_nothing_to_write_up_is_a_calm_zero(tmp_path):
-    fixture = Fixture(tmp_path, [job(1)])
-    assert await fixture.alerts.write_up_missing({}) == {
-        "queued": 0,
-        "already": 0,
-        "skipped": 0,
-    }
 
 
 OLD = "---\ncoppermind-generated: needs-attention\n---\n# Needs attention\n"
