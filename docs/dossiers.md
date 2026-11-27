@@ -81,14 +81,13 @@ limit still applies before transmission. All supplied content is untrusted data;
 there are no tools or external retrieval. Unique full-name matches select context,
 not identity merges; ambiguous names remain unresolved.
 
-Schema-valid suggestions with model-reported confidence of at least 0.8 fill
-blank frontmatter fields, including exact dossier wikilinks in configured list
-fields. Confidence is not a calibrated probability. Other suggestions and doubts
-stay in Admin. No automatic fill replaces a person-set value or changes reviewed
-notes, body bytes or filenames. Read the visible values in Obsidian and mark the
-note reviewed when satisfied. Admin's existing controls remain available for
-repair. The worker persists input versions, provider/config fingerprint, model
-and reported model version (or `not supplied`), confidence, evidence and decisions.
+Schema-valid suggestions fill blank frontmatter fields at any confidence, including exact
+dossier wikilinks in configured list fields. Confidence is model-reported, not a calibrated
+probability. A suggestion that cannot be filled is skipped. No automatic fill replaces a
+person-set value or changes reviewed notes, body bytes or filenames. Read the visible values
+in Obsidian and mark the note reviewed when satisfied. The worker persists input versions,
+provider/config fingerprint, model and reported model version (or `not supplied`),
+confidence, evidence and decisions.
 Changes to the note, sources, guidance or relevant dossiers invalidate a pending
 write; interrupted automatic writes resume only against their recorded bytes.
 
@@ -171,7 +170,7 @@ asks for confirmation. The voice's appearances are
 relabelled in recording transcripts; unchanged generated
 summary lines can also be updated. Owner-edited lines are left alone. When a voice left
 unnamed at review is later attached to a person, that person is also added to the
-attendees of the already reviewed note, if Model connections has an attendees property;
+attendees of the already reviewed note, if suggestions point at an attendees property;
 anyone already listed stays, nobody is removed, and a note still in review is left to its
 review. A wrong match can
 be separated for one recording. A person or unknown voice's saved voice data can be

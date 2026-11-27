@@ -554,7 +554,6 @@
    "tags_key": "tags",
    "type_key": "type"
   },
-  "speaker_attendees_notice": "",
   "speaker_notice": "",
   "stale": false,
   "state": "suggested",
@@ -649,15 +648,14 @@
    },
    {
     "at": "2026-11-12T17:22:53.772675+00:00",
-    "text": "Suggestions were written for you to check."
+    "text": "Suggestions were written."
    }
   ],
   "id": "01M78CGWH2FKAQM3WVDSXNCXXJ",
   "path": "Review/Vendor call.md",
   "reviewed": false,
   "state": "waiting",
-  "title": "Vendor call",
-  "unsure": 3
+  "title": "Vendor call"
  },
  "note-summary": {
   "earlier": null,
@@ -736,24 +734,21 @@
     "id": "01M78CGWH2FKAQM3WVDSXNCXXJ",
     "no_suggestions": "",
     "path": "Review/Vendor call.md",
-    "title": "Vendor call",
-    "unsure": 3
+    "title": "Vendor call"
    },
    {
     "arrived": "2026-11-12T17:08:26.723214+00:00",
     "id": "01M78BPVF0GQTVZXHYBM6K1EGF",
     "no_suggestions": "failed",
     "path": "work/2026/2026-11/2026-11-11 Budget review.md",
-    "title": "Budget review",
-    "unsure": 0
+    "title": "Budget review"
    },
    {
     "arrived": "2026-11-12T17:01:14.106909+00:00",
     "id": "01M78B9MYT8KSXDDMC0967S0TJ",
     "no_suggestions": "failed",
     "path": "Review/2026-11-11 Weekly standup.md",
-    "title": "Weekly standup",
-    "unsure": 0
+    "title": "Weekly standup"
    }
   ]
  },
@@ -793,13 +788,6 @@
   },
   "notes": {
    "stuck": [],
-   "unsure": [
-    {
-     "count": 3,
-     "id": "01M78CGWH2FKAQM3WVDSXNCXXJ",
-     "title": "Vendor call"
-    }
-   ],
    "waiting": 3
   },
   "notices": [],
@@ -1490,59 +1478,6 @@
  "suggestions": {
   "max_output_tokens": 2048,
   "descr": false,
-  "fill": {
-   "account": true,
-   "context": true,
-   "date": true,
-   "event": true,
-   "people": true,
-   "tags": true,
-   "type": true
-  },
-  "fill_options": [
-   {
-    "field": "date",
-    "hint": "When the meeting or note happened.",
-    "key": "date",
-    "label": "Date"
-   },
-   {
-    "field": "type",
-    "hint": "Decides which folder the note is filed in.",
-    "key": "type",
-    "label": "Type"
-   },
-   {
-    "field": "context",
-    "hint": "Internal, personal, or with someone outside such as a customer.",
-    "key": "context",
-    "label": "Context"
-   },
-   {
-    "field": "account",
-    "hint": "Which customer or company it was with.",
-    "key": "account",
-    "label": "Account"
-   },
-   {
-    "field": "tags",
-    "hint": "Your own labels.",
-    "key": "tags",
-    "label": "Tags"
-   },
-   {
-    "field": "",
-    "hint": "Who was there and who was invited, matched to your calendar.",
-    "key": "people",
-    "label": "Attendees and invitees"
-   },
-   {
-    "field": "",
-    "hint": "Which calendar meeting the note belongs to.",
-    "key": "event",
-    "label": "Meeting"
-   }
-  ],
   "last": {
    "at": "2026-11-12T17:54:31.517560+00:00",
    "title": "Depot walkthrough"

@@ -15,8 +15,8 @@ from services.admin.tests.harness import VIEWS, follow, post, token
 from services.admin.tests.harness import admin as admin
 
 NOTE = VIEWS["note"]["id"]
-REVIEW = f"/admin/notes/{NOTE}/review"
-MEETINGS = [c["event_id"] for c in VIEWS["lifecycle"]["recording_meeting"]["candidates"]]
+PAGE = f"/admin/notes/{NOTE}"
+REVIEW = f"{PAGE}/review"
 EARLIER = {"summary": "The first summary.", "decisions": "", "action_items": ""}
 
 
@@ -70,118 +70,54 @@ def test_writeup_reset_restores_default_without_changing_other_settings(admin):
 # -- writing a summary again ----------------------------------------------------------------
 
 
-def test_the_review_shows_the_summary_and_offers_to_write_it_again(admin):
+def test_the_note_page_offers_to_write_the_summary_again(admin):
     client, _, store = admin
-    page = client.get(REVIEW).text
-    proposed = store.views["note-summary"]["proposed"]
-    assert proposed["summary"] in page
+    page = client.get(PAGE).text
+    assert "The meeting summary" in page
     assert "Write the summary again" in page
-    assert 'formaction="' + REVIEW.removesuffix("/review") + '/summary-again"' not in page
-    assert "the recording is\nnot sent anywhere again" in page.replace("  ", " ") or (
-        "the recording is not sent anywhere again" in page
-    )
-    assert "Nothing is written to the note until you mark it reviewed." in page.replace("\n", " ")
+    assert f'action="{PAGE}/summary-again"' in page
+    assert "the recording is not sent anywhere again" in " ".join(page.split())
 
 
-def test_writing_it_again_asks_the_store_and_says_the_old_one_is_kept(admin):
+def test_the_note_page_has_no_review_form_and_nothing_about_unsure_suggestions(admin):
+    client, _, store = admin
+    page = client.get(PAGE).text
+    assert "not sure about" not in page
+    assert "Nothing is chosen for you" not in page
+    assert "Mark as reviewed and file it" not in page
+    assert "Save, but do not file yet" not in page
+    assert f'action="{PAGE}/review"' not in page
+    assert 'name="how"' not in page
+
+
+def test_the_old_review_address_lands_on_the_note_page(admin):
+    client, _, store = admin
+    response = client.get(REVIEW, follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == PAGE
+    refused = client.post(REVIEW, data={"csrf": token(client, PAGE)}, follow_redirects=False)
+    assert refused.status_code in {404, 405}
+    assert completed(store) == []
+
+
+def test_writing_it_again_asks_the_store_and_says_so(admin):
     client, _, store = admin
     store.answers["note-summary-again"] = {"title": "Vendor call", "already": False}
-    page = follow(client, post(client, f"/admin/notes/{NOTE}/summary-again", page=REVIEW))
+    response = post(client, f"/admin/notes/{NOTE}/summary-again", page=PAGE)
+    assert response.headers["location"] == PAGE
+    page = follow(client, response)
     assert store.asked("note-summary-again") == [{"id": NOTE}]
     assert "writing the summary again from the same transcript" in page
-    assert "The one you had is kept" in page
-
-
-def review_form(page):
-    start = page.index(f'<form method="post" action="{REVIEW}"')
-    return page[start : page.index("</form>", start)]
-
-
-def test_pressing_enter_in_the_review_form_marks_the_note_reviewed_never_writes_the_summary(admin):
-    client, _, _ = admin
-    page = client.get(REVIEW).text
-    form = review_form(page)
-    buttons = re.findall(r"<button[^>]*>", form)
-    first_in_form = next(tag for tag in buttons if 'form="' not in tag)
-    assert 'value="file"' in first_in_form
-    again = next(tag for tag in buttons if 'form="summary-again-form"' in tag)
-    assert "formaction" not in again
-    outside = page.split("</form>", 1)[1]
-    assert re.search(
-        r'<form id="summary-again-form" method="post" action="[^"]*/summary-again">', outside
-    )
-
-
-def test_while_the_summary_is_written_only_the_summary_is_refreshed_not_the_form(admin):
-    client, _, store = admin
-    store.views["note-summary"].update(writing=True, proposed=None, earlier=EARLIER)
-    page = client.get(REVIEW).text
-    live = page.index("<div data-live>")
-    assert page.index("Coppermind is writing the summary now.") > live
-    assert live < page.index('name="how"')
-    assert page.count("<div data-live>") == 1
-    form = review_form(page)
-    assert "Coppermind is writing the summary now." in form
 
 
 def test_while_it_is_being_written_the_page_says_so_and_updates_itself(admin):
     client, _, store = admin
     store.views["note-summary"].update(writing=True, proposed=None, earlier=EARLIER)
-    page = client.get(REVIEW).text
+    page = client.get(PAGE).text
     assert "Coppermind is writing the summary now." in page
     assert 'data-refresh="8"' in page
-    assert "The summary from before is kept." in page
+    assert page.count("<div data-live>") == 1
     assert "Write the summary again" not in page
-
-
-def test_the_earlier_summary_stays_on_offer_until_the_note_is_reviewed(admin):
-    client, _, store = admin
-    store.views["note-summary"]["earlier"] = EARLIER
-    page = client.get(REVIEW).text
-    assert "Use the earlier summary instead" in page
-    assert "The first summary." in page
-    assert "The earlier summary is kept until you mark the note reviewed" in page.replace("\n", " ")
-
-
-def test_when_writing_it_again_fails_the_summary_from_before_is_still_offered(admin):
-    client, _, store = admin
-    store.views["note-summary"].update(
-        proposed=None, failed=True, earlier=EARLIER, earlier_job="e" * 64
-    )
-    store.views["lifecycle"]["suggestions"] = []
-    page = client.get(REVIEW).text
-    assert "The summary could not be written again. The one from before is still here." in page
-    assert "The first summary." in page
-    assert "Add the summary from before to the note" in page
-    # Marking the note reviewed adds it, through the review it was written for.
-    store.answers["note-check"] = {"filed": True, "path": "reference/2026/2026-11/Vendor call.md"}
-    form = answers(summary="earlier")
-    for name in ("s_0", "s_1", "s_2"):
-        del form[name]
-    post(client, REVIEW, form, page=REVIEW)
-    (request,) = completed(store)
-    assert request["meeting_summary"] == EARLIER
-    assert request["job_id"] == "e" * 64
-
-
-def test_while_a_new_summary_is_being_written_the_one_from_before_can_still_be_used(admin):
-    client, _, store = admin
-    store.views["note-summary"].update(
-        proposed=None, writing=True, earlier=EARLIER, earlier_job="e" * 64
-    )
-    page = client.get(REVIEW).text
-    assert "The first summary." in page
-    assert "it is the one that is used unless you" in page.replace("\n", " ")
-    assert 'value="earlier" checked' in page
-
-
-def test_a_review_is_not_saved_over_an_edit_made_somewhere_else(admin):
-    client, _, store = admin
-    page = post(client, REVIEW, answers(if_match="sha256:" + "0" * 64, tags="mine"), page=REVIEW)
-    said = follow(client, page)
-    assert "was changed somewhere else while the page was open, so nothing was saved" in said
-    assert completed(store) == []
-    assert store.patches == []
 
 
 def test_a_reviewed_note_is_refused_in_words(admin):
@@ -189,7 +125,7 @@ def test_a_reviewed_note_is_refused_in_words(admin):
     store.answers["note-summary-again"] = {
         "refused": {"field": "note", "message": "This note has already been reviewed."}
     }
-    page = follow(client, post(client, f"/admin/notes/{NOTE}/summary-again", page=REVIEW))
+    page = follow(client, post(client, f"/admin/notes/{NOTE}/summary-again", page=PAGE))
     assert "This note has already been reviewed." in page
 
 
@@ -197,7 +133,7 @@ def test_a_stopped_service_offers_test_now_and_edit_instead_of_the_button(admin)
     client, _, store = admin
     service = store.views["note-summary"]["service"]
     store.views["note-summary"]["state"] = "failing"
-    page = client.get(REVIEW).text
+    page = client.get(PAGE).text
     assert f"{service['name']} is not answering" in page
     assert "Test now" in page
     assert "Edit this service" in page
@@ -205,124 +141,8 @@ def test_a_stopped_service_offers_test_now_and_edit_instead_of_the_button(admin)
     assert "Write the summary again" not in page
 
 
-# -- reviewing a note in Admin --------------------------------------------------------------
-
-
-def answers(**changes):
-    form = {"how": "file", "date": "2026-11-12", "time": "11:22", "type": "reference"}
-    form |= {"context": "internal", "account": "", "tags": "", "meeting": "none"}
-    form |= {"s_0": "no", "s_1": "no", "s_2": "no", "summary": "new"}
-    form["if_match"] = VIEWS["lifecycle"]["note"]["content_hash"]
-    return form | changes
-
-
 def completed(store):
     return [payload for name, payload in store.context_calls if name == "complete-review"]
-
-
-def test_review_requires_answers_for_meeting_and_confident_speaker_suggestion(admin):
-    client, _, store = admin
-    form = answers()
-    suggestion = store.views["lifecycle"]["suggestions"][1]
-    suggestion.update(value=suggestion["candidates"][0]["id"], confidence=0.9)
-    del form["meeting"], form["s_1"]
-    refused = post(client, REVIEW, form, page=REVIEW)
-    assert refused.status_code == 422
-    assert refused.text.count("Choose one, so Coppermind is not guessing.") == 2
-    assert completed(store) == []
-
-
-def test_the_chosen_summary_goes_with_the_review_and_nothing_else_is_written(admin):
-    client, _, store = admin
-    store.answers["note-check"] = {"filed": True, "path": "reference/2026/2026-11/Vendor call.md"}
-    page = follow(client, post(client, REVIEW, answers(), page=REVIEW))
-    (request,) = completed(store)
-    assert request["meeting_summary"] == store.views["note-summary"]["proposed"]
-    assert request["selected"] == []
-    # Empty boxes are not properties: the note is not edited just for being reviewed.
-    assert store.patches == []
-    assert store.asked("note-check") == [{"id": NOTE, "reviewed": True}]
-    assert "Reviewed and filed." in page
-
-
-def test_the_earlier_summary_can_be_the_one_that_is_used(admin):
-    client, _, store = admin
-    store.views["note-summary"]["earlier"] = EARLIER
-    store.answers["note-check"] = {"filed": True, "path": "reference/2026/2026-11/Vendor call.md"}
-    post(client, REVIEW, answers(summary="earlier"), page=REVIEW)
-    assert completed(store)[0]["meeting_summary"] == EARLIER
-
-
-def test_leaving_the_summary_out_sends_none(admin):
-    client, _, store = admin
-    store.answers["note-check"] = {"filed": True, "path": "reference/2026/2026-11/Vendor call.md"}
-    post(client, REVIEW, answers(summary="none"), page=REVIEW)
-    assert "meeting_summary" not in completed(store)[0]
-
-
-def test_what_was_accepted_is_taken_before_the_note_is_changed(admin):
-    client, _, store = admin
-    order: list[str] = []
-    store.answers["note-check"] = {"filed": False, "settling": True, "error": "waiting"}
-
-    async def complete(action, payload):
-        order.append(action)
-        store.context_calls.append((action, payload))
-        return dict(store.views["lifecycle"]) if action == "lifecycle" else {}
-
-    async def patch(identity, change, *, if_match):
-        order.append("patch")
-        store.patches.append((identity, change))
-
-    store.context_action = complete
-    store.patch_frontmatter = patch
-    form = answers(s_0="yes", tags="rollout", meeting=MEETINGS[0])
-    page = follow(client, post(client, REVIEW, form, page=REVIEW))
-    writes = [step for step in order if step != "lifecycle"]
-    assert writes == ["complete-review", "patch", "choose-recording-meeting"]
-    assert completed(store)[0]["selected"] == [0]
-    assert store.patches[0][1].set == {"tags": ["rollout"]}
-    assert "is filed within a minute" in page
-
-
-def test_review_asks_for_context_and_account_only_on_a_work_note(admin):
-    client, _, store = admin
-    page = client.get(REVIEW).text
-    assert 'data-if="type=work" hidden' in page
-    store.views["lifecycle"]["note"]["frontmatter"]["type"] = "work"
-    shown = client.get(REVIEW).text
-    assert 'data-if="type=work" hidden' not in shown
-    assert 'data-if="type=work"' in shown
-
-
-def test_a_recording_moved_off_work_drops_the_default_context(admin):
-    client, _, store = admin
-    store.views["lifecycle"]["note"]["frontmatter"]["type"] = "work"
-    # The page sends no context or account for a note that is not work.
-    form = answers(type="personal")
-    del form["context"], form["account"]
-    follow(client, post(client, REVIEW, form, page=REVIEW))
-    (_, patch) = store.patches[0]
-    assert patch.set["type"] == "personal"
-    assert "context" not in patch.set and "account" not in patch.set
-    assert "context" in patch.unset
-
-
-def test_a_saved_schema_that_still_requires_context_keeps_it_when_moving_off_work(admin):
-    client, wiring, store = admin
-    state = StateStore(wiring.state_dir)
-    record = state.read("schema")
-    body = dict(record.body)
-    for key in body["keys"]:
-        if key["name"] == "context":
-            key.update(required=True, required_when=None, required_when_values=[])
-    state.write("schema", body, if_revision=record.revision)
-    store.views["lifecycle"]["note"]["frontmatter"]["type"] = "work"
-    form = answers(type="personal")
-    del form["context"], form["account"]
-    follow(client, post(client, REVIEW, form, page=REVIEW))
-    (_, patch) = store.patches[0]
-    assert "context" not in patch.unset
 
 
 # -- notes ------------------------------------------------------------------------------------
@@ -1172,50 +992,6 @@ def test_cutoff_error_links_to_suggestion_setting(admin):
     assert "<unsafe>" not in page
 
 
-def test_failed_suggestions_show_link_on_note_review(admin):
-    client, _, store = admin
-    store.views["lifecycle"]["suggestion_error"] = (
-        "On the Suggestions page in Admin, raise Longest answer the model may write."
-    )
-    page = client.get(REVIEW).text
-    assert 'href="/admin/suggestions#answer-length">Longest answer the model may write</a>' in page
-
-
-def test_existing_cutoff_error_links_to_current_setting(admin):
-    client, _, store = admin
-    store.views["lifecycle"]["suggestion_error"] = "Raise Maximum response tokens."
-    page = client.get(REVIEW).text
-    assert 'href="/admin/suggestions#answer-length">Longest answer the model may write</a>' in page
-
-
-@pytest.mark.parametrize("value,confidence", [(None, 0), ("person:alex", 0.4)])
-def test_uncertain_voice_links_to_naming_and_does_not_block_review(admin, value, confidence):
-    client, _, store = admin
-    lifecycle = store.views["lifecycle"]
-    lifecycle["suggestions"] = [
-        {
-            "index": 0,
-            "kind": "speaker",
-            "field": "Unknown voice 3",
-            "value": value,
-            "confidence": confidence,
-            "reason": "No confident match.",
-            "quote": "",
-            "candidates": [{"id": "person:alex", "name": "Alex Example"}],
-        }
-    ]
-    lifecycle["unnamed_voices"] = [{"id": "unknown:3", "name": "Unknown voice 3"}]
-    page = client.get(REVIEW).text
-    assert "Yes, that was" not in page
-    assert "Name this voice" in page
-    assert 'href="/admin/people?tab=voices&amp;name=unknown%3A3#voice-unknown%3A3"' in page
-    form = answers()
-    del form["s_0"]
-    result = post(client, REVIEW, form, page=REVIEW)
-    assert result.status_code == 303
-    assert completed(store)[0]["selected"] == []
-
-
 def test_saved_unknown_voice_can_be_named_from_note_and_recording(admin):
     client, _, store = admin
     voice = {"id": "unknown:3", "name": "Unknown voice 3"}
@@ -1426,3 +1202,77 @@ def test_bringing_back_a_note_that_cannot_be_says_so(admin):
     store.answers["note-restore"] = StoreError("no saved copy")
     landed = follow(client, post(client, "/admin/notes/restore", {"id": NOTE, "back": here}, here))
     assert "That note could not be brought back just now." in landed
+
+
+# -- what suggestions fill in -----------------------------------------------------------------
+
+
+def test_the_suggestions_page_does_not_ask_what_it_fills_in(admin):
+    client, _, _ = admin
+    page = client.get("/admin/suggestions").text
+    assert "What it fills in" not in page
+    assert "/admin/suggestions/fill" not in page
+    assert "Also let the model read meeting descriptions from my calendar" in page
+    assert 'action="/admin/suggestions/descr"' in page
+    assert client.get("/admin/suggestions/fill").status_code == 404
+
+
+def test_turning_suggestions_on_is_two_steps_and_sends_no_list_of_fields(admin):
+    client, _, store = admin
+    store.views["suggestions"].update(state="none", service=None, model="")
+    service = store.views["services"]["services"][0]
+    first = client.get("/admin/suggestions").text
+    assert "Choose what it fills in" not in first
+    assert "Pick a model" in first
+    last = client.get(f"/admin/suggestions?step=2&svc={service['id']}").text
+    assert 'action="/admin/suggestions/save"' in last
+    assert "Turn on suggestions" in last
+    assert 'name="fill_' not in last
+    store.answers["suggestions-save"] = {
+        "was": "none",
+        "model": "llama-3.1-8b",
+        "service": service["name"],
+        "resumed": {},
+    }
+    page = follow(
+        client,
+        post(
+            client,
+            "/admin/suggestions/save",
+            {"svc": service["id"], "model": "llama-3.1-8b"},
+            page="/admin/suggestions",
+        ),
+    )
+    assert store.asked("suggestions-save") == [
+        {"connection": service["id"], "model": "llama-3.1-8b"}
+    ]
+    assert "Suggestions are on." in page
+
+
+def test_reading_calendar_descriptions_is_saved_by_itself(admin):
+    client, _, store = admin
+    store.answers["suggestions-descr"] = {"descr": True}
+    page = follow(
+        client,
+        post(client, "/admin/suggestions/descr", {"descr": "on"}, page="/admin/suggestions"),
+    )
+    assert store.asked("suggestions-descr") == [{"descr": True}]
+    assert "The model also reads meeting descriptions" in page
+    store.answers["suggestions-descr"] = {"descr": False}
+    post(client, "/admin/suggestions/descr", {}, page="/admin/suggestions")
+    assert store.asked("suggestions-descr")[-1] == {"descr": False}
+
+
+def test_properties_and_tags_have_no_suggestions_tick(admin):
+    client, _, store = admin
+    for path in (
+        "/admin/settings/properties",
+        "/admin/settings/properties/edit/date",
+        "/admin/settings/properties/edit/new",
+        "/admin/settings/tags",
+    ):
+        page = client.get(path).text
+        assert "Let suggestions" not in page, path
+        assert "Suggestions fill it in" not in page, path
+        assert "/admin/settings/tags/fill" not in page, path
+    assert store.asked("suggestions-tick") == []

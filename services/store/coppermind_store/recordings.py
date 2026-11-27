@@ -1531,6 +1531,10 @@ class Recordings:
                 voice.set_segments("recording:" + job.id, transcript)
                 transcript = rename_speakers(transcript, voice_map)
         title, body = job.title, SUMMARY_PENDING
+        from coppermind_store import filled_in
+
+        frontmatter = dict(job.frontmatter)
+        wrote: dict[str, Any] = {}
         if job.generation_mode == "markdown-v1":
             from coppermind_store.recording_writeup import generate
 
@@ -1538,9 +1542,12 @@ class Recordings:
             self.save(job)
             writeup = await generate(self.context, job, transcript, voice_map)
             title, body, transcript = writeup["title"], writeup["body"], writeup["transcript"]
-            from coppermind_store.review_notes import write_status
-
-            write_status(self.context, job.id, writeup)
+            # The note arrives filled in: what the owner gave with the recording stays, and
+            # the write-up's answers go into everything else.
+            wrote = filled_in.fill(
+                self.context, frontmatter, filled_in.answers(self.context, writeup), {}
+            )
+            frontmatter = {**frontmatter, **wrote}
             body = await self.with_references(job, writeup, body)
             job.boundaries = [RecordingBoundary.model_validate(b) for b in writeup["boundaries"]]
             job.stage = "Saving note"
@@ -1580,7 +1587,7 @@ class Recordings:
                     ),
                 ],
             ),
-            note=IngestNote(title=title, body=body, frontmatter=dict(job.frontmatter)),
+            note=IngestNote(title=title, body=body, frontmatter=frontmatter),
         )
         # Once filing is durable, replay must not restore an older transcript over
         # a later explicit speaker correction.
@@ -1590,6 +1597,9 @@ class Recordings:
             if merge.get("state") != "complete":
                 job.note_id, job.note_path = result.note.id, result.note.path
             job.source_id = result.source.id
+            if wrote and job.note_id == result.note.id:
+                made = await self.context.store.get_note(job.note_id)
+                filled_in.remember(self.context, job.note_id, made.frontmatter, wrote)
         else:
             merge = self.context.read("recording-merges/" + job.source_id, {})
         async with self.context.lock:

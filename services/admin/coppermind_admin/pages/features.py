@@ -1,6 +1,6 @@
 """Suggestions and Transcription: choose a service, turn the feature on, pause it, change it.
 
-Neither page holds an address or a key. Each is three short steps the first time,
+Neither page holds an address or a key. Each is a few short steps the first time,
 and one page of what is set now afterwards. A change is a draft carried in the
 address of the page: nothing is saved until the last step's button, and Cancel
 simply leaves.
@@ -48,40 +48,18 @@ def wait_words(choices: tuple[tuple[str, str], ...], value: str) -> str:
     return dict(choices).get(value, plural(max(1, round(int(value) / 60)), "minute"))
 
 
-def fill_checks(data: dict[str, Any], ticked: dict[str, bool] | None = None) -> str:
-    chosen = data["fill"] if ticked is None else ticked
-    boxes = "".join(
-        ui.check(
-            "fill_" + option["key"],
-            e(option["label"]),
-            e(option["hint"]),
-            checked=bool(chosen.get(option["key"])),
-        )
-        for option in data["fill_options"]
-    )
+def descr_toggle(on: bool) -> str:
+    """The one choice about what the model may read: the descriptions of calendar meetings."""
     return (
-        f'<div class="checks">{boxes}</div><div style="margin-top:8px">'
+        '<form class="act" method="post" action="/admin/suggestions/descr">'
         + ui.check(
             "descr",
             "Also let the model read meeting descriptions from my calendar",
-            "Helps it work out which meeting a recording belongs to. Off unless you tick it.",
-            checked=bool(data["descr"]),
-        )
-        + "</div>"
+            "Helps it work out which meeting a recording belongs to.",
+            checked=on,
+        ).replace("<input ", "<input data-auto ", 1)
+        + '<noscript><button class="lat-btn">Save</button></noscript></form>'
     )
-
-
-def fill_text(data: dict[str, Any]) -> str:
-    names = [
-        option["label"].lower()
-        for option in data["fill_options"]
-        if data["fill"].get(option["key"])
-    ]
-    return ", ".join(names) or "nothing yet"
-
-
-def picked_fill(form: dict[str, str]) -> list[str]:
-    return [name.removeprefix("fill_") for name in form if name.startswith("fill_")]
 
 
 def router(wiring: Wiring) -> APIRouter:
@@ -115,7 +93,7 @@ def router(wiring: Wiring) -> APIRouter:
         current = data["service"]["id"] if data["service"] else ""
         chosen_id = use or ctx.q("svc") or (current if model_only else "")
         chosen = find(listed, chosen_id)
-        step = 2 if model_only else int(ctx.q("step") or (2 if use else 1))
+        step = 2 if model_only else min(2, int(ctx.q("step") or (2 if use else 1)))
         error = ""
         if step > 1 and (chosen is None or not can(chosen, "text") or not chosen["answering"]):
             if chosen is None:
@@ -130,7 +108,7 @@ def router(wiring: Wiring) -> APIRouter:
             step = 1
         carry = {"change": "service" if changing and (not model_only or step == 1) else ""}
         cancel = ui.go("Cancel the change", "/admin/suggestions?cancelled=1") if changing else ""
-        labels = ["Choose an AI service", "Pick a model", "Choose what it fills in"]
+        labels = ["Choose an AI service", "Pick a model"]
         if step == 1:
             body = f"""<form method="get" action="/admin/suggestions">
 {ui.hidden({"step": 2, **carry})}
@@ -149,7 +127,7 @@ def router(wiring: Wiring) -> APIRouter:
             }
 <div class="actions">{ui.submit("Continue") if any(can(s, "text") for s in listed) else ""}
 {cancel}</div></form>"""
-        elif step == 2:
+        else:
             assert chosen is not None
             results = chosen["text"]["models"]
             working = [r for r in results if r["ok"]]
@@ -206,26 +184,8 @@ def router(wiring: Wiring) -> APIRouter:
                 back = ui.go(
                     "Back", ui.url("/admin/suggestions", step=1, svc=chosen["id"], **carry)
                 )
-                body = f"""<form method="get" action="/admin/suggestions">
-{ui.hidden({"step": 3, "svc": chosen["id"], **carry})}{intro}
-<div class="actions">{back}{ui.submit("Continue")}{cancel}</div></form>"""
-        else:
-            assert chosen is not None
-            model = ctx.q("model")
-            if model not in {r["name"] for r in chosen["text"]["models"] if r["ok"]}:
-                model = chosen["text"]["best"]
-            back = ui.go(
-                "Back",
-                ui.url("/admin/suggestions", step=2, svc=chosen["id"], model=model, **carry),
-            )
-            ticked = (
-                data["fill"]
-                if changing
-                else {option["key"]: True for option in data["fill_options"]}
-            )
-            body = f"""<form method="post" action="/admin/suggestions/save">
-{ui.hidden({"svc": chosen["id"], "model": model})}
-<h3>What may it fill in?</h3>{fill_checks(data, ticked)}
+                body = f"""<form method="post" action="/admin/suggestions/save">
+{ui.hidden({"svc": chosen["id"]})}{intro}
 <p class="muted" style="margin-top:10px">Note text is sent to {e(chosen["name"])}
 ({where_words(chosen)}). It only fills blanks, only on notes that are still waiting for your
 review, and never changes what you wrote. Notes you have already reviewed and filed are never
@@ -235,7 +195,7 @@ touched.</p>
 {cancel}</div></form>"""
         if not changing:
             top = ui.status(
-                "off", "Suggestions are off", "Optional. Three short steps to turn them on."
+                "off", "Suggestions are off", "Optional. Two short steps to turn them on."
             )
         else:
             using = e(data["model"] or "the usual model")
@@ -349,11 +309,7 @@ touched.</p>
                 e(data["model"] or "Its usual model"),
                 "" if state == "failing" else ui.go("Change", "/admin/suggestions?change=model"),
             ),
-            ui.row(
-                "What it fills in",
-                (fill_text(data)[0].upper() + fill_text(data)[1:]) + ".",
-                ui.go("Change", "/admin/suggestions/fill"),
-            ),
+            ui.row("Calendar descriptions", descr_toggle(bool(data["descr"]))),
             ui.row(
                 "Longest answer the model may write",
                 '<span id="answer-length"></span>'
@@ -490,8 +446,6 @@ touched.</p>
             {
                 "connection": form.get("svc", ""),
                 "model": form.get("model", ""),
-                "fill": picked_fill(form),
-                "descr": "descr" in form,
             },
             "/admin/suggestions",
         )
@@ -626,45 +580,20 @@ touched.</p>
             )
         return ctx.go(target)
 
-    @routes.get("/admin/suggestions/fill", include_in_schema=False)
-    async def fill(request: Request) -> Response:
-        ctx = Ctx(request, wiring)
-        lede = (
-            "Tick what the model may fill in when it is blank. It never overwrites something "
-            "you typed."
-        )
-        try:
-            data = await ctx.act("suggestions", {})
-        except StoreError:
-            return await ctx.unavailable("What suggestions fill in", lede, "suggestions")
-        top = ui.head("What suggestions fill in", lede, ("/admin/suggestions", "Suggestions"))
-        page = f"""{top}
-<div class="stack"><form method="post" action="/admin/suggestions/fill" class="stack">
-{ui.card(fill_checks(data))}
-<div class="actions">{ui.submit("Save")}{ui.go("Cancel", "/admin/suggestions")}</div>
-</form></div>"""
-        return await ctx.page("What suggestions fill in", page, "suggestions")
-
-    @routes.post("/admin/suggestions/fill", include_in_schema=False)
-    async def fill_save(request: Request) -> Response:
+    @routes.post("/admin/suggestions/descr", include_in_schema=False)
+    async def descr_save(request: Request) -> Response:
         ctx = Ctx(request, wiring)
         form = await ctx.form()
         result = await saved(
-            ctx,
-            "suggestions-fill",
-            {"fill": picked_fill(form), "descr": "descr" in form},
-            "/admin/suggestions/fill",
+            ctx, "suggestions-descr", {"descr": "descr" in form}, "/admin/suggestions"
         )
         if isinstance(result, Response):
             return result
-        try:
-            data = await ctx.act("suggestions", {})
-        except StoreError as exc:
-            return await ctx.refused(exc, "/admin/suggestions")
         ctx.say(
             "ok",
-            f"Saved. From the next note on, suggestions fill in: {fill_text(data)}."
-            + await paused_note(ctx, "suggestions"),
+            "Saved. The model also reads meeting descriptions from your calendar."
+            if result["descr"]
+            else "Saved. The model no longer reads meeting descriptions from your calendar.",
         )
         return ctx.go("/admin/suggestions")
 

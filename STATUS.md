@@ -858,8 +858,8 @@ store against this mirror as a recovery shortcut.
 
 The calendar/enrichment batch adds durable ICS/ZIP intake through a configured
 Dropbox folder or authenticated upload, one merged calendar and contacts,
-optional provider connections with model discovery, and human-approved
-metadata/filename suggestions. Enrichment preserves note bodies and keeps
+optional provider connections with model discovery, and metadata
+suggestions filled into waiting notes. Enrichment preserves note bodies and keeps
 review separate. Existing notes require an explicit backlog selection.
 See [calendar and enrichment](docs/calendar-enrichment.md) for configuration,
 limits, recovery, and deployment acceptance. This section describes unreleased

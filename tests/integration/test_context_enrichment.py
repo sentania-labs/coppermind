@@ -1105,7 +1105,7 @@ def _fake_transcript(store, monkeypatch, text, size_bytes=None):
     monkeypatch.setattr(store, "get_source_artifact", document)
 
 
-async def _long_run(store, monkeypatch, text, limit=2000, **kwargs):
+async def _long_run(store, monkeypatch, text, limit=6000, **kwargs):
     context = await configure(store)
     config = context.config()
     config.assignments["enrichment"].max_input_chars = limit
@@ -1124,24 +1124,24 @@ async def _long_run(store, monkeypatch, text, limit=2000, **kwargs):
 async def test_non_ascii_transcript_under_the_limit_in_characters_is_not_rejected(
     store, monkeypatch
 ):
-    context, job_id = await _long_run(store, monkeypatch, "", limit=3000)
+    context, job_id = await _long_run(store, monkeypatch, "", limit=6000)
     overhead = len(json.dumps(await context.evidence(context.load_job(job_id)), ensure_ascii=False))
-    fits = 3000 - overhead - 100
-    assert fits * 3 > 3000  # over the limit if bytes were counted as characters
+    fits = 6000 - overhead - 100
+    assert fits * 3 > 6000  # over the limit if bytes were counted as characters
     _fake_transcript(store, monkeypatch, "字" * fits)
     await context.run_job(context.load_job(job_id))
     assert context.load_job(job_id).error_rule != "input-limit"
 
 
 async def test_unmatched_non_ascii_transcript_is_omitted(store, monkeypatch):
-    text = "字" * 2500  # 7,500 bytes, 2,500 characters
+    text = "字" * 6500  # 19,500 bytes, 6,500 characters
     context, job_id = await _long_run(store, monkeypatch, text)
     await context.run_job(context.load_job(job_id))
     final = context.load_job(job_id)
     assert final.error_rule != "input-limit"
     evidence = await context.evidence(final)
     assert evidence["transcripts"] == []
-    assert evidence["transcript_omitted_characters"] == 2500
+    assert evidence["transcript_omitted_characters"] == 6500
 
 
 async def test_unmatched_transcript_is_not_sent_even_if_artifact_is_large(store, monkeypatch):

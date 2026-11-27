@@ -482,8 +482,8 @@ def meeting_kind(context: Any, fields: dict[str, Any]) -> str:
 
 
 def vocabulary(context: Any) -> dict[str, Any]:
-    """What a suggestion may name: companies that already exist (by name or alias), tags the
-    owner has listed (by name or alias), and the allowed context and type values."""
+    """What an answer may be spelled from: companies that already exist (by name or alias),
+    tags the owner has listed (by name or alias), and the allowed type values."""
     schema = context.store.control.schema()
     accounts: dict[str, str] = {}
     for entity in context.store.entities.load().entities.values():
@@ -502,7 +502,6 @@ def vocabulary(context: Any) -> dict[str, Any]:
     return {
         "accounts": accounts,
         "tags": tags,
-        "contexts": allowed("context_key"),
         "types": allowed("type_key"),
     }
 
@@ -863,7 +862,6 @@ async def generate(
                 suggestion_text,
                 accounts=vocab["accounts"],
                 tags=vocab["tags"],
-                contexts=vocab["contexts"],
                 types=vocab["types"],
             )
         except ValueError as exc:

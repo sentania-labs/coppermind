@@ -25,7 +25,7 @@ PAGES = [
     ("/admin/notes?tab=alone", "Left alone on purpose"),
     ("/admin/notes/leave-alone", "Files Coppermind leaves alone"),
     (f"/admin/notes/{NOTE}", "A note, and what has happened to it."),
-    (f"/admin/notes/{NOTE}/review", "The meeting summary"),
+    (f"/admin/notes/{NOTE}", "The meeting summary"),
     ("/admin/incoming", "Recordings and imports"),
     (f"/admin/incoming/{ITEM}", "what has happened to it"),
     ("/admin/calendar", "Calendar files"),
@@ -40,7 +40,6 @@ PAGES = [
     (f"/admin/services/{SERVICE}", "What it can do"),
     (f"/admin/services/{SERVICE}/remove", "Say what takes over"),
     ("/admin/suggestions", "Suggestions are on"),
-    ("/admin/suggestions/fill", "What suggestions fill in"),
     ("/admin/transcription/writeup", "How recordings are written up"),
     ("/admin/apps", "Connected apps"),
     ("/admin/apps/new", "Connect an app"),
@@ -135,6 +134,20 @@ def test_a_fault_in_admin_is_said_in_words_too(admin):
     assert "Something went wrong in Admin" in response.text
     assert "Your notes are not affected." in response.text
     assert "Traceback" not in response.text
+
+
+def test_home_and_notes_never_count_suggestions_coppermind_was_unsure_of(admin):
+    client, _, store = admin
+    # A waiting note with suggestions left over from before notes arrived filled in.
+    store.views["overview"]["notes"]["unsure"] = [{"id": NOTE, "title": "Vendor call", "count": 3}]
+    for item in store.views["notes-waiting"]["items"]:
+        item["unsure"] = 3
+    store.views["note"]["unsure"] = 3
+    for path in ("/admin", "/admin/notes", "/admin/notes?tab=waiting", f"/admin/notes/{NOTE}"):
+        page = client.get(path).text
+        assert "not sure about" not in page, path
+        assert "3 to check" not in page, path
+        assert "Check them" not in page, path
 
 
 def test_a_phone_gets_the_same_pages(admin):

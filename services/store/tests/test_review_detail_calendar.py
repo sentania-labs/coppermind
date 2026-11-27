@@ -3,14 +3,20 @@ from typing import Any
 
 import pytest
 from coppermind_store import calendar_lookup, speaker_names
+from coppermind_store.enrichment_models import Suggestion, Suggestions
 from coppermind_store.note_lifecycle import NoteLifecycle
+
+from coppermind.meeting_summary import MeetingSummary
 
 NOTE = "01HZ" + "0" * 22
 RECEIPT = {"state": "failed", "error": "The note was edited meanwhile.", "target_id": "target"}
 
 
 def _context(
-    calendar_answers: bool, suggested_against: str | None = None, stored: dict | None = None
+    calendar_answers: bool,
+    suggested_against: str | None = None,
+    stored: dict | None = None,
+    written_for: str = "sha256:1",
 ):
     note = SimpleNamespace(
         id=NOTE,
@@ -48,9 +54,13 @@ def _context(
         note_id=NOTE,
         purpose="suggestions",
         created_at="2026-11-26T00:00:00Z",
-        note_hash="sha256:1",
+        note_hash=written_for,
         evidence_hash=suggested_against,
-        result=None,
+        result=Suggestions(
+            suggestions=[Suggestion(kind="speaker", field="Unknown voice 1", reason="a name")],
+            meeting_summary=MeetingSummary(summary="Agreed the plan."),
+        ),
+        decisions=[],
         state="succeeded",
         error="",
         plain="",
@@ -85,6 +95,7 @@ async def _detail(
     calendar_answers: bool,
     suggested_against: str | None = None,
     stored: dict | None = None,
+    written_for: str = "sha256:1",
 ):
     async def evidence(*_):
         return None
@@ -99,7 +110,7 @@ async def _detail(
         "coppermind_store.voice_store.VoiceStore",
         lambda _: SimpleNamespace(unknown_for_note=lambda _id: []),
     )
-    context = _context(calendar_answers, suggested_against, stored)
+    context = _context(calendar_answers, suggested_against, stored, written_for)
     return await NoteLifecycle(context).detail({"note_id": NOTE})
 
 
@@ -125,24 +136,22 @@ async def test_the_meeting_and_update_come_back_when_the_calendar_answers(monkey
 
 
 @pytest.mark.asyncio
-async def test_suggestions_are_not_called_current_when_the_calendar_could_not_be_checked(
-    monkeypatch,
-):
-    # The note is unchanged, so only the calendar could say the suggestions are out of date.
+async def test_a_voice_is_not_offered_when_the_calendar_could_not_be_checked(monkeypatch):
+    # The note is unchanged, so only the calendar could say the suggestion is out of date.
     detail = await _detail(monkeypatch, calendar_answers=False, suggested_against="calendar")
-    assert detail["stale"] is True
+    assert detail["suggestions"] == [] and "stale" not in detail
 
 
 @pytest.mark.asyncio
-async def test_suggestions_stay_current_when_the_calendar_confirms_them(monkeypatch):
+async def test_a_voice_is_offered_when_the_calendar_confirms_it(monkeypatch):
     detail = await _detail(monkeypatch, calendar_answers=True, suggested_against="calendar")
-    assert detail["stale"] is False
+    assert [s["field"] for s in detail["suggestions"]] == ["Unknown voice 1"]
 
 
 @pytest.mark.asyncio
-async def test_suggestions_are_stale_when_the_calendar_has_changed_since(monkeypatch):
+async def test_a_voice_is_not_offered_when_the_calendar_has_changed_since(monkeypatch):
     detail = await _detail(monkeypatch, calendar_answers=True, suggested_against="older")
-    assert detail["stale"] is True
+    assert detail["suggestions"] == [] and "stale" not in detail
 
 
 @pytest.mark.asyncio
@@ -157,3 +166,15 @@ async def test_the_meeting_the_recording_was_matched_to_on_evidence_is_reported(
     assert detail["recording_meeting"]["matched_event_id"] is None
     detail = await _detail(monkeypatch, calendar_answers=True)
     assert detail["recording_meeting"]["matched_event_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_summary_is_offered_only_while_the_note_is_as_it_was_written_for(monkeypatch):
+    # Marking reviewed with a summary written for an older text of the note is refused, so the
+    # panel must not hold one out.
+    current = await _detail(monkeypatch, calendar_answers=True, suggested_against="calendar")
+    assert current["meeting_summary"]["summary"] == "Agreed the plan."
+    edited = await _detail(
+        monkeypatch, calendar_answers=True, suggested_against="calendar", written_for="sha256:0"
+    )
+    assert edited["meeting_summary"] is None and edited["suggestions"] == []
