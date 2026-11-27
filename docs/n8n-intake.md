@@ -135,7 +135,7 @@ Current replay behavior matters:
 
 New-install defaults suggest types `work`, `personal`, `reference`, and `journal`
 (default `reference`; any other type text is accepted and files under its own folder), and, for work notes only, contexts `internal` and `external`
-(default `internal`). `context` is never required, and `personal` is accepted as a context only so older notes still read. Workflow exports using `context: customer` should map
+(no default: nothing writes `context` on a note any more, since an account means a customer meeting). `context` is never required, and `personal` is accepted as a context only so older notes still read. Workflow exports using `context: customer` should map
 that to `external`, retaining the customer name in `account`, which is never
 required. `account` is a list of customer names. A plain
 string is read as a one-item list, so `account: Acme` and `account: [Acme]`
@@ -145,7 +145,7 @@ in the configured timezone; ingest writes the start time into `date` and never
 writes `time` or `timezone`.
 Existing installations keep their saved schema, except that a `context`, `account`,
 `date`, `time` or `timezone` definition still equal to the one earlier releases wrote is
-upgraded at startup (`context` and `account` lose their "required when" rules, `time`
+upgraded at startup (`context` and `account` lose their "required when" rules, `context` and `kind` lose the default they were written with, `time`
 stays declared as legacy and `timezone` is dropped); a customised definition is left alone.
 
 The currently configured frontmatter schema still applies. Keep workflow
@@ -155,7 +155,7 @@ Ingest always creates an unreviewed draft, even if automation supplies
 `_Sources/_Pending/YYYY/YYYY-MM/`. Mark the note reviewed in Obsidian or through the
 frontmatter API. The next reconciliation pass files the note and source page
 under their respective year and month folders (`{type}/YYYY/YYYY-MM/` and
-`_Sources/YYYY/YYYY-MM/`), files non-text, non-audio source
+`_Sources/YYYY/YYYY-MM/`, the page named for the note title and "transcript"), files non-text, non-audio source
 material as artifacts under `Artifacts/YYYY/YYYY-MM/`, and permits indexing
 only after successful filing. A source keeps the month chosen when it was first
 filed, including when another note cites it or a note's date is later

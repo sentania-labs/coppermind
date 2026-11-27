@@ -419,8 +419,8 @@ async def resolve_title(context: Any, job: Any, transcript: str) -> tuple[str, d
         events = await context.calendar_candidates(SimpleNamespace(frontmatter=fields))
         events = meeting_match.overlapping(events, captured.isoformat()) if captured else []
         found = len(events)
-        linked_field = context.config().assignments["enrichment"].event_field
-        linked = fields.get(linked_field) if linked_field else None
+        assignment = context.config().assignments["enrichment"]
+        linked = fields.get(assignment.event_key(fields)) if assignment.event_field else None
         chosen = [event for event in events if event["event_id"] == linked] if linked else []
         if not chosen:
             if len(events) == 1:

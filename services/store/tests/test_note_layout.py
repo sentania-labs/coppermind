@@ -30,10 +30,12 @@ def test_the_identifier_is_assigned_by_the_store_not_the_caller():
 def test_missing_keys_take_their_shipped_defaults():
     frontmatter = build()
     assert frontmatter["type"] == "reference"
-    assert frontmatter["context"] == "internal"
     assert frontmatter["reviewed"] is False
     assert frontmatter["sources"] == []
     assert frontmatter["schema_version"] == 1
+    # Nothing is written that the owner would never set: a note is a note, and an account
+    # (not a context) says it was a customer meeting.
+    assert not {"context", "kind", "time_unknown", "invitees"} & set(frontmatter)
 
 
 def test_date_defaults_to_a_local_iso_datetime_without_time_or_timezone():

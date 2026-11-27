@@ -25,7 +25,7 @@ def context(people=(), owned=True, tags="open"):
     schema.tag_mode = tags
     if owned:
         schema.keys.append(KeyDefinition(name="attendees", kind="list"))
-        schema.keys.append(KeyDefinition(name="calendar_event", kind="string"))
+        schema.keys.append(KeyDefinition(name="meeting", kind="string"))
     enrichment = SimpleNamespace(attendees_field="", event_field="")
     return SimpleNamespace(
         store=SimpleNamespace(
@@ -96,7 +96,7 @@ def test_attendees_are_the_recognised_voices_and_the_matched_invite():
         "[[People/Priya Raman]]",
         "Olive Outsider",
     ]
-    assert found["calendar_event"] == "evt-1"
+    assert found["meeting"] == "evt-1"
 
 
 def test_nothing_is_written_for_a_property_the_note_does_not_have():

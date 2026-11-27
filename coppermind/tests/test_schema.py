@@ -21,7 +21,7 @@ def test_a_schema_role_pointing_at_an_undefined_key_is_rejected():
 def test_a_fresh_install_has_working_defaults():
     defaults = default_schema().defaults()
     assert defaults["type"] == "reference"
-    assert defaults["context"] == "internal"
+    assert "context" not in defaults and "kind" not in defaults
     assert defaults["reviewed"] is False
     assert defaults["sources"] == []
 

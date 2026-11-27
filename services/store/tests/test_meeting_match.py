@@ -2,6 +2,8 @@ from typing import Any
 
 from coppermind_store.meeting_match import overlapping, suggest
 
+from coppermind.context_config import FeatureAssignment
+
 
 def test_recording_only_matches_timed_events_containing_its_start():
     events = [
@@ -44,7 +46,7 @@ async def _candidates(events, captured_at, frontmatter=None, associated=()):
 
         def config(self):
             return SimpleNamespace(
-                assignments={"enrichment": SimpleNamespace(event_field="meeting")}
+                assignments={"enrichment": FeatureAssignment(event_field="meeting")}
             )
 
         def read(self, name, default):
@@ -174,7 +176,7 @@ async def test_owner_choice_validates_current_candidates_and_preserves_existing_
 
         def config(self):
             return SimpleNamespace(
-                assignments={"enrichment": SimpleNamespace(event_field="meeting")}
+                assignments={"enrichment": FeatureAssignment(event_field="meeting")}
             )
 
         async def calendar_evidence_hash(self, _):
@@ -268,7 +270,7 @@ async def test_merge_candidates_require_same_event_and_respect_dismissal():
 
         def config(self):
             return SimpleNamespace(
-                assignments={"enrichment": SimpleNamespace(event_field="meeting")}
+                assignments={"enrichment": FeatureAssignment(event_field="meeting")}
             )
 
     context = Context()

@@ -1791,7 +1791,9 @@ async def test_a_refusal_clears_itself_when_the_default_is_corrected(store: Loca
     fixed = schema.model_copy(
         update={
             "keys": [
-                key.model_copy(update={"required": True}) if key.name == "context" else key
+                key.model_copy(update={"required": True, "default": "internal"})
+                if key.name == "context"
+                else key
                 for key in schema.keys
             ]
         }

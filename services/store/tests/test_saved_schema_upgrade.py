@@ -183,3 +183,45 @@ def test_a_context_rule_an_operator_wrote_is_left_alone(tmp_path):
     control.ensure_defaults()
 
     assert saved_keys(control)["context"] == mine
+
+
+def test_a_saved_schema_stops_writing_kind_and_context_on_new_notes(tmp_path):
+    """An install whose schema still carries the shipped defaults writes neither any more."""
+    control = ControlState(tmp_path)
+    control.ensure_defaults()
+    written_kind = UPGRADES["kind"][0][0]
+    assert written_kind.default == "note"
+    save(control, [written_kind, *(form for form in UPGRADES["context"][0][1:])][:2])
+    assert control.schema().defaults()["kind"] == "note"
+    assert control.schema().defaults()["context"] == "internal"
+
+    control.ensure_defaults()
+
+    defaults = control.schema().defaults()
+    assert "kind" not in defaults and "context" not in defaults
+    keys = saved_keys(control)
+    # Both stay declared, so a note that carries them still reads and still validates.
+    assert keys["kind"].vocabulary == ["note", "artifact"]
+    assert keys["context"].vocabulary == ["internal", "external", "personal"]
+
+
+@pytest.mark.parametrize("form", UPGRADES["context"][0])
+def test_every_earlier_context_key_is_upgraded(tmp_path, form):
+    control = ControlState(tmp_path)
+    control.ensure_defaults()
+    save(control, [form])
+    control.ensure_defaults()
+    assert saved_keys(control)["context"] == default_schema().keys[4]
+    assert "context" not in control.schema().defaults()
+
+
+def test_a_context_default_the_operator_chose_is_kept(tmp_path):
+    control = ControlState(tmp_path)
+    control.ensure_defaults()
+    ours = default_schema().keys[4].model_copy(update={"default": "external"})
+    revision = save(control, [ours])
+
+    control.ensure_defaults()
+
+    assert saved_keys(control)["context"].default == "external"
+    assert control.store.read("schema").revision == revision

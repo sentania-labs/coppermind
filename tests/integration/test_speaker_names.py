@@ -126,7 +126,7 @@ async def test_review_corrects_a_speaker_and_replays_without_another_revision(
     event = (await context.calendar_candidates(note))[0]
     if choice not in {"auto_link", "second_failed"}:
         note = await store.patch_frontmatter(
-            note.id, PatchFrontmatter(set={"calendar_event": event["event_id"]}), note.content_hash
+            note.id, PatchFrontmatter(set={"meeting": event["event_id"]}), note.content_hash
         )
     person = await store.entities.create(
         EntityInput(kind="person", name="Alex Morgan", emails=["alex@example.test"])
@@ -155,7 +155,7 @@ async def test_review_corrects_a_speaker_and_replays_without_another_revision(
         if choice == "failed" or (choice == "second_failed" and len(observed) > 1):
             return httpx.Response(503, json={"error": "unavailable"})
         if choice in {"auto_link", "second_failed"} and not evidence["note"]["frontmatter"].get(
-            "calendar_event"
+            "meeting"
         ):
             return httpx.Response(
                 200,
@@ -226,7 +226,7 @@ async def test_review_corrects_a_speaker_and_replays_without_another_revision(
 
         assert job.state == "suggested", job.error
         assert len(observed) == 2
-        assert (await store.get_note(note.id)).frontmatter["calendar_event"] == event["event_id"]
+        assert (await store.get_note(note.id)).frontmatter["meeting"] == event["event_id"]
         detail = await context.lifecycle_detail({"note_id": note.id})
         assert detail["speaker_notice"] == REFRESH_NOTICE
         assert detail["state"] == "suggested"
@@ -248,7 +248,7 @@ async def test_review_corrects_a_speaker_and_replays_without_another_revision(
     assert job.state == "suggested", job.error
     if choice == "auto_link":
         note = await store.get_note(note.id)
-        assert note.frontmatter["calendar_event"] == event["event_id"]
+        assert note.frontmatter["meeting"] == event["event_id"]
         assert any(
             c["name"] == "Casey"
             for s in (await context.lifecycle_detail({"note_id": note.id}))["suggestions"]
@@ -374,7 +374,7 @@ async def recorded(
     note = await store.get_note(result.note.id)
     event = (await context.calendar_candidates(note))[0]
     note = await store.patch_frontmatter(
-        note.id, PatchFrontmatter(set={"calendar_event": event["event_id"]}), note.content_hash
+        note.id, PatchFrontmatter(set={"meeting": event["event_id"]}), note.content_hash
     )
     observed: list[dict[str, Any]] = []
 

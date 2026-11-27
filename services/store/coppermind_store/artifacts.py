@@ -107,6 +107,9 @@ REMOVED_IN_ADMIN = "removed in Admin"
 REMOVED_THROUGH_API = "removed through the API"
 REMOVED_AFTER_REVIEW = "recording removed after review"
 DELETED_IN_OBSIDIAN = "deleted in Obsidian"
+# The timings a recording's transcript carries. They live in the source archive and page; filing
+# no longer copies them into Artifacts, and a copy an earlier release filed is left where it is.
+TRANSCRIPT_DATA = "transcript.json"
 OWNER_REMOVAL_REASONS = frozenset({REMOVED_IN_ADMIN, REMOVED_THROUGH_API, DELETED_IN_OBSIDIAN})
 REMOVAL_REASONS = {"admin": REMOVED_IN_ADMIN, "api": REMOVED_THROUGH_API}
 

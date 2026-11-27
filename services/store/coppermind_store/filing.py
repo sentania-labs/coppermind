@@ -25,7 +25,7 @@ from coppermind.db.models import Note, NoteSource, SearchDocument
 from coppermind.db.session import transaction
 from coppermind.embeds import rewrite_embeds
 from coppermind.ids import is_valid_id
-from coppermind.naming import unique_stem
+from coppermind.naming import titled_stem, unique_stem
 from coppermind.schema import date_field_problem, note_date
 from coppermind.store_protocol import (
     MoveNote,
@@ -129,20 +129,46 @@ def _copy(path: Path, data: bytes) -> None:
 _FILED_MONTH = re.compile(r"[0-9]{4}-(0[1-9]|1[0-2])")
 
 
-def filed_source_path(sources_folder: str, manifest: dict, source_id: str, month: str) -> str:
+def filed_source_path(
+    sources_folder: str, manifest: dict, source_id: str, month: str, stem: str | None = None
+) -> str:
     """Where a source's filed page belongs: nested by year under the sources root.
 
-    A page already filed keeps its month, so a date correction never moves it;
-    one filed flat as `{sources}/{yyyy-mm}/` is carried into its year folder.
+    A page already filed keeps its month and its name, so a date correction never moves it
+    or renames it; one filed flat as `{sources}/{yyyy-mm}/` is carried into its year folder.
+    A page not yet filed takes `stem` for its name when one is given, and its id otherwise.
     """
     filed = manifest.get("filed_projection_path")
     if not filed:
-        return f"{sources_folder}/{month[:4]}/{month}/{source_id}.md"
+        return f"{sources_folder}/{month[:4]}/{month}/{stem or source_id}.md"
     parent, _, name = filed.rpartition("/")
     folder, _, filed_month = parent.rpartition("/")
     if folder == sources_folder and _FILED_MONTH.fullmatch(filed_month):
         return f"{sources_folder}/{filed_month[:4]}/{filed_month}/{name}"
     return filed
+
+
+def _is_transcript(revision: dict) -> bool:
+    """Whether a source's current revision holds a transcript, as a recording's does."""
+    return any(
+        str(artifact.get("name", "")).startswith("transcript.")
+        for artifact in revision.get("artifacts", [])
+    )
+
+
+def _page_stem(title: str, revision: dict) -> str:
+    """What a filed source page is called: "<title> transcript", or "<title> source"."""
+    # A note's title can carry the date its file is named with; the page name does not need it.
+    title = re.sub(r"^\d{4}-\d{2}-\d{2}[ _-]+", "", title) or title
+    return titled_stem(title, "transcript" if _is_transcript(revision) else "source")
+
+
+def _taken_page_stems(folder: Path) -> set[str]:
+    """Every page name in use in a sources folder, whatever stands at it."""
+    try:
+        return {entry.stem.casefold() for entry in folder.iterdir() if entry.suffix == ".md"}
+    except (FileNotFoundError, NotADirectoryError):
+        return set()
 
 
 class SourceRevisionNeedsReview(ValueError):
@@ -205,7 +231,7 @@ def carry_review(store: LocalStore, note_id: str, before: dict[str, int | None])
 
 
 async def file_note(store: LocalStore, note_id: str) -> bool:
-    from coppermind_store.artifacts import file_source_artifact
+    from coppermind_store.artifacts import TRANSCRIPT_DATA, file_source_artifact
     from coppermind_store.sources import (
         _external_id_claim_path,
         _manifest_document,
@@ -317,6 +343,8 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
     # Rebuild a stale plan from current durable manifests. Files already copied
     # remain preserved; the new plan can resume from their recorded paths.
     sources = []
+    sources_folder = settings.notes.sources_folder
+    chosen: dict[str, set[str]] = {}
     for source_id in sorted(set(note.sources)):
         if not is_valid_id(source_id):
             raise ValueError("invalid source identity")
@@ -332,13 +360,29 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
         link_froms = {link_from, old_path}
         if previous:
             link_froms |= {previous["from"], previous["to"], *previous.get("link_froms", [])}
+        stem = None
+        if old_path.startswith(f"{sources_folder}/_Pending/") and not manifest.get(
+            "filed_projection_path"
+        ):
+            # A page still waiting is named for what it is, not for its id. A page filed before
+            # this (even one a flat month folder still holds) keeps the name it has.
+            folder_now = f"{sources_folder}/{month[:4]}/{month}"
+            if previous and previous["to"].rpartition("/")[0] == folder_now:
+                stem = Path(previous["to"]).stem  # an interrupted attempt already named it
+            else:
+                taken = chosen.setdefault(
+                    folder_now, _taken_page_stems(resolve(store.notes_root, folder_now))
+                )
+                revision = _manifest_revision(manifest, manifest["current_revision"])
+                stem = unique_stem(_page_stem(note.title, revision), taken)
+                taken.add(stem.casefold())
         sources.append(
             {
                 "id": source_id,
                 "from": old_path,
                 "link_from": link_from,
                 "link_froms": sorted(link_froms),
-                "to": filed_source_path(settings.notes.sources_folder, manifest, source_id, month),
+                "to": filed_source_path(sources_folder, manifest, source_id, month, stem),
                 "revision": manifest["current_revision"],
             }
         )
@@ -398,6 +442,10 @@ async def file_note(store: LocalStore, note_id: str) -> bool:
                 mime = artifact["mime_type"]
                 # Text already appears in the source page. Audio remains archive-only.
                 if mime.startswith(("text/", "audio/")):
+                    continue
+                # A recording's timings are already in the source page and the archive; a
+                # file of them in Artifacts is clutter nobody opens.
+                if artifact["name"] == TRANSCRIPT_DATA:
                     continue
                 name = artifact["name"]
                 if Path(name).name != name or "\\" in name:

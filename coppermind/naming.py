@@ -106,6 +106,18 @@ def note_stem(title: str, *, note_date: date | None = None, dated: bool = False)
     return stem
 
 
+def titled_stem(title: str, suffix: str) -> str:
+    """The stem "<title> <suffix>", with the title trimmed first so the suffix always stays."""
+    tail = f" {suffix}"
+    head = sanitize_stem(title)
+    head = _fit(
+        head,
+        max_chars=MAX_STEM_LENGTH - len(tail) - 6,
+        max_bytes=MAX_STEM_BYTES - len(tail.encode("utf-8")) - 24,
+    )
+    return sanitize_stem(f"{head or 'Untitled'}{tail}")
+
+
 def unique_stem(stem: str, taken: Iterable[str]) -> str:
     """Return `stem`, or the first free " (n)" variant of it.
 

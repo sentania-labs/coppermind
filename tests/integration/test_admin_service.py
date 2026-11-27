@@ -75,13 +75,14 @@ async def test_turning_suggestions_on_fills_people_and_the_meeting_without_askin
     after = store.context.config().assignments["enrichment"]
     assert (after.attendees_field, after.invitees_field, after.event_field) == (
         "attendees",
-        "invitees",
-        "calendar_event",
+        "",  # invitees are in the calendar meeting; nothing writes them onto a note
+        "meeting",
     )
     # Admin no longer chooses which fields may be filled: the old list is left as it was.
     assert after.fields == whitelist
     names = {key.name for key in store.control.schema().keys}
-    assert {"attendees", "invitees", "calendar_event"} <= names
+    assert {"attendees", "meeting"} <= names
+    assert not {"invitees", "calendar_event"} & names
     shown = await store.admin.act("suggestions", {})
     assert "fill" not in shown and "fill_options" not in shown
     for gone in ("suggestions-fill", "suggestions-tick"):
@@ -95,11 +96,11 @@ async def test_reading_calendar_descriptions_is_its_own_choice(store):
     assignment = store.context.config().assignments["enrichment"]
     assert assignment.send_calendar_descriptions is True
     assert assignment.attendees_field == "attendees"
-    assert assignment.event_field == "calendar_event"
+    assert assignment.event_field == "meeting"
     await store.admin.act("suggestions-descr", {"descr": False})
     assignment = store.context.config().assignments["enrichment"]
     assert assignment.send_calendar_descriptions is False
-    assert assignment.invitees_field == "invitees"
+    assert assignment.invitees_field == ""
     assert (await store.admin.act("suggestions", {}))["descr"] is False
 
 

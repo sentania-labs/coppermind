@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
@@ -12,6 +12,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from coppermind.naming import sanitize_folder
 
 Slug = str
+# What the property holding a note's calendar meeting was called before it became `meeting`.
+LEGACY_EVENT_FIELD = "calendar_event"
 
 
 class ContextModel(BaseModel):
@@ -144,6 +146,30 @@ class FeatureAssignment(ContextModel):
     wait_s: int = Field(default=3600, ge=5, le=MAX_TRANSCRIBE_SECONDS)
     # Maximum audio duration accepted by one transcription job.
     job_limit_s: int = Field(default=14400, ge=2, le=86400)
+
+    @field_validator("invitees_field")
+    @classmethod
+    def invitees_are_not_written(cls, value: str) -> str:
+        # Invitees are in the calendar meeting, so nothing writes them onto a note. Releases
+        # that did mapped the shipped `invitees` property; that mapping reads as unset.
+        return "" if value == "invitees" else value
+
+    @field_validator("event_field")
+    @classmethod
+    def meeting_has_one_name(cls, value: str) -> str:
+        # The calendar meeting is the `meeting` property. Releases that mapped `calendar_event`
+        # move to it; notes that still carry the old name are read through `event_key`.
+        return "meeting" if value == LEGACY_EVENT_FIELD else value
+
+    def event_key(self, frontmatter: dict[str, Any]) -> str:
+        """The property that holds this note's meeting: `meeting`, or the old name it still has."""
+        if (
+            self.event_field == "meeting"
+            and "meeting" not in frontmatter
+            and LEGACY_EVENT_FIELD in frontmatter
+        ):
+            return LEGACY_EVENT_FIELD
+        return self.event_field
 
     @field_validator("timeout_s", mode="before")
     @classmethod

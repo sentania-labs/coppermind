@@ -19,7 +19,6 @@ from these files and from the notes themselves.
 schema_version: 1
 id: 01K4Q8Z3N7V2X9M1B5C6D8E0F2
 type: work
-context: external
 account:
   - Acme
 reviewed: false
@@ -35,11 +34,11 @@ date: 2026-09-08T14:02:11
 | Rule | Value |
 |---|---|
 | Required keys | `schema_version` (int), `id` (ULID), `type`, `reviewed` (bool), `sources` (list of ULID). Nothing else is required, and no value of any key holds a reviewed note back from filing |
-| Kind | `kind` is a declared enum, `note` or `artifact`, defaulting to `note` and written on every note Coppermind creates. A note is always `note`: a file declaring `kind: artifact` is refused on create, replace, patch and adoption, and an artifact is never a note. `artifacts` (list of ULID, optional, written only when present) names the artifacts the note cites |
+| Kind | `kind` is a declared enum, `note` or `artifact`. It has no default and Coppermind writes nothing for a note (earlier releases wrote `kind: note`; those notes keep it and are not rewritten). A note is always `note`: a file declaring `kind: artifact` is refused on create, replace, patch and adoption, and an artifact is never a note. `artifacts` (list of ULID, optional, written only when present) names the artifacts the note cites |
 | Optional keys | `date` (`YYYY-MM-DD`, or a local date-and-time `YYYY-MM-DDTHH:MM:SS` with no UTC offset in the configured timezone, `general.timezone`, `America/Chicago` by default; the one field for a note's date and start time, written as a date-and-time on new notes; a UTC offset is rejected at review validation), `account` (a list of customer names; a plain string is read as a one-item list; never required), `time_unknown` (earlier releases wrote it on a work note with a date-only `date`; it is tolerated on read and never written), `tags` (list), `title` (only when it differs from the heading), `external_refs` (a passthrough map), `unresolved` (set by the curator on an ambiguous filing), `managed` (projections only). A legacy `HH:MM` `time` beside a `date` still validates and files, and a legacy `timezone` is ignored; when a legacy `time` carries its own date and disagrees with `date`, `date` wins and Problems records a `date_mismatch` entry |
 | Shipped `type` suggestions | `work`, `personal`, `reference`, `journal` (default: `reference`); `type` is a free string, so any other value is accepted and files under a folder of that name |
 | Shipped listed tag | `reference`: reference material of either kind, a how-to you wrote or an upgrade deck; it changes nothing about storage or filing |
-| Shipped `context` vocabulary | `internal`, `external`, and `personal`, which is kept only so older notes still validate; a personal note is `type: personal`. `context` says whether a work note is internal or about a customer, is never required, and does not decide where a note files |
+| Shipped `context` vocabulary | `internal`, `external`, and `personal`, which is kept only so older notes still validate; a personal note is `type: personal`. Earlier releases wrote `context` on every note; it is still read and validated, but has no default and nothing writes it now, because an account means a customer meeting. It is never required and does not decide where a note files |
 | Filenames | Dated types: `YYYY-MM-DD Title.md`. Undated: `Title.md`. Journal: `Journal/YYYY/YYYY-MM-DD.md`. Names are Unicode-normalized, Windows-reserved characters and device names are stripped, capped at 120 characters, and a case-insensitive collision gets a numbered suffix; a reviewed note whose name is taken in its month folder is filed as `Title (2).md`, then `(3)`, and the file already there is never touched |
 | Identity (`ETag`) | `"sha256:<hex of the file's bytes>"`. A move does not change it; a frontmatter write-back does |
 | Unparseable file | Left byte-for-byte untouched, recorded as `state: unparsed` with a reason, indexed by body if it can be decoded at all |
@@ -113,7 +112,11 @@ artifacts folder by the reconciler, registered as artifacts of their source
 with the source revision's ingest date, and every note or source page that
 linked the old path is repointed. Filing a reviewed note's source material
 lands its non-text, non-audio artifacts here the same way, and the note gains
-the citation.
+the citation. A recording's `transcript.json` is not one of them: its timings stay in the
+source's own archive and page. A copy an earlier release filed here stays where it is, with its
+row, its archive and the link in the note.
+A `Coppermind sync test.md` an earlier release's Admin sent stays where it is for you to delete;
+it is never adopted as a note, and nothing writes a new one.
 
 ## Recorded ingest rejections
 
@@ -296,7 +299,9 @@ folders, including the reconciler's excluded folders, also use the fallback
 and appear in Problems with a next step. A type or date edit refiles the note
 on the next pass. Existing notes in the old notes root move on that pass and
 stay searchable until then. Filed source pages go under
-`{notes.sources_folder}/{yyyy}/{yyyy-mm}/`; pending source pages wait under `{sources_folder}/_Pending/{yyyy}/{yyyy-mm}/`.
+`{notes.sources_folder}/{yyyy}/{yyyy-mm}/` and are named `<note title> transcript` (`<title> source`
+for a source that holds no transcript, with ` (2)` added on a clash); a page filed earlier keeps the
+id it was named with, and the note's link to it keeps working; pending source pages wait under `{sources_folder}/_Pending/{yyyy}/{yyyy-mm}/`.
 `notes_folder` must be a portable relative folder that does not collide with
 another reserved root. Artifacts are filed under the artifacts folder by the
 same `{yyyy}/{yyyy-mm}` shape (see above); the retired `_Attachments/` folder is

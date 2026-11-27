@@ -675,8 +675,9 @@ async def test_upgrade_keeps_the_first_filing_notes_link_when_a_sharing_note_mov
     assert await filing.file_reviewed(store) == {"filed": 2, "filing_failed": 0}
     for note_id in (late, early):
         body = (await store.get_note(note_id)).body
-        assert nested.removesuffix(".md") in body
-        assert flat.removesuffix(".md") not in body
+        # Whole links: the other note's page is "<title> transcript (2)", a longer name.
+        assert f"[[{nested.removesuffix('.md')}]]" in body
+        assert f"[[{flat.removesuffix('.md')}]]" not in body
     assert (store.notes_root / nested).is_file()
 
 

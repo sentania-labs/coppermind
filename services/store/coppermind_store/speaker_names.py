@@ -278,8 +278,9 @@ async def evidence(
     candidates: dict[str, dict[str, Any]] = {}
     assignment = context.config().assignments["enrichment"]
     linked = set(context.read("associations", {}).get(note.id, {}).get("events", []))
-    if assignment.event_field and note.frontmatter.get(assignment.event_field):
-        linked.add(note.frontmatter[assignment.event_field])
+    meeting = note.frontmatter.get(assignment.event_key(note.frontmatter))
+    if assignment.event_field and meeting:
+        linked.add(meeting)
     ambiguous = not linked and len({event["event_id"] for event in events}) > 1
     for event in events:
         if event["event_id"] not in linked and not ambiguous:

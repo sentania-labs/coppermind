@@ -113,7 +113,7 @@ def answers(context: Any, saved: dict[str, Any]) -> dict[str, Any]:
     # The properties Coppermind owns for people and the meeting are filled whenever the note
     # has them, whether or not the owner ever turned the suggestion step on.
     attendees_field = assignment.attendees_field or "attendees"
-    event_field = assignment.event_field or "calendar_event"
+    event_field = assignment.event_field or "meeting"
     people = attendees(context, saved)
     if people:
         found[attendees_field] = people
@@ -144,7 +144,12 @@ def fill(
     # yet; the rules are checked as if it had.
     given = {k.name: k.default for k in schema.keys if k.default is not None}
     refused = set(schema.invalid_keys({**given, **frontmatter}))
+    assignment = context.config().assignments["enrichment"]
     for key, value in found.items():
+        # A note that still carries the old meeting property is filled under that name, so it
+        # never ends up with both.
+        if key == assignment.event_field:
+            key = assignment.event_key(frontmatter)
         current = frontmatter.get(key)
         if current == value or not untouched(schema, key, current, filled):
             continue
@@ -193,8 +198,7 @@ def set_owned_fields(context: Any) -> None:
     enrichment = config.assignments["enrichment"]
     wanted = {
         "attendees_field": "attendees",
-        "invitees_field": "invitees",
-        "event_field": "calendar_event",
+        "event_field": "meeting",
     }
     missing = {name: value for name, value in wanted.items() if not getattr(enrichment, name)}
     if not missing:

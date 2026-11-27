@@ -1,6 +1,8 @@
 import pytest
 from coppermind_store.speaker_names import is_unrecognised, rename_speakers, speaker_labels
 
+from coppermind.context_config import FeatureAssignment
+
 
 def test_renaming_only_changes_matching_segment_labels():
     transcript = {
@@ -73,7 +75,9 @@ async def test_calendar_candidates_only_come_from_linked_events():
         )
 
         def config(self):
-            return SimpleNamespace(assignments={"enrichment": SimpleNamespace(event_field="event")})
+            return SimpleNamespace(
+                assignments={"enrichment": FeatureAssignment(event_field="event")}
+            )
 
         def read(self, name, default):
             return default
@@ -124,7 +128,9 @@ async def test_cap_applies_to_possible_meetings_not_one_linked_meeting():
         )
 
         def config(self):
-            return SimpleNamespace(assignments={"enrichment": SimpleNamespace(event_field="event")})
+            return SimpleNamespace(
+                assignments={"enrichment": FeatureAssignment(event_field="event")}
+            )
 
         def read(self, name, default):
             return default
@@ -202,7 +208,9 @@ def _context(transcript: dict, people: dict):
         )
 
         def config(self):
-            return SimpleNamespace(assignments={"enrichment": SimpleNamespace(event_field="event")})
+            return SimpleNamespace(
+                assignments={"enrichment": FeatureAssignment(event_field="event")}
+            )
 
         def read(self, name, default):
             return default
@@ -309,7 +317,9 @@ async def test_only_time_matching_meeting_supplies_speakers():
             return events
 
         def config(self):
-            return SimpleNamespace(assignments={"enrichment": SimpleNamespace(event_field="event")})
+            return SimpleNamespace(
+                assignments={"enrichment": FeatureAssignment(event_field="event")}
+            )
 
         linked = False
 

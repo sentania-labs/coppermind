@@ -416,14 +416,6 @@ aria-label="Name for this server" autofocus>{ui.submit("Save", busy="Saving…")
                 f"{ui.size(used)} in the vault." if used else "Shown once the first sync finishes.",
             ),
         ]
-        if state == "on":
-            rows.append(
-                ui.row(
-                    "Check it end to end",
-                    "Send a small test note and look for it on your phone.",
-                    ui.btn("Send a test note", "/admin/sync/test", busy="Sending…"),
-                )
-            )
         paired: dict[str, list[dict[str, Any]]] = {}
         for app in view["companion"]["paired"]:
             paired.setdefault(app["device"].casefold(), []).append(app)
@@ -831,22 +823,6 @@ aria-label="Name for this server" autofocus>{ui.submit("Save", busy="Saving…")
             if applied
             else f'Saved. This server will show in Obsidian\'s device list as "{e(name)}" once '
             "sync has restarted, within a minute.",
-        )
-        return ctx.go("/admin/sync")
-
-    @routes.post("/admin/sync/test", include_in_schema=False)
-    async def test(request: Request) -> Response:
-        ctx = Ctx(request, wiring)
-        await ctx.form()
-        try:
-            result = await ctx.act("test-note", {})
-        except StoreError as exc:
-            return await ctx.refused(exc, "/admin/sync")
-        ctx.say(
-            "ok",
-            f'Sent a note called "{e(result["name"])}" just now. Open Obsidian on your phone; '
-            "it should be at the top of your vault within a minute. Delete it whenever you "
-            "like.",
         )
         return ctx.go("/admin/sync")
 

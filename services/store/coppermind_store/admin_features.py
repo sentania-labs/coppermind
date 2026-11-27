@@ -34,19 +34,15 @@ if TYPE_CHECKING:
 OWNED = (
     ("attendees", "list", "People who were actually there. Filled in by Coppermind."),
     (
-        "invitees",
-        "list",
-        "People who were invited. Being invited does not mean they came. Filled in by Coppermind.",
-    ),
-    (
-        "calendar_event",
+        "meeting",
         "string",
         "The calendar meeting the note belongs to. Filled in by Coppermind.",
     ),
 )
 # Properties earlier releases created that nothing writes now. A saved schema may still hold
-# them; they are never offered as something to fill in.
-RETIRED = ("time_unknown",)
+# them; they are never offered as something to fill in. `calendar_event` is what the meeting
+# property was called: notes that still carry it are read as they are.
+RETIRED = ("time_unknown", "invitees", "calendar_event")
 WAITS_S = (60, 120, 300, 600)
 WAITS_TRANSCRIPTION_S = (1800, 3600, 7200, 14400)
 WEEK = timedelta(days=7)
@@ -90,15 +86,18 @@ class Features:
     def _fill_everything(assignment: FeatureAssignment) -> None:
         """Point suggestions at the properties Coppermind owns. Nobody is asked what to fill."""
         assignment.attendees_field = "attendees"
-        assignment.invitees_field = "invitees"
-        assignment.event_field = "calendar_event"
+        assignment.invitees_field = ""
+        assignment.event_field = assignment.event_field or "meeting"
 
     def ensure_owned_properties(self) -> None:
         """Create the properties Coppermind owns, and switch the note workflow on."""
         schema = self.context.store.control.schema()
         have = {key.name: key for key in schema.keys}
         added = False
+        event = self.context.config().assignments["enrichment"].event_field
         for name, kind, description in OWNED:
+            if name == "meeting" and event not in {"", "meeting"}:
+                continue  # the install already maps its meeting to a property of its own
             if name not in have:
                 schema.keys.append(
                     KeyDefinition.model_validate(

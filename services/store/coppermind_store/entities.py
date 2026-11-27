@@ -76,7 +76,32 @@ def dossier_parts(text: str, entity: Entity) -> tuple[str, str]:
         return text[: found.start()], text[found.end() :]
     if entity.generated and text.endswith(entity.generated):
         return text[: -len(entity.generated)], entity.generated
+    if entity.generated == "":
+        # A plain page has nothing generated below its marker to recognise it by, so a page
+        # that lost the marker is its entity's own only when its properties say so.
+        try:
+            fields, _ = fm.parse(text)
+        except fm.FrontmatterError:
+            fields = {}
+        if matches_identity(fields, entity, []):
+            return text, ""
     raise ValueError("dossier marker is missing; restore it to resume")
+
+
+def split_block(entity: Entity, block: str) -> tuple[str, str]:
+    """What Coppermind generated below the marker, and what the owner wrote after it.
+
+    A plain page generates nothing, so all of it is the owner's. A page that holds a message
+    (retired, merged) or an older facts block holds exactly what was written last, and anything
+    after that is the owner's. A block that no longer starts with what was written is an edit to
+    the generated part, which `observe` reads as corrections, and has no tail.
+    """
+    written = entity.generated
+    if written is None:
+        return block, ""
+    if block.startswith(written):
+        return written, block[len(written) :]
+    return block, ""
 
 
 def matches_identity(fields: dict[str, Any], entity: Entity, domains: list[str]) -> bool:
@@ -262,9 +287,8 @@ def properties(
             matched = owners.get(address.rpartition("@")[2].lower(), set())
             if len(matched) == 1:
                 linked |= matched
-        result["company"] = sorted(
-            f"[[{ledger.entities[identity].path.removesuffix('.md')}]]" for identity in linked
-        )
+        # The company's name, as plain text: a company has no page to link to.
+        result["company"] = sorted(ledger.entities[identity].name for identity in linked)
     return result
 
 
@@ -341,12 +365,16 @@ def render(entity: Entity, ledger: EntityLedger, *, search: bool = False) -> str
         return (
             f"\nSee [[{target.path.removesuffix('.md')}]].\n" if target else "\nRetired identity.\n"
         )
+    if not search:
+        # A page is plain: the name, how to recognise the person, and room for the owner's own
+        # notes. What Coppermind learned is kept in the ledger and shown in the dossier lists,
+        # and Obsidian's backlinks already list the notes that mention the person.
+        return ""
     lines = ["", "## Coppermind's Notes", ""]
-    if search:
-        if entity.aliases:
-            lines.extend(["Aliases: " + ", ".join(label(a) for a in entity.aliases), ""])
-        if entity.emails:
-            lines.extend(["Email: " + ", ".join(label(a) for a in entity.emails), ""])
+    if entity.aliases:
+        lines.extend(["Aliases: " + ", ".join(label(a) for a in entity.aliases), ""])
+    if entity.emails:
+        lines.extend(["Email: " + ", ".join(label(a) for a in entity.emails), ""])
     facts = active_facts(entity, ledger)
     groups = (
         ("Facts", [f for f in facts if not f.target and f.predicate != "interest"]),
@@ -374,20 +402,7 @@ def render(entity: Entity, ledger: EntityLedger, *, search: bool = False) -> str
                 "domain",
             }:
                 lines.append("  - Other recorded values are shown with their evidence.")
-            if not search:
-                ev = fact.evidence
-                lines.append(f"  - Evidence: [[{ev.path.removesuffix('.md')}]] {label(ev.date)}")
-                if ev.quote:
-                    lines.append(f"  - {label(ev.quote)}")
         lines.append("")
-    if not search:
-        paths = sorted({f.evidence.path for f in facts if f.evidence.note_id})
-        if paths:
-            lines += ["### Supporting notes", ""]
-            lines += [f"- [[{p.removesuffix('.md')}]]" for p in paths]
-            lines.append("")
-        if facts:
-            lines += ["Edit a fact above to correct it; delete its line to withdraw it.", ""]
     return "\n".join(lines)
 
 
@@ -548,10 +563,15 @@ class EntityService:
                 fact.state, fact.withdrawn_for = "withdrawn", None
             if added or removed:
                 self.receipt(ledger, entity, "page domains")
-        entity.personal = owner_wrote(head)
-        if block == entity.pending:
-            entity.generated, entity.pending = block, None
-        if entity.generated is not None and block != entity.generated:
+        # A plain page generates nothing, so whatever follows its marker is the owner's, kept as
+        # it is: the end of the page is where anyone clicks to keep writing.
+        if entity.pending is not None and (
+            block == entity.pending or (entity.pending and block.startswith(entity.pending))
+        ):
+            entity.generated, entity.pending = entity.pending, None
+        written, tail = split_block(entity, block)
+        entity.personal = owner_wrote(head) or bool(tail.strip())
+        if entity.generated and written != entity.generated:
             old = {identity: text for text, identity in FACT_LINE.findall(entity.generated)}
             changed = {identity: text for text, identity in FACT_LINE.findall(block)}
             for fact in list(entity.facts):
@@ -642,6 +662,8 @@ class EntityService:
         seen: dict[str, bytes | None] | None = None,
         owners: dict[str, set[str]] | None = None,
     ) -> None:
+        if entity.kind == "company":
+            return  # A company has no page: it is a name and an account, not a place to write.
         owners = domain_owners(ledger) if owners is None else owners
         try:
             if seen is not None and entity.id in seen:
@@ -653,7 +675,12 @@ class EntityService:
             if entity.retired_at and raw is None:
                 return
             block = render(entity, ledger)
-            wanted = (self.prefix(entity, raw, ledger, owners) + block).encode()
+            below = block
+            if raw is not None:
+                # Whatever the owner wrote after the marker stays, after what is generated:
+                # a retirement or a merge adds its message in front of it, never in its place.
+                below += split_block(entity, dossier_parts(raw.decode(), entity)[1])[1]
+            wanted = (self.prefix(entity, raw, ledger, owners) + below).encode()
             if raw == wanted:
                 entity.problem = None
                 entity.projection_fields = self.projected(entity, wanted, ledger, owners)
@@ -1262,8 +1289,50 @@ class EntityService:
                 other.generated = new_block
                 self.save(ledger)
 
+    def retire_company_pages(self, ledger: EntityLedger) -> None:
+        """Stop keeping a page for each company, and remove the ones Coppermind wrote.
+
+        A page goes only when it is still exactly what Coppermind wrote: its marker is there,
+        the owner added nothing above or below it, and no property of theirs sits in it. A page
+        the owner wrote in is left where it is, as theirs; Coppermind stops tending it either
+        way, so deleting it later does not retire the company.
+        """
+        for entity in ledger.entities.values():
+            if entity.kind != "company" or entity.generated is None:
+                continue
+            try:
+                path = safe_path(self.store.notes_root, entity.path)
+                text = path.read_text() if path.is_file() else None
+                ours = False
+                if text is not None:
+                    head, block = dossier_parts(text, entity)
+                    fields, body = fm.parse(head)
+                    projected = entity.projection_fields
+                    # Provably nothing but what Coppermind wrote: every property is one it
+                    # projected and unchanged, no other property is there (whatever its name),
+                    # and every line of text is the title and the empty notes section. In doubt,
+                    # the page stays.
+                    title = label(str((projected or {}).get("name", "")))
+                    ours = (
+                        projected is not None
+                        and block == entity.generated
+                        and fields == projected
+                        and body == f"# {title}\n\n## Scott's Notes\n\n"
+                    )
+                if ours:
+                    path.unlink()
+                    sync_directory(path.parent)
+            except (OSError, ValueError, UnicodeError, fm.FrontmatterError):
+                continue  # unreadable or unclear: not ours to remove, and not retired for it
+            entity.generated = entity.pending = entity.projection_fields = None
+            entity.problem = None
+            self.receipt(
+                ledger, entity, "page removed" if text is not None and ours else "page released"
+            )
+
     async def refresh_locked(self, ledger: EntityLedger) -> None:
         before = ledger.model_dump_json()
+        self.retire_company_pages(ledger)
         for entity in ledger.entities.values():
             if entity.kind == "person" and entity.automatic and entity.name in entity.emails:
                 address = entity.name
@@ -1414,7 +1483,8 @@ class EntityService:
             if not raw:
                 return ""
             try:
-                return fm.parse(dossier_parts(raw.decode(), entity)[0])[1]
+                head, block = dossier_parts(raw.decode(), entity)
+                return fm.parse(head)[1] + split_block(entity, block)[1]
             except (ValueError, UnicodeError, fm.FrontmatterError):
                 return ""
         try:
@@ -1422,8 +1492,8 @@ class EntityService:
             fields, _ = fm.parse(text)
             if fields.get("entity_id") not in (None, entity.id):
                 return ""
-            _, body = fm.parse(dossier_parts(text, entity)[0])
-            return body
+            head, block = dossier_parts(text, entity)
+            return fm.parse(head)[1] + split_block(entity, block)[1]
         except (OSError, ValueError, UnicodeError, fm.FrontmatterError):
             return ""
 
@@ -1456,7 +1526,7 @@ class EntityService:
                 inactive = bool(entity.retired_at or entity.redirect)
                 body = (
                     None
-                    if inactive
+                    if inactive or entity.kind == "company"
                     else self.personal_text(entity, seen) + render(entity, ledger, search=True)
                 )
                 values = dict(
@@ -1778,9 +1848,10 @@ class EntityService:
                 try:
                     head, block = dossier_parts(text, entity)
                     wrote = owner_wrote(head)
+                    written, tail = split_block(entity, block)
                 except (ValueError, fm.FrontmatterError):
                     continue
-                if wrote or block not in {entity.generated, entity.pending}:
+                if wrote or tail.strip() or written not in {entity.generated, entity.pending}:
                     continue  # A fresh device edit is personal work, even before reconciliation.
             found.append(entity)
         return found

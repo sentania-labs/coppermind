@@ -48,7 +48,6 @@ from coppermind_store.request_timing import SlowOperation
 if TYPE_CHECKING:
     from coppermind_store.notes import LocalStore
 
-SYNC_TEST_NAME = "Coppermind sync test.md"
 PLUGIN_FOLDER = ".obsidian/plugins/coppermind-review"
 PLUGIN_FILES = ("main.js", "styles.css", "manifest.json")
 PAIRING_MINUTES = 10
@@ -106,9 +105,9 @@ class AdminService:
         """Switch the note workflow on, which the redesigned Admin has no separate step for."""
         async with self.context.lock:
             config = self.context.config()
+            self.features.ensure_owned_properties()
             if config.lifecycle_enabled:
                 return
-            self.features.ensure_owned_properties()
             fresh = (
                 config.dropbox_folder == "Dropbox"
                 and not (self.store.notes_root / "Dropbox").exists()
@@ -729,23 +728,6 @@ class AdminService:
                     continue
         return {"changed": changed, "was": current, "moved": moved}
 
-    # -- sync helpers the store has to do because it is the one writer -------------------
-
-    async def test_note(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Put a small note at the top of the notes filesystem to watch it reach a device."""
-        zone = self.store.control.settings().general.timezone
-        from zoneinfo import ZoneInfo
-
-        stamp = datetime.now(ZoneInfo(zone)).strftime("%b %d at %I:%M %p").replace(" 0", " ")
-        text = (
-            "# Coppermind sync test\n\n"
-            f"Coppermind sent this note on {stamp} so you can see sync working.\n"
-            "Seeing it on your phone or computer means notes are reaching you.\n"
-            "Delete it whenever you like.\n"
-        )
-        await asyncio.to_thread(atomic_write_text, self.store.notes_root / SYNC_TEST_NAME, text)
-        return {"name": SYNC_TEST_NAME.removesuffix(".md")}
-
     # -- search --------------------------------------------------------------------------
 
     async def search_try(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -931,7 +913,6 @@ class AdminService:
             "pair-exchange": self.pair_exchange,
             "folders": self.folders,
             "folders-save": self.folders_save,
-            "test-note": self.test_note,
             "search-try": self.search_try,
             "search-rebuild": self.search_rebuild,
             "support": self.support,

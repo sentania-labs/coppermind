@@ -105,14 +105,14 @@ def test_the_shipped_schema_declares_kind_the_citation_key_and_the_reference_tag
     schema = default_schema()
     keys = {definition.name: definition for definition in schema.keys}
     assert keys["kind"].vocabulary == ["note", "artifact"]
-    assert keys["kind"].default == "note"
+    assert keys["kind"].default is None  # a note says nothing; the key is only read
     assert keys["kind"].required is False
     assert keys["artifacts"].kind == "list"
     assert keys["artifacts"].default is None
     assert schema.roles["kind_key"] == "kind"
     assert schema.roles["artifacts_key"] == "artifacts"
     assert REFERENCE_TAG in schema.tags
-    assert schema.defaults()["kind"] == "note"
+    assert "kind" not in schema.defaults()  # a note says nothing; the key is only read
     assert "artifacts" not in schema.defaults()
 
 

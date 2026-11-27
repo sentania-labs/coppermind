@@ -691,7 +691,8 @@ def shipped_key_upgrades() -> dict[str, tuple[list[KeyDefinition], KeyDefinition
     """
     shipped = {definition.name: definition for definition in default_schema().keys}
     return {
-        "context": ([OLD_CONTEXT_KEY, WORK_ONLY_CONTEXT_KEY], shipped["context"]),
+        "context": ([OLD_CONTEXT_KEY, *EARLIER_CONTEXT_KEYS], shipped["context"]),
+        "kind": ([kind_key_definition(default=NOTE_KIND)], shipped["kind"]),
         "account": (
             [
                 KeyDefinition(
@@ -783,47 +784,57 @@ OLD_CONTEXT_KEY = KeyDefinition(
 )
 
 
-# What the shipped context key was before filing stopped depending on it: required on a work
-# note, and a customer note needing an account. A saved copy of either form is upgraded.
-WORK_ONLY_CONTEXT_KEY = KeyDefinition(
-    name="context",
-    kind="enum",
-    required=False,
-    default="internal",
-    vocabulary=["internal", "external", "personal"],
-    vocabulary_meanings={
-        "internal": "A work note about your own organisation.",
-        "external": "A work note about a customer. It needs an account.",
-        "personal": "Kept so older notes still read. A personal note is type personal.",
-    },
-    required_when="type",
-    required_when_values=["work"],
-    description=(
-        "Whether a work note is internal or about a customer. Required only when type "
-        "is work. It does not decide where a note files."
-    ),
-)
-
-
-def context_key_definition() -> KeyDefinition:
-    """Context is a work note's own field: internal, or external for a customer. It does not
-    decide where a note files (type and date do), and nothing about it holds a note back."""
+def _context_key(*, default: str | None, work_only: bool, wording: str) -> KeyDefinition:
+    """One form of the context key: what releases shipped, and what ships now."""
+    external = "A work note about a customer."
+    if wording == "earlier":
+        external += " It needs an account."
     return KeyDefinition(
         name="context",
         kind="enum",
         required=False,
-        default="internal",
+        default=default,
         vocabulary=["internal", "external", "personal"],
         vocabulary_meanings={
             "internal": "A work note about your own organisation.",
-            "external": "A work note about a customer.",
+            "external": external,
             "personal": "Kept so older notes still read. A personal note is type personal.",
         },
-        description=(
-            "Whether a work note is internal or about a customer. It does not decide where "
-            "a note files."
-        ),
+        required_when="type" if work_only else None,
+        required_when_values=["work"] if work_only else [],
+        description={
+            "earlier": (
+                "Whether a work note is internal or about a customer. Required only when type "
+                "is work. It does not decide where a note files."
+            ),
+            "filing": (
+                "Whether a work note is internal or about a customer. It does not decide where "
+                "a note files."
+            ),
+            "unwritten": (
+                "Older notes say whether a work note is internal or about a customer. Nothing "
+                "writes it now: an account means a customer meeting. It does not decide where "
+                "a note files."
+            ),
+        }[wording],
     )
+
+
+def context_key_definition() -> KeyDefinition:
+    """Context is read from older notes and never written: an account means a customer meeting.
+
+    It stays declared so a note that carries it still validates. It has no default, so a note
+    is not given one, and nothing about it holds a note back or decides where it files."""
+    return _context_key(default=None, work_only=False, wording="unwritten")
+
+
+# The shipped forms of the context key from before it stopped being written, so a saved
+# copy that was never changed is upgraded and one the operator edited is left alone.
+WORK_ONLY_CONTEXT_KEY = _context_key(default="internal", work_only=True, wording="earlier")
+EARLIER_CONTEXT_KEYS = (
+    WORK_ONLY_CONTEXT_KEY,
+    _context_key(default="internal", work_only=False, wording="filing"),
+)
 
 
 def default_schema() -> FrontmatterSchema:
@@ -911,13 +922,16 @@ def default_schema() -> FrontmatterSchema:
     )
 
 
-def kind_key_definition() -> KeyDefinition:
-    """The declared kind of a file. Every note is `note`; `artifact` is refused on one."""
+def kind_key_definition(*, default: str | None = None) -> KeyDefinition:
+    """The declared kind of a file. A note is `note` and says nothing; `artifact` is refused.
+
+    Earlier releases wrote `kind: note` on every note, so that form (`default=NOTE_KIND`) is
+    still known, to upgrade a saved schema that carries it."""
     return KeyDefinition(
         name=OPTIONAL_ROLES["kind_key"],
         kind="enum",
         required=False,
-        default=NOTE_KIND,
+        default=default,
         vocabulary=list(KINDS),
         vocabulary_meanings={
             NOTE_KIND: "Something you wrote, by hand or through a recorder: editable Markdown.",
@@ -926,7 +940,12 @@ def kind_key_definition() -> KeyDefinition:
                 "Never a note; a note cites it."
             ),
         },
-        description="What kind of thing this file is. Notes are always note.",
+        description=(
+            "What kind of thing this file is. A note is a note, so nothing writes it on one; "
+            "a file that says artifact is refused as a note."
+            if default is None
+            else "What kind of thing this file is. Notes are always note."
+        ),
     )
 
 

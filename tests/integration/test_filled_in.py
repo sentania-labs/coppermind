@@ -296,11 +296,12 @@ async def test_the_upgrade_maps_the_people_and_meeting_properties_when_they_are_
         mapped = context.config().assignments["enrichment"]
         assert (mapped.attendees_field, mapped.invitees_field, mapped.event_field) == (
             "attendees",
-            "invitees",
-            "calendar_event",
+            "",
+            "meeting",
         )
         keys = {k.name for k in store.control.schema().keys}
-        assert {"attendees", "invitees", "calendar_event"} <= keys
+        assert {"attendees", "meeting"} <= keys
+        assert not {"invitees", "calendar_event"} & keys
 
 
 async def test_the_upgrade_never_fills_an_answer_the_owner_rejected(store):

@@ -10,7 +10,7 @@ from coppermind_store.filing import file_note
 from coppermind_store.model_provider import ModelProvider
 from coppermind_store.reconciler import reconcile_once
 
-from coppermind.entities import EntityInput
+from coppermind.entities import EntityChange, EntityInput
 from coppermind.store_protocol import CreateNote, IngestRequest, PatchFrontmatter
 from tests.integration.test_context_enrichment import _fake_transcript, configure
 
@@ -251,9 +251,11 @@ async def test_filing_preserves_extracted_frontmatter_evidence(store):
     filed = await store.get_note(note.id)
     assert filed.content_hash != note.content_hash
     assert filed.path.startswith("work/2026/2026-10/")
-    dossier = (store.notes_root / before.path).read_text()
-    assert f"[[{filed.path.removesuffix('.md')}]]" in dossier
-    assert f"[[{note.path.removesuffix('.md')}]]" not in dossier
+    # The page is plain; the evidence follows the note to where it was filed, in the ledger.
+    assert "Evidence" not in (store.notes_root / before.path).read_text()
+    assert {f.evidence.path for f in store.entities.load().entities[before.id].facts} == {
+        filed.path
+    }
     await store.entities.refresh()
     entity = store.entities.load().entities[before.id]
     assert {f.id for f in entity.facts} == {f.id for f in before.facts}
@@ -268,16 +270,17 @@ async def test_filing_preserves_extracted_frontmatter_evidence(store):
     assert await file_note(store, changed.id)
     moved = await store.get_note(note.id)
     assert moved.path.startswith("personal/2026/2026-10/")
-    dossier = (store.notes_root / before.path).read_text()
-    assert f"[[{moved.path.removesuffix('.md')}]]" in dossier
-    assert f"[[{filed.path.removesuffix('.md')}]]" not in dossier
+    assert {f.evidence.path for f in store.entities.load().entities[before.id].facts} == {
+        moved.path
+    }
 
 
 async def test_review_extracts_projects_and_enriches_without_an_acceptance_step(store):
     context, source, extraction, person, company = await contribute(store)
     assert {f.predicate for f in person.facts} == {"organization", "role", "interest", "mentioned"}
     assert all(f.evidence.note_hash == source.content_hash for f in person.facts)
-    assert "sailing" in (store.notes_root / person.path).read_text()
+    assert any(f.value == "sailing" for f in person.facts)  # learned, kept in the ledger
+    assert "sailing" not in (store.notes_root / person.path).read_text()  # and not on the page
     await store.entities.create(EntityInput(kind="person", name="Unrelated Person"))
     note = await store.create_note(
         CreateNote(
@@ -319,9 +322,19 @@ async def test_review_extracts_projects_and_enriches_without_an_acceptance_step(
     before = store.entities.load().model_dump()
     await context.run_job(extraction)
     assert store.entities.load().model_dump() == before
-    # Editing the supporting note removes only its facts; a page correction survives.
-    path = store.notes_root / person.path
-    path.write_text(path.read_text().replace("interest: sailing", "interest: hiking"))
+    # Editing the supporting note removes only its facts; an API correction survives.
+    sailing = next(f for f in person.facts if f.value == "sailing")
+    entity = store.entities.load().entities[person.id]
+    await store.entities.change(
+        person.id,
+        EntityChange(
+            version=entity.version,
+            action="correct",
+            fact_id=sailing.id,
+            predicate="interest",
+            value="hiking",
+        ),
+    )
     await store.entities.refresh()
     source = await store.patch_frontmatter(
         source.id, PatchFrontmatter(set={"reviewed": False}), source.content_hash

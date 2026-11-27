@@ -102,6 +102,7 @@ BUILT_ROLES = {
 BUILT_OWNED = {
     "attendees": "Attendees",
     "invitees": "Invitees",
+    "meeting": "Meeting",
     "calendar_event": "Meeting",
 }
 HIDDEN_ROLES = ("schema_version_key", "id_key", "reviewed_key", "sources_key")

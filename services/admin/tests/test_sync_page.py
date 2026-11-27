@@ -203,3 +203,12 @@ def test_the_saved_banner_and_the_sync_page_mention_the_tick_only_when_it_is_on(
     )
     assert CARRIES not in follow(client, sent)
     assert saved_configs(wiring) == []
+
+
+def test_a_connected_vault_has_no_test_note_to_send(admin, helper):
+    client, _, _ = admin
+    helper.status = {"configured": True, "vault_name": "My notes", "state": "syncing"}
+    page = client.get("/admin/sync").text
+    assert "My notes" in page
+    assert "test note" not in page.lower() and "Check it end to end" not in page
+    assert "/admin/sync/test" not in {getattr(route, "path", "") for route in client.app.routes}
