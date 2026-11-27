@@ -59,10 +59,10 @@ async def test_a_note_without_a_summary_is_counted_listed_and_cleared_without_to
     assert (await store.get_status()).counters.excluded_count == 0
     assert (await store.get_status()).counters.notes_awaiting_review == 1
 
-    # One step writes up every note without a summary; no note body is written.
+    # Writing the summary again waits in the note's review; no note body is written.
     standin["handler"] = answers_well
-    result = await context.alerts.write_up_missing({})
-    assert result == {"queued": 1, "already": 0, "skipped": 0}
+    result = await store.admin.notes.summary_again({"id": note.id})
+    assert not result.get("already")
     assert {path: (store.notes_root / path).read_bytes() for path in kept} == kept
     queued = context.newest_job(note.id)
     await context.run_job(queued)
@@ -76,7 +76,7 @@ async def test_a_note_without_a_summary_is_counted_listed_and_cleared_without_to
     assert (await reconcile_once(store, unidentified={}))["excluded"] == 0
 
 
-async def test_a_reviewed_note_is_left_alone_by_write_up_every_note(store, standin):
+async def test_a_reviewed_note_is_not_listed_without_a_summary(store, standin):
     context, note, job, _ = await setup_recording(store, standin, failure="context")
     reviewed_key = store.control.schema().role("reviewed_key")
     await store.patch_frontmatter(
@@ -87,5 +87,4 @@ async def test_a_reviewed_note_is_left_alone_by_write_up_every_note(store, stand
         note.content_hash,
     )
     assert (await context.recordings.waiting())["missing_summaries"] == []
-    assert await context.alerts.write_up_missing({}) == {"queued": 0, "already": 0, "skipped": 0}
     assert (await store.get_status()).counters.notes_without_summary == 0

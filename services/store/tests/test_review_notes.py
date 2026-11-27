@@ -95,8 +95,8 @@ def build(tmp_path, *, body=OLD, baseline=OLD, mode="markdown-v1"):
 def fake_generate(monkeypatch, body="# New\n\nBetter body", fails=None, answers=()):
     calls: list[Any] = []
 
-    async def generate(context, job, transcript, voice_map):
-        calls.append((job.id, transcript, voice_map))
+    async def generate(context, job, transcript, voice_map, model=""):
+        calls.append((job.id, transcript, voice_map, model))
         if fails:
             raise fails
         return {
@@ -126,27 +126,75 @@ async def test_an_unedited_note_is_replaced_and_the_old_version_is_kept(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_a_note_edited_by_hand_is_never_overwritten(tmp_path, monkeypatch):
+async def test_a_note_edited_by_hand_is_replaced_only_when_the_owner_said_yes(
+    tmp_path, monkeypatch
+):
     reviewer, memory, job, note, replaced = build(tmp_path, body=OLD + "\nMy own line\n")
     fake_generate(monkeypatch)
     outcome = await reviewer.write_again(NOTE, JOB)
-    assert outcome["state"] == "kept"
+    assert outcome["state"] == "failed" and outcome["error"] == review_notes.EDITED
     assert replaced == []
-    assert any(line.startswith("+Better body") for line in outcome["difference"])
-    assert any(line.startswith("-My own line") for line in outcome["difference"])
-    # Only an explicit second request puts the new write-up in place.
-    memory.data[STATE + NOTE] = outcome
-    row = SimpleNamespace(id=NOTE, reviewed=False)
-    with pytest.raises(ValueError, match="changed"):
-        await reviewer.replace(row, job, "sha256:other")
-    assert replaced == []
-    answer = await reviewer.replace(row, job, outcome["if_match"])
-    assert answer["replaced"] is True
+    assert reviewer.edited(note, job) is True
+    outcome = await reviewer.write_again(NOTE, JOB, overwrite=True)
+    assert outcome["state"] == "done"
     assert len(replaced) == 1
+    # What was replaced stays in the history.
     assert memory.data["recording-writeups/" + JOB]["earlier_bodies"][0]["body"].endswith(
         "My own line\n"
     )
-    assert memory.data[STATE + NOTE]["state"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_a_timestamp_link_in_the_new_write_up_points_at_the_transcript_page(
+    tmp_path, monkeypatch
+):
+    from coppermind.recording_writeup import SOURCE_TARGET_TOKEN
+
+    reviewer, memory, job, note, replaced = build(tmp_path)
+    fake_generate(monkeypatch, body=f"# New\n\nSaid it ([[{SOURCE_TARGET_TOKEN}|00:00:05]])\n")
+    await reviewer.write_again(NOTE, JOB)
+    assert "[[Sources/call|00:00:05]]" in replaced[0][0]
+    assert "<<coppermind" not in replaced[0][0]
+
+
+@pytest.mark.asyncio
+async def test_one_run_can_use_another_model_and_only_that_run(tmp_path, monkeypatch):
+    reviewer, memory, job, note, replaced = build(tmp_path)
+    calls = fake_generate(monkeypatch)
+    await reviewer.write_again(NOTE, JOB, "claude-opus-5-5")
+    await reviewer.write_again(NOTE, JOB)
+    assert [call[3] for call in calls] == ["claude-opus-5-5", ""]
+
+
+@pytest.mark.asyncio
+async def test_resummarize_passes_the_chosen_model_and_the_confirm_to_the_rewrite(
+    tmp_path, monkeypatch
+):
+    reviewer, memory, job, note, replaced = build(tmp_path)
+    seen: list[Any] = []
+
+    async def rewrite(note_id, recording_id, model="", overwrite=False):
+        seen.append((note_id, model, overwrite))
+
+    monkeypatch.setattr(reviewer, "rewrite", rewrite)
+    monkeypatch.setattr(reviewer, "writeup_ready", lambda: True)
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+        async def get(self, model, identity):
+            return SimpleNamespace(id=identity, state="ok", reviewed=False)
+
+    memory.store.session_factory = Session
+    await reviewer.resummarize({"id": NOTE, "model": " gpt-x ", "overwrite": True})
+    await asyncio.gather(*reviewer.live.values())
+    assert seen == [(NOTE, "gpt-x", True)]
+    with pytest.raises(ValueError, match="not a model"):
+        await reviewer.resummarize({"id": NOTE, "model": "a" * 201})
 
 
 @pytest.mark.asyncio
@@ -224,7 +272,7 @@ async def test_rewrites_run_one_at_a_time(tmp_path, monkeypatch):
     running = 0
     peak = 0
 
-    async def slow(context, trial, transcript, voice_map):
+    async def slow(context, trial, transcript, voice_map, model=""):
         nonlocal running, peak
         running += 1
         peak = max(peak, running)
@@ -272,18 +320,6 @@ async def test_a_note_reviewed_while_it_was_being_written_up_is_left_alone(
         k.startswith("recording-writeup-proposed") for k in memory.data
     )
     assert reviewer.writeup_step(NOTE, job, None)["reason"] == record["error"]
-
-
-@pytest.mark.asyncio
-async def test_a_held_rewrite_is_not_applied_to_a_note_reviewed_since(tmp_path, monkeypatch):
-    reviewer, memory, job, note, replaced = build(tmp_path, body=OLD + "\nMine\n")
-    fake_generate(monkeypatch)
-    outcome = await reviewer.write_again(NOTE, JOB)
-    memory.data[STATE + NOTE] = outcome
-    note.frontmatter = {**note.frontmatter, "reviewed": True}
-    with pytest.raises(ValueError, match="reviewed or moved"):
-        await reviewer.replace(SimpleNamespace(id=NOTE, reviewed=True), job, outcome["if_match"])
-    assert replaced == []
 
 
 @pytest.mark.asyncio
@@ -366,6 +402,208 @@ async def test_a_note_the_owner_edited_still_has_its_blanks_filled(tmp_path, mon
     note.frontmatter = {"type": "reference", "tags": [], "reviewed": False}
     fake_generate(monkeypatch, answers=ANSWERS)
     outcome = await reviewer.write_again(NOTE, JOB)
-    assert outcome["state"] == "kept"
+    assert outcome["state"] == "failed"
     assert note.frontmatter["account"] == ["Acme"]
     assert note.body.endswith("My own line\n")
+
+
+def writeup_settings(memory, model="gpt-default"):
+    memory.lock = asyncio.Lock()
+    limits = SimpleNamespace(
+        enabled=True, paused=False, connection="main", model=model, timeout_s=60
+    )
+    config = SimpleNamespace(assignments={"writeup": limits, "enrichment": SimpleNamespace()})
+    memory.config = lambda: config
+    memory.save_config = lambda _: None
+    memory.connection = lambda identity: SimpleNamespace(id=identity)
+    memory.key = lambda identity: "key"
+
+
+@pytest.mark.asyncio
+async def test_the_model_choice_is_what_the_connection_reports_with_the_configured_one_first(
+    tmp_path,
+):
+    reviewer, memory, *_ = build(tmp_path)
+    writeup_settings(memory)
+
+    async def models(connection, key):
+        assert connection.id == "main" and key == "key"
+        return ["claude-opus-5-5", "gpt-default"]
+
+    memory.provider = SimpleNamespace(models=models)
+    answer = await reviewer.models({})
+    assert answer == {
+        "default": "gpt-default",
+        "models": ["claude-opus-5-5", "gpt-default"],
+        "problem": "",
+    }
+
+    async def silent(connection, key):
+        return ["other"]
+
+    memory.provider = SimpleNamespace(models=silent)
+    # The configured model is offered even when the server does not list it.
+    assert (await reviewer.models({}))["models"] == ["gpt-default", "other"]
+
+
+@pytest.mark.asyncio
+async def test_a_server_that_will_not_list_its_models_still_offers_the_configured_one(tmp_path):
+    from coppermind_store.model_provider import ProviderError
+
+    reviewer, memory, *_ = build(tmp_path)
+    writeup_settings(memory)
+
+    async def refuse(connection, key):
+        raise ProviderError("down", "provider-connect")
+
+    memory.provider = SimpleNamespace(models=refuse)
+    answer = await reviewer.models({})
+    assert answer["models"] == ["gpt-default"] and answer["default"] == "gpt-default"
+    assert answer["problem"] == "The AI server did not list its models."
+
+
+MEETINGS = [
+    {
+        "event_id": "a",
+        "title": "Pipeline review",
+        "start": "2026-11-02T09:45:00+00:00",
+        "end": "2026-11-02T10:30:00+00:00",
+        "people": [],
+    },
+    {
+        "event_id": "b",
+        "title": "Northwind check-in",
+        "start": "2026-11-02T14:00:00+00:00",
+        "end": "2026-11-02T15:00:00+00:00",
+        "people": [],
+    },
+]
+
+
+def calendar(memory, note, patched, renamed):
+    async def candidates(_):
+        return MEETINGS
+
+    async def patch(note_id, request, if_match):
+        patched.append(request.set)
+        note.frontmatter = {**note.frontmatter, **request.set}
+        return note
+
+    async def rename(note_id, request, if_match):
+        renamed.append(request.title)
+        note.title = request.title
+
+    memory.calendar_candidates = candidates
+    memory.store.patch_frontmatter = patch
+    memory.store.rename_note = rename
+
+
+@pytest.mark.asyncio
+async def test_choosing_another_meeting_names_it_and_the_title_follows_while_unchanged(tmp_path):
+    reviewer, memory, job, note, _ = build(tmp_path)
+    note.title = "2026-11-02 Pipeline review"
+    note.frontmatter = {"calendar_event": "a", "reviewed": False}
+    patched: list[Any] = []
+    renamed: list[str] = []
+    calendar(memory, note, patched, renamed)
+    await reviewer.set_meeting({"id": NOTE, "event_id": "b"})
+    assert patched[0]["calendar_event"] == "b"
+    assert renamed == ["2026-11-02 Northwind check-in"]
+    with pytest.raises(ValueError, match="not on the calendar"):
+        await reviewer.set_meeting({"id": NOTE, "event_id": "zzz"})
+
+
+@pytest.mark.asyncio
+async def test_a_title_the_owner_changed_is_left_when_the_meeting_changes(tmp_path):
+    reviewer, memory, job, note, _ = build(tmp_path)
+    note.title = "2026-11-02 My own words"
+    note.frontmatter = {"calendar_event": "a", "reviewed": False}
+    patched: list[Any] = []
+    renamed: list[str] = []
+    calendar(memory, note, patched, renamed)
+    await reviewer.set_meeting({"id": NOTE, "event_id": "b"})
+    assert patched[0]["calendar_event"] == "b" and renamed == []
+
+
+@pytest.mark.asyncio
+async def test_a_reviewed_note_cannot_have_its_meeting_changed(tmp_path):
+    reviewer, memory, job, note, _ = build(tmp_path)
+    note.frontmatter = {"reviewed": True}
+    calendar(memory, note, [], [])
+    with pytest.raises(ValueError, match="not waiting for review"):
+        await reviewer.set_meeting({"id": NOTE, "event_id": "b"})
+
+
+@pytest.mark.asyncio
+async def test_the_meetings_of_the_day_are_listed_nearest_the_recording_first(tmp_path):
+    reviewer, memory, job, note, _ = build(tmp_path)
+    note.frontmatter = {"calendar_event": "b"}
+    memory.calendar_candidates = lambda _: asyncio.sleep(0, list(reversed(MEETINGS)))
+    answer = await reviewer.meeting(note, job)
+    assert answer["selected"] == "b"
+    assert [e["event_id"] for e in answer["candidates"]] == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_undo_puts_a_filed_note_back_in_review_and_clears_the_earlier_filing(tmp_path):
+    reviewer, memory, job, note, _ = build(tmp_path)
+    note.path = "work/2026/2026-11/Call.md"
+    note.frontmatter = {"reviewed": True}
+    state = tmp_path / "state"
+    for kind in ("filing", "reviews"):
+        (state / kind).mkdir(parents=True)
+        (state / kind / f"{NOTE}.json").write_text("{}")
+    moved: list[str] = []
+
+    async def patch(note_id, request, if_match):
+        note.frontmatter = {**note.frontmatter, **request.set}
+        return note
+
+    async def move(note_id, request, if_match):
+        moved.append(request.target_folder)
+        note.path = "Review/Call.md"
+        return note
+
+    memory.store.patch_frontmatter = patch
+    memory.store.move_note = move
+    memory.store.control.settings = lambda: SimpleNamespace(
+        notes=SimpleNamespace(review_folder="Review")
+    )
+    memory.store.control.store = SimpleNamespace(state_dir=state)
+    answer = await reviewer.reopen({"id": NOTE})
+    assert answer == {"reopened": True, "path": "Review/Call.md"}
+    assert note.frontmatter["reviewed"] is False and moved == ["Review"]
+    assert not list(state.glob("*/*.json"))
+
+
+def test_the_choices_name_what_a_card_writes_and_what_it_offers(tmp_path):
+    reviewer, memory, *_ = build(tmp_path)
+    choices = reviewer.choices()
+    assert choices["keys"] == {
+        "type": "type",
+        "account": "account",
+        "tags": "tags",
+        "reviewed": "reviewed",
+        "meeting": "calendar_event",
+        "attendees": "attendees",
+    }
+    assert {"work", "personal", "reference"} <= set(choices["types"])
+    assert choices["accounts"] == [] and choices["tags_closed"] in {True, False}
+
+
+@pytest.mark.asyncio
+async def test_a_card_from_a_recording_says_whether_the_body_was_edited_and_offers_the_day(
+    tmp_path,
+):
+    reviewer, memory, job, note, _ = build(tmp_path)
+    note.frontmatter = {"calendar_event": "b"}
+    memory.calendar_candidates = lambda _: asyncio.sleep(0, list(MEETINGS))
+    row = SimpleNamespace(id=NOTE, title="Call", path="Review/Call.md", date=None, reviewed=False)
+    item = await reviewer.row(row, job, None, suggestions_on=False, writeup_on=True)
+    assert item["edited"] is False and item["can_resummarize"] is True
+    assert item["meeting"]["selected"] == "b" and len(item["meeting"]["candidates"]) == 2
+    note.body = OLD + "\nMine\n"
+    assert (await reviewer.row(row, job, None, False, True))["edited"] is True
+    # A note that did not come from a recording has neither.
+    plain = await reviewer.row(row, None, None, False, True)
+    assert "edited" not in plain and "meeting" not in plain

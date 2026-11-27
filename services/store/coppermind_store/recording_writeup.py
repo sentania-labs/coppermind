@@ -722,8 +722,13 @@ async def condense(
 
 
 async def generate(
-    context: Any, job: Any, transcript: dict[str, Any], voice_map: dict[str, str]
+    context: Any,
+    job: Any,
+    transcript: dict[str, Any],
+    voice_map: dict[str, str],
+    model: str = "",
 ) -> dict[str, Any]:
+    """Write a recording up. `model` stands in for the configured model for this run only."""
     from coppermind_store.recordings import render_transcript
 
     key = "recording-writeups/" + job.id
@@ -734,6 +739,8 @@ async def generate(
         limits = assignment(context)
     if not limits.enabled or limits.paused or not limits.connection:
         raise WriteupError("writeup-settings")
+    if model:
+        limits = limits.model_copy(update={"model": model})
     text = render_transcript(transcript)
     title, calendar = await resolve_title(context, job, text)
     labels = sorted(

@@ -149,9 +149,15 @@ async def summary_again(
 
 class Resummarize(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    # Set both to put a held-back rewrite in place of a note the owner edited.
-    replace: bool = False
-    if_match: str = Field(default="", max_length=100)
+    # For this one run only; blank uses the configured model.
+    model: str = Field(default="", max_length=200)
+    # Replace a body the owner edited. Sent after the owner has said yes.
+    overwrite: bool = False
+
+
+class MeetingChoice(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    event_id: str = Field(min_length=1, max_length=500)
 
 
 @router.get("/review/notes")
@@ -174,8 +180,8 @@ async def resummarize(
     _: Principal = Depends(require_scopes("notes:write", "notes:read", "sources:read")),
 ) -> Response:
     """Write a recording's note up again from its saved transcript, without transcribing it
-    again. A body the owner edited is never overwritten: the new write-up is held until
-    `replace` is sent with the `if_match` the review list gave."""
+    again. `model` is used for this run only. A body the owner edited is replaced only when
+    `overwrite` is true."""
     given = payload or Resummarize()
     return await call(client, "note-resummarize", {"id": note_id, **given.model_dump()})
 
@@ -191,13 +197,36 @@ async def file_again(
     return await call(client, "note-file-again", {"id": note_id})
 
 
-@router.post("/recordings/summaries-again")
-async def summaries_again(
+@router.get("/review/models")
+async def review_models(
+    client: HttpStoreClient = Depends(store),
+    _: Principal = Depends(require_scopes("notes:read", "sources:read")),
+) -> Response:
+    """The models the write-up connection offers, and `default`, the one a Resummarize uses
+    unless another is sent."""
+    return await call(client, "review-models", {})
+
+
+@router.post("/notes/{note_id}/meeting")
+async def choose_meeting(
+    note_id: str,
+    payload: MeetingChoice,
     client: HttpStoreClient = Depends(store),
     _: Principal = Depends(require_scopes("notes:write", "notes:read", "sources:read")),
 ) -> Response:
-    """Write up every recording note that has no summary, in one step."""
-    return await call(client, "write-up-missing-summaries", {})
+    """Name another meeting from the note's day. The title and the attendees follow it where
+    the owner has not changed them."""
+    return await call(client, "note-set-meeting", {"id": note_id, **payload.model_dump()})
+
+
+@router.post("/notes/{note_id}/reopen")
+async def reopen(
+    note_id: str,
+    client: HttpStoreClient = Depends(store),
+    _: Principal = Depends(require_scopes("notes:write", "notes:read", "notes:move")),
+) -> Response:
+    """Undo Reviewed: the note is put back in Review, to be checked again."""
+    return await call(client, "note-reopen", {"id": note_id})
 
 
 @router.get("/dropbox")

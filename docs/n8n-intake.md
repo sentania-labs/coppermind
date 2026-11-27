@@ -168,7 +168,7 @@ Audio that another unfinished recording still uses, or that any other note links
 never removed by this clean-up. A removal that keeps failing becomes one Problems entry with a Retry action.
 Filing errors are Problems entries
 and retry automatically; on the companion a reviewed note that could not be filed is a row on
-Notes in Review with one sentence and Try again. Human edits of a filed note retain review and
+the Review screen with one sentence and Try again. Human edits of a filed note retain review and
 update search.
 
 A changed payload under the same external ID creates an archive revision and

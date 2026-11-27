@@ -46,7 +46,7 @@ when they differ (reload the companion in Obsidian afterwards). Enable it in Com
 plugins. It requires
 Obsidian 1.11 or later and a Coppermind API key with `notes:read`, `notes:write` and
 `sources:read`. Naming speakers also needs `sources:write` and `entities:read`; a key
-without `entities:read` still reviews everything else, and the panel says that speakers
+without `entities:read` still reviews everything else, and speakers
 cannot be named with it. Naming a calendar contact who needs a new People entry also
 requires `entities:write`; choosing an existing person does not. The People view
 (voice recognition) also needs `entities:write`
@@ -54,52 +54,46 @@ to change recognition or delete signatures. Combining or separating voices also 
 Obsidian SecretStorage; the plugin saves only its name, never its value, in plugin settings. Configure it separately on devices
 that do not share local secret storage.
 
-Run **Coppermind Review: Needs you** (or use the list icon in the ribbon). It is the companion's
-home screen. It lists the meetings waiting for review, each opening its note for review; the
-recordings that failed, each saying why in plain words and offering Retry when a retry can
-help and Dismiss when the app is not going to retry it by itself (Dismiss only takes the
-entry off the list and deletes nothing); the notes whose summary could not be written (their count shows beside the others),
-each opening its note, with a button that opens Notes in Review, where they are written up
-again; and what is still processing, with its latest known
-state: recordings being transcribed and files still being imported. Files put in the
-Dropbox folder also appear here. A file that could not be imported says what to do, and a
-recently finished import says what was imported (a calendar export says how many events)
-and offers Open only when there is a note or file to open. Dismiss removes an import's
-entry from the list; what was imported stays. The screen says when it was last updated and,
-when Coppermind does not answer, shows what it last said. It needs `notes:read` and
-`sources:read`; Retry on a recording also needs `sources:write`, `notes:write` and `artifacts:read`,
-and Dismiss needs `sources:write`.
+Run **Review** (the clipboard icon in the ribbon, or the command **Coppermind Review: Review**). It is the
+companion's one screen. Newest first it lists:
 
-Run **Coppermind Review: Notes in Review** for the one place where notes waiting in the
-Review folder are written up again. It lists every note there with its title, its
-date and, in plain words, where its write-up stands: written (and when it
-finished), missing, failed (with the reason) or being written now. A note that came from a
-recording has **Resummarize**, which writes it up again from the transcript already saved,
-with the current directions, without sending the recording for transcription again, and
-leaves the note's fields and its review status alone. While the note's body is still exactly
-what Coppermind wrote, the new write-up replaces it and Coppermind keeps the earlier text.
-Getting it back from the companion is not available yet; it arrives with restore from Git
-history. If you edited the body, nothing is overwritten: the row says so and **Compare with my note** shows
-your lines against the new write-up, and the note changes only if you choose **Replace my
-note with the new write-up**. **Resummarize all missing** at the top
-writes up every note that has no write-up or whose write-up failed. A box above the list finds a note by title as you type. Rows keep their place while the
-screen is open and are put in order again (notes needing you first) when it is opened or
-Refresh is pressed. When write-ups are switched off the screen says so once
-and offers no button that cannot work. Clicking a title opens the note. The buttons show that they started, and the row says when each finished or why it
-failed; a failed rewrite leaves the note as it was. The screen needs `notes:read` and
-`sources:read`, and the buttons need `notes:write` as well; no permission beyond the
-companion's own is added.
+- a row for each recording that failed, in one sentence, with **Try again** when trying again can
+  help and **Dismiss** when the app is not going to try again by itself (Dismiss only takes the
+  row away and deletes nothing);
+- a quiet row for each recording still on its way to a note;
+- a card for each note waiting in the Review folder.
 
-The calls are in [the API reference](api.md#recordings-audio-on-its-own).
+A card shows the note's title (click it to open the note) and its time, and lets you fix what is
+wrong right there. **Meeting** is a dropdown of that day's meetings, nearest the recording first;
+choosing another one renames the note after it and refills the attendees from its invitation,
+unless you changed the title or the attendees yourself. **Type** is a button for each of your
+types. **Account** and **Tags** are pills you remove with their × and add to from the known names
+or with a new one (a closed tag list refuses a name that is not on it). **Who spoke** shows who was
+matched; voices are named in the note's Speakers section, as described below. Type, account and
+tags are written straight to the note's properties, so the note, the Properties panel and the card
+always agree. Each card has two buttons:
 
-In the review panel, a note written from a recording points to Notes in Review for writing it
-up again; there is no separate button in the panel. If a
-rewrite is being made when you mark the note reviewed, the panel warns that it will be
-discarded.
+- **Resummarize** writes the note up again from the transcript already saved, without sending the
+  recording for transcription again. When the connection lists more than one model, a model choice
+  sits beside it, starting on the configured model; a different choice applies to that one run only
+  and nothing else changes. The properties are filled again only where you have not put your own
+  value. While the note's body is still what Coppermind wrote, the new summary replaces it and the
+  earlier text is kept. If you edited the body, one question asks "Replace your edited note with the
+  new summary? Your version stays in history." with **Replace** and **Cancel**. A summary that did
+  not finish says why on the card and Resummarize starts it again; a recording whose summary keeps
+  failing after Coppermind's own tries shows as a row with Try again.
+- **Reviewed** ticks `reviewed` on the note. The card says "Reviewed. Filing…" and, once the note
+  has been filed, "Filed ✓" with the folder it went to and **Undo** for a minute. Undo puts the
+  note back in Review, unreviewed, even after it was filed.
 
-Open a note and run **Coppermind Review: Review current note**. The panel checks
-that the exact local bytes match the server before permitting completion. Wait
-for Obsidian Sync after editing. `date` is the one field for a note's date and
+The screen needs `notes:read` and `sources:read`; Resummarize, the meeting dropdown and Try again
+also need `notes:write`, Undo after filing needs `notes:move`, and Try again on a recording needs
+`sources:write` and `artifacts:read`. The companion's own key has all of them. It looks again every
+fifteen seconds (every three while something is being written or filed) and, when Coppermind does
+not answer, keeps showing what it last said. Its calls are in
+[the API reference](api.md#recordings-audio-on-its-own).
+
+`date` is the one field for a note's date and
 start time: `YYYY-MM-DD`, or `YYYY-MM-DDTHH:MM:SS` as a local date-and-time with no
 UTC offset, matching Obsidian's Date and Date & time properties. Times are in the
 configured timezone (`America/Chicago` by default), a setting rather than a note
@@ -125,7 +119,7 @@ moves to `{type}/YYYY/YYYY-MM/` by its day alone. A name already taken in that f
 never overwritten and never asked about: the note's file takes the next free " (2)",
 " (3)" and so on, and its heading and text stay as written. A real failure (the disk, a
 folder that cannot be written to, a note that cannot be read) leaves the note in Review as
-a row on the companion's Notes in Review screen with one plain sentence and Try again;
+a card on the companion's Review screen with one plain sentence and Try again;
 Coppermind also keeps trying by itself. A note held by one of the earlier rules (a work note with no
 start time, a customer note with no account, a name already taken) files on the next
 pass after an upgrade, with nothing for the owner to do. When a recording changes after a
@@ -133,8 +127,7 @@ note was marked reviewed but before it was filed, Coppermind clears the note's r
 itself, so the note waits in Review like any other and ticking Reviewed files it with the new
 material; a note that is already filed is left where it is.
 
-For a recording, the review panel also shows each diarized speaker with a proposed
-person, confidence and reason; naming voices is the one choice still offered. Candidates are the linked calendar attendees, or people
+For a recording, each diarized speaker gets a proposed person, with confidence and reason. Candidates are the linked calendar attendees, or people
 from possible meetings when several timed events overlap (up to 40 across them; a
 single linked meeting lists all its invitees), then People named in the note
 or transcript, then a few recently met People;
@@ -142,22 +135,14 @@ never the whole People list. The model sees a bounded sample of each speaker's t
 the full transcript. If that cannot fit the input limit, speaker suggestions are skipped
 with a notice and the other suggestions still arrive. A person renamed after suggestions
 were made is written under the current name; one retired is refused for that speaker
-only. When enrichment links an event automatically, it asks the model again with that
-event's attendees. Confident names start selected.
-For people with saved signatures, a close voice match also appears as a `Voice` or `Maybe`
+only. For people with saved signatures, a close voice match also appears as a `Voice` or `Maybe`
 candidate for that speaker, returned as `voice_matches` in the review response
-(see [voice recognition](dossiers.md#voice-recognition)). A single `Voice` match that the
-model does not contradict starts selected; `Maybe` matches, several `Voice` matches, or a
-disagreement with a confident model name are left for you to choose.
-Choose another candidate or leave a speaker unnamed. Search existing People from the
-panel, even if the model is unavailable or speaker suggestions were omitted. Completing
-review replaces selected speaker labels throughout the transcript, adds confirmed attendees
-and links known dossiers. Unselected speakers keep their labels. Setting reviewed
-directly without the panel does not apply speaker suggestions. The review API accepts
+(see [voice recognition](dossiers.md#voice-recognition)). The review API accepts
 `speaker_choices`, an object mapping selected suggestion indexes to candidate IDs;
 an empty value leaves that speaker unnamed. For manual names, pass `manual_speakers`
 (label to candidate ID), `manual_source_id` and `manual_source_revision` from the review
-response. The review response provides the current speakers and bounded candidates.
+response. Setting reviewed directly, as the companion's Reviewed button does, applies the
+names typed in the note and no others.
 The transcript sample is sent only to the configured enrichment connection, under the same
 input limit and retry rules as other enrichment.
 
@@ -261,13 +246,9 @@ suggestions point at an attendees property. The entry in this note becomes
 "Name, talk time. Named by you." Typing a name in a note that is already reviewed does the
 same when the note is next saved. Tick "This is me" with your name to make that person the
 owner: they are listed first and marked "(you)" in later notes, and the write-up treats
-them as "I". On a recording note that has a Speakers section, the companion's review panel has no
-second place to name a voice: it points at the section, lists the names typed there in
-"What will change", and labels the second button "Mark reviewed, applying only the names
-typed in the note" because it applies them too. After review the panel states what happened
-to each typed name (named, or not named and why). The same reason is written under the
-voice in the note, and since the note is already reviewed, correcting the name there and
-saving the note is enough.
+them as "I". The companion's Reviewed button applies the names typed in the note too. The reason a name
+was not applied is written under the voice in the note, and since the note is already
+reviewed, correcting the name there and saving the note is enough.
 
 - A name that matches no one in People **creates that person**; the entry says "New person
   added to People".

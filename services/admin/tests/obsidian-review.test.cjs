@@ -1,4 +1,4 @@
-// Contract tests for the shipped companion: sync boundaries and secret handling.
+// Contract tests for the shipped companion: the Review screen, pairing and secret handling.
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
@@ -29,233 +29,42 @@ class Setting {
   addDropdown(fn){const dropdown=this.el.createEl('select');const control={addOption(v,text){dropdown.createEl('option',{value:v,text});return control;},setValue(v){dropdown.value=v;return control;},onChange(fn){dropdown.onchange=()=>fn(dropdown.value);return control;}};fn(control);return this;}
 }
 async function fixture(local, overrides={}){
-  const raw='---\nid: test-note\nreviewed: false\n---\nHuman prose.\n';
-  const digest='sha256:'+Buffer.from(await webcrypto.subtle.digest('SHA-256',Buffer.from(raw))).toString('hex');
-  const requests=[];const notices=[];
-  const file={basename:'Note',path:'Review/Note.md'};
+  const requests=[];const notices=[];const writes=[];const opened=[];const detached=[];const changed=[];
+  const files=overrides.files||{};
   let factory;const factories={};const modals=[];
   class Plugin {registerView(type,fn){factory=fn;factories[type]=fn;}addSettingTab(tab){this.settingTab=tab;}addCommand(command){(this.commands??={})[command.id]=command;}async saveData(data){(this.saved??=[]).push(JSON.parse(JSON.stringify(data)));}addRibbonIcon(icon,title){(this.ribbons??=[]).push(title);}registerEvent(){}async loadData(){return {url:'https://coppermind.example',secret:'local-secret-name'};}}
-  class ItemView {constructor(leaf){this.app=leaf.app;this.contentEl=new El();}}
-  const app={metadataCache:{getFileCache:()=>({frontmatter:{id:'test-note'}})},secretStorage:{getSecret:()=> 'synthetic-credential'},vault:{read:async()=>local??raw,getAbstractFileByPath:path=>({path})},workspace:{getActiveFile:()=>file,on:()=>null,getActiveViewOfType:()=>null,openLinkText:()=>{}}};
-  const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,Modal:class{constructor(app){this.app=app;this.contentEl=new El();}open(){modals.push(this);this.onOpen();}close(){this.onClose();}},PluginSettingTab:class{constructor(){this.containerEl=new El();}},SecretComponent:class{setValue(){return this;}onChange(){return this;}},Notice:class{constructor(text){notices.push(text);}},MarkdownView:class{},requestUrl:async req=>{requests.push(req);if(req.url.endsWith('/v1/pair')&&overrides.pair)return overrides.pair(req);if(req.url.endsWith('/v1/anything')&&overrides.page)return overrides.page(req);if(req.url.endsWith('/v1/recordings/waiting'))return overrides.waitingFail?{status:overrides.waitingFail===true?500:overrides.waitingFail,json:{message:'down'}}:overrides.waitingHang?new Promise(()=>{}):{status:200,json:overrides.waiting};if(req.url.endsWith('/v1/dropbox'))return overrides.dropboxFail?{status:overrides.dropboxFail===true?500:overrides.dropboxFail,json:{message:'down'}}:{status:200,json:overrides.dropbox??{folder:'Dropbox',items:[]}};if(req.url.includes('/v1/dropbox/')&&req.url.endsWith('/dismiss'))return overrides.dismissDropFail?{status:500,json:{}}:{status:200,json:{dismissed:'x'}};if(req.url.endsWith('/v1/recordings/summaries-again'))return overrides.summariesAgain?overrides.summariesAgain(req):{status:200,json:{queued:2,already:0,skipped:0}};if(new URL(req.url).pathname==='/v1/review/notes')return overrides.reviewNotesFail?{status:overrides.reviewNotesFail===true?500:overrides.reviewNotesFail,json:{message:'down'}}:{status:200,json:typeof overrides.reviewNotes==='function'?overrides.reviewNotes(req):overrides.reviewNotes};if(req.url.endsWith('/file-again')&&req.method==='POST')return overrides.fileAgain?overrides.fileAgain(req):{status:200,json:{filed:true,problem:''}};if(req.url.endsWith('/resummarize')&&req.method==='POST')return overrides.resummarize?overrides.resummarize(req):{status:200,json:{started:true,already:false}};if(req.url.endsWith('/summary-again'))return overrides.summaryAgain?overrides.summaryAgain(req):{status:200,json:{title:'Planning',already:false}};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/dismiss'))return overrides.dismissFail?{status:500,json:{}}:{status:200,json:{}};if(req.url.includes('/v1/recordings/')&&req.url.endsWith('/retry'))return overrides.retryFail?{status:overrides.retryFail===true?500:overrides.retryFail,json:{}}:(overrides.onRetry?.(),{status:200,json:{}});if(req.url.endsWith('/v1/schema'))return {status:200,json:{roles:{id_key:'id'}}};if(req.url.endsWith('/v1/entities/voice/recognition'))return {status:200,json:overrides.recognition||{enabled:true,attendees_field:'attendees'}};if(req.url.endsWith('/v1/entities/voice/unknowns'))return {status:200,json:overrides.unknownVoices||{}};if(req.url.endsWith('/v1/entities/voice/people'))return {status:200,json:overrides.savedPeople||{}};if(req.url.includes('/v1/entities?'))return overrides.rejectPeople?{status:overrides.rejectPeople===true?403:overrides.rejectPeople,json:{error:'forbidden'}}:{status:200,json:typeof overrides.peopleResults==='function'?await overrides.peopleResults(req):overrides.peopleResults||{items:[],next_cursor:null}};if(req.url.endsWith('/review')&&req.method==='POST'&&overrides.rejectReview)return {status:403,json:{error:'forbidden'}};return {status:200,json:{note:{content_hash:digest,frontmatter:{reviewed:false}},roles:{reviewed_key:'reviewed',type_key:'type'},suggestions:[],unresolved:[],state:'suggested',job_id:null,...overrides}};}}),crypto:webcrypto,TextEncoder,URL,setTimeout,clearTimeout,setInterval,clearInterval};
+  class ItemView {constructor(leaf){this.app=leaf.app;this.contentEl=new El();}registerEvent(){}}
+  const leaf={app:null,async setViewState(state){this.view=factories[state.type]({app});}};
+  const app={
+    metadataCache:{getFileCache:file=>files[file.path]?{frontmatter:files[file.path]}:null,on:(name,fn)=>{changed.push(fn);return {};}},
+    fileManager:{async processFrontMatter(file,fn){if(overrides.processFails)throw Error('disk');const fm=files[file.path];fn(fm);writes.push({path:file.path,fm:JSON.parse(JSON.stringify(fm))});}},
+    secretStorage:{getSecret:()=> 'synthetic-credential'},
+    vault:{getAbstractFileByPath:path=>files[path]?{path,basename:path.split('/').pop().replace(/\.md$/,'')}:null},
+    workspace:{getActiveFile:()=>null,on:()=>null,getLeavesOfType:()=>[],getRightLeaf:()=>leaf,revealLeaf:async()=>{},detachLeavesOfType:type=>detached.push(type),getLeaf:()=>({openFile:async file=>opened.push(file.path)})}};
+  leaf.app=app;
+  const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,Modal:class{constructor(app){this.app=app;this.contentEl=new El();}open(){modals.push(this);this.onOpen();}close(){this.onClose();}},PluginSettingTab:class{constructor(){this.containerEl=new El();}},SecretComponent:class{setValue(){return this;}onChange(){return this;}},Notice:class{constructor(text){notices.push(text);}},requestUrl:async req=>{requests.push(req);const url=new URL(req.url);
+    const routed=overrides.routes&&await overrides.routes(req,url);if(routed)return routed;
+    if(req.url.endsWith('/v1/pair')&&overrides.pair)return overrides.pair(req);
+    if(req.url.endsWith('/v1/anything')&&overrides.page)return overrides.page(req);
+    if(req.url.endsWith('/v1/entities/voice/recognition'))return {status:200,json:overrides.recognition||{enabled:true,attendees_field:'attendees'}};
+    if(req.url.endsWith('/v1/entities/voice/unknowns'))return {status:200,json:overrides.unknownVoices||{}};
+    if(req.url.endsWith('/v1/entities/voice/people'))return {status:200,json:overrides.savedPeople||{}};
+    if(req.url.includes('/v1/entities?'))return overrides.rejectPeople?{status:overrides.rejectPeople===true?403:overrides.rejectPeople,json:{error:'forbidden'}}:{status:200,json:typeof overrides.peopleResults==='function'?await overrides.peopleResults(req):overrides.peopleResults||{items:[],next_cursor:null}};
+    return {status:200,json:{...overrides}};}}),crypto:webcrypto,TextEncoder,URL,
+    // A long timer (the screen's poll) is one the test process does not wait for.
+    setTimeout:(fn,ms)=>{const t=setTimeout(fn,ms);if(ms>=1000)t.unref?.();return t;},clearTimeout,setInterval,clearInterval};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../coppermind_admin/obsidian_plugin/main.js'),'utf8'),context);
   const plugin=new context.module.exports();plugin.app=app;await plugin.onload();
-  const view=factory({app});await view.refresh();
-  return {view,plugin,requests,notices,app,raw,factories,modals};
+  return {plugin,requests,notices,app,factories,modals,files,writes,opened,detached,changed,leaf,rules:context.module.exports.rules};
 }
-test('unsynced note cannot complete review',async()=>{
-  const {view}=await fixture('A local edit that has not synced');
-  const buttons=view.contentEl.all().filter(e=>e.tag==='button');
-  assert.equal(buttons.find(b=>b.text==='Mark reviewed').disabled,true);
-  assert.ok(view.contentEl.all().some(e=>e.text?.includes('have not reached')));
-});
-test('edit after panel load is refused before any write request',async()=>{
-  const f=await fixture();f.app.vault.read=async()=> 'Changed after opening';
-  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed').onclick();
-  assert.equal(f.requests.filter(r=>r.method==='POST').length,0);
-  assert.ok(f.notices.some(n=>n.includes('note changed')));
-});
+
 test('credential is read from secret storage, not plugin settings',async()=>{
   const {plugin,requests}=await fixture();
+  await plugin.call('/v1/schema');
   assert.equal(plugin.settings.secret,'local-secret-name');
   assert.ok(!JSON.stringify(plugin.settings).includes('synthetic-credential'));
   assert.equal(requests[0].headers.Authorization,'Bearer synthetic-credential');
 });
-
-test('a suggested meeting can be changed before confirming',async()=>{
-  const meeting={calendar_hash:'calendar',suggested_event_id:'a',candidates:[{event_id:'a',title:'Planning',people:[{name:'Alex'}]},{event_id:'b',title:'Budget',people:[{name:'Blair'}]}]};
-  const f=await fixture(undefined,{recording_meeting:meeting});
-  const radios=f.view.contentEl.all().filter(e=>e.tag==='input'&&['a','b'].includes(e.value));
-  assert.equal(radios.find(r=>r.value==='a').checked,true);
-  const choice=radios.find(r=>r.value==='b');choice.checked=true;choice.onchange();
-  await f.view.contentEl.all().find(e=>e.text==='Use selected meeting').onclick();
-  const request=f.requests.find(r=>r.url.endsWith('/recording-meeting'));
-  assert.equal(JSON.parse(request.body).event_id,'b');
-});
-
-test('the only meeting that could match can be chosen on the note, and one already chosen is not asked again',async()=>{
-  const meeting={calendar_hash:'calendar',suggested_event_id:null,selected_event_id:null,candidates:[{event_id:'a',title:'Pipeline review',people:[{name:'Alex'}]}]};
-  const f=await fixture(undefined,{recording_meeting:meeting});
-  assert.ok(f.view.contentEl.all().some(e=>e.text==='Which meeting was this?'));
-  const radio=f.view.contentEl.all().find(e=>e.tag==='input'&&e.value==='a');radio.checked=true;radio.onchange();
-  await f.view.contentEl.all().find(e=>e.text==='Use selected meeting').onclick();
-  assert.equal(JSON.parse(f.requests.find(r=>r.url.endsWith('/recording-meeting')).body).event_id,'a');
-  const chosen=await fixture(undefined,{recording_meeting:{...meeting,selected_event_id:'a'}});
-  assert.ok(!chosen.view.contentEl.all().some(e=>e.text==='Which meeting was this?'));
-});
-
-test('a lone meeting from the day, not from an overlap, is neither claimed as on at the time nor preselected',async()=>{
-  // A recording at 10:00 and a calendar whose only event that day is at 15:00.
-  const afternoon={event_id:'a',title:'Dentist',start:'2026-11-26T15:00:00-06:00',people:[]};
-  const f=await fixture(undefined,{recording_meeting:{calendar_hash:'calendar',suggested_event_id:null,selected_event_id:null,matched_event_id:null,candidates:[afternoon]}});
-  const texts=f.view.contentEl.all().map(e=>e.text).filter(Boolean);
-  assert.ok(texts.includes('Which meeting was this?'));
-  assert.ok(!texts.some(t=>t.includes('was on at the time')));
-  assert.equal(f.view.contentEl.all().find(e=>e.tag==='input'&&e.value==='a').checked,false);
-  await f.view.contentEl.all().find(e=>e.text==='Use selected meeting').onclick();
-  assert.ok(f.notices.includes('Choose a meeting first.'));
-  assert.equal(f.requests.filter(r=>r.url.endsWith('/recording-meeting')).length,0);
-});
-
-test('the only meeting, when the recording named it, is shown as the meeting and not asked about',async()=>{
-  const meeting={calendar_hash:'calendar',suggested_event_id:null,selected_event_id:null,matched_event_id:'a',candidates:[{event_id:'a',title:'Pipeline review',people:[{name:'Alex'}]}]};
-  const f=await fixture(undefined,{recording_meeting:meeting});
-  assert.ok(!f.view.contentEl.all().some(e=>e.text==='Which meeting was this?'));
-  const other=await fixture(undefined,{recording_meeting:{...meeting,matched_event_id:'z'}});
-  assert.ok(other.view.contentEl.all().some(e=>e.text==='Which meeting was this?'));
-});
-
-test('merging requires a confirmation and uses the checked destination and summary',async()=>{
-  const raw='---\nid: test-note\nreviewed: false\n---\nHuman prose.\n';
-  const digest='sha256:'+Buffer.from(await webcrypto.subtle.digest('SHA-256',Buffer.from(raw))).toString('hex');
-  const f=await fixture(undefined,{recording_merge:{state:'offered',transcript_path:'_Sources/Transcript.md',candidates:[{id:'target',title:'My meeting',path:'Notes/My meeting.md',content_hash:digest}]},meeting_summary:{summary:'Launch plan.',decisions:'',action_items:''},job_id:'job'});
-  f.view.contentEl.all().find(e=>e.text==='Review merge').onclick();
-  assert.equal(f.requests.filter(r=>r.url.endsWith('/recording-merge')).length,0);
-  assert.ok(f.modals[0].contentEl.all().some(e=>e.text==='View transcript'));
-  await f.modals[0].contentEl.all().find(e=>e.text==='Confirm merge').onclick();
-  const request=f.requests.find(r=>r.url.endsWith('/recording-merge'));
-  assert.equal(JSON.parse(request.body).target_id,'target');
-  assert.equal(JSON.parse(request.body).meeting_summary.summary,'Launch plan.');
-  assert.ok(f.view.contentEl.all().some(e=>e.text==='Recording added'));
-});
-
-test('merge shows progress and prevents conflicting actions until it resolves',async()=>{
-  const raw='---\nid: test-note\nreviewed: false\n---\nHuman prose.\n';
-  const digest='sha256:'+Buffer.from(await webcrypto.subtle.digest('SHA-256',Buffer.from(raw))).toString('hex');
-  const f=await fixture(undefined,{recording_merge:{state:'offered',candidates:[{id:'target',title:'My meeting',path:'Notes/My meeting.md',content_hash:digest}]},meeting_summary:{summary:'Launch plan.',decisions:'',action_items:''},job_id:'job'});
-  let rejectMerge;const call=f.plugin.call.bind(f.plugin);
-  f.plugin.call=(url,...args)=>url.endsWith('/recording-merge')?new Promise((_,reject)=>{rejectMerge=reject;}):call(url,...args);
-  f.view.contentEl.all().find(e=>e.text==='Review merge').onclick();
-  const pending=f.modals[0].contentEl.all().find(e=>e.text==='Confirm merge').onclick();
-  await new Promise(resolve=>setTimeout(resolve,20));
-  assert.ok(f.view.contentEl.all().some(e=>e.text==='Adding the recording to your note…'));
-  for(const text of ['Review merge','Keep separate','Mark reviewed']){
-    const button=f.view.contentEl.all().find(e=>e.text===text);assert.ok(button,text);assert.equal(button.disabled,true,text);
-  }
-  rejectMerge(Error('Connection lost'));await pending;
-  assert.ok(f.view.contentEl.all().some(e=>e.text?.includes('Refresh this panel to check its status before trying again.')));
-  assert.equal(f.view.contentEl.all().find(e=>e.text==='Refresh merge status').disabled,false);
-});
-
-test('an interrupted merge offers retry from the companion',async()=>{
-  const f=await fixture(undefined,{recording_merge:{state:'attention',error:'The destination note is unavailable.'}});
-  assert.ok(f.view.contentEl.all().some(e=>e.text==='The destination note is unavailable.'));
-  await f.view.contentEl.all().find(e=>e.text==='Retry merge').onclick();
-  assert.ok(f.requests.some(r=>r.url.endsWith('/recording-merge/retry')));
-});
-
-test('reviewed flag does not hide interrupted completion recovery',async()=>{
-  const f=await fixture(undefined,{note:{frontmatter:{reviewed:true}},completion:{state:'applying',payload:{confirmation:'Complete review'}}});
-  const retry=f.view.contentEl.all().find(e=>e.text==='Retry recorded completion');
-  assert.ok(retry);
-  await retry.onclick();
-  assert.equal(f.requests.filter(r=>r.method==='POST').length,1);
-});
-
-for(const type of ['work','personal','reference','journal'])test(type+' review asks for no meeting time',async()=>{
-  const f=await fixture(undefined,{note:{frontmatter:{type,reviewed:false}}});
-  const texts=f.view.contentEl.all().map(e=>e.text);
-  assert.ok(!texts.includes('Meeting time')&&!texts.includes('Time unknown')&&!texts.includes('Save time'));
-});
-
-test('the person chosen for a speaker is sent when the note is marked reviewed',async()=>{
-  const speaker={kind:'speaker',field:'Speaker 2',index:3,value:'contact:a',display_value:'Casey',confidence:.87,reason:'Addressed by name.',quote:'',contact_ids:[],candidates:[{id:'contact:a',name:'Casey',email:'casey@example.test'},{id:'person:b',name:'Alex',email:'alex@example.test'}]};
-  const f=await fixture(undefined,{suggestions:[speaker],job_id:'job'});
-  const card=f.view.contentEl.all().find(e=>e.children.some(c=>c.text==='Casey'));
-  const choice=card.children.find(c=>c.tag==='select');
-  assert.equal(choice.value,'contact:a');
-  assert.ok(!card.children.some(c=>c.tag==='toggle'));
-  choice.value='person:b';choice.onchange();
-  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed').onclick();
-  const body=JSON.parse(f.requests.find(r=>r.method==='POST').body);
-  assert.deepEqual(body.selected,[3]);
-  assert.equal(body.speaker_choices['3'],'person:b');
-});
-
-const proposal=(index,confidence,value='person:a')=>({kind:'speaker',field:'Speaker '+(index+1),index,value,display_value:'Alex',confidence,reason:'Named.',quote:'',contact_ids:[],candidates:[{id:'person:a',name:'Alex',email:''},{id:'person:b',name:'Blair',email:''}]});
-test('preview shows chosen speakers, a doubtful name starts unchosen, and choosing it applies it',async()=>{
-  const f=await fixture(undefined,{suggestions:[proposal(0,.9),proposal(1,.4)],job_id:'job'});
-  let text=()=>f.view.contentEl.all().map(e=>e.text||'').join(' ');
-  assert.match(text(),/Speaker 1 → Alex/);assert.doesNotMatch(text(),/Speaker 2 → Alex/);
-  assert.equal(f.view.contentEl.all().filter(e=>e.tag==='select')[1].value,'');
-  assert.match(text(),/transcript labels, note attendees and links to the people chosen/);assert.match(text(),/Unnamed speakers stay/);
-  const selects=f.view.contentEl.all().filter(e=>e.tag==='select');selects[1].value='person:b';selects[1].onchange();
-  assert.match(text(),/Speaker 2 → Blair/);
-  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed').onclick();
-  assert.deepEqual(JSON.parse(f.requests.find(r=>r.method==='POST').body).selected,[0,1]);
-});
-test('a failed run still permits naming speakers by hand, and says nothing about proposals',async()=>{
-  const f=await fixture(undefined,{state:'failed',suggestion_error:'The model timed out.',manual_speaker_review:{revision:2,speakers:['Speaker 1'],candidates:[{id:'person:a',name:'Alex'}]}});
-  assert.ok(!f.view.contentEl.all().some(e=>e.text?.includes('could not be completed')));
-  const select=f.view.contentEl.all().find(e=>e.tag==='select');select.value='person:a';select.onchange();
-  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed').onclick();
-  const body=JSON.parse(f.requests.find(r=>r.method==='POST').body);
-  assert.equal(body.manual_speakers['Speaker 1'],'person:a');assert.equal(body.manual_source_revision,2);
-});
-test('a voice named in the note is not asked for again, and the panel says it will be applied',async()=>{
-  const f=await fixture(undefined,{state:'failed',named_in_note:[{label:'Unknown voice 7',name:'Tom Reed'}],manual_speaker_review:{revision:2,speakers:['Unknown voice 7','Unknown voice 8'],candidates:[{id:'person:a',name:'Alex'}]}});
-  const all=f.view.contentEl.all();
-  assert.ok(all.some(e=>e.text==='Unknown voice 7 → Tom Reed (typed in the note)'));
-  assert.ok(!all.some(e=>e.tag==='h3'&&e.text==='Unknown voice 7'));
-  assert.ok(all.some(e=>e.tag==='h3'&&e.text==='Unknown voice 8'));
-});
-test('with names typed in the note the panel lists them and no longer promises no changes',async()=>{
-  const f=await fixture(undefined,{state:'suggested',speakers_in_note:true,named_in_note:[{label:'Unknown voice 7',name:'Tom Reed'}],manual_speaker_review:{revision:2,speakers:['Unknown voice 7'],candidates:[]}});
-  const all=f.view.contentEl.all();
-  assert.ok(all.some(e=>e.text==='Unknown voice 7 → Tom Reed (typed in the note)'));
-  assert.ok(!all.some(e=>e.text==='No speaker names selected.'));
-  assert.equal(all.filter(e=>e.tag==='button'&&e.text?.startsWith('Mark reviewed')).length,1);
-  assert.ok(all.some(e=>e.tag==='button'&&e.text==='Mark reviewed'));
-});
-test('a note with a Speakers section is named in the note, not by a competing control here',async()=>{
-  const f=await fixture(undefined,{state:'suggested',speakers_in_note:true,manual_speaker_review:{revision:2,speakers:['Unknown voice 7'],candidates:[{id:'person:a',name:'Alex'}]}});
-  const all=f.view.contentEl.all();
-  assert.ok(all.some(e=>e.text?.includes('Name a voice in the Speakers section at the top of the note')));
-  assert.ok(!all.some(e=>e.tag==='select'));
-  assert.ok(!all.some(e=>e.tag==='h3'&&e.text==='Unknown voice 7'));
-  assert.ok(all.some(e=>e.text==='No voice has been named in the note.'));
-});
-test('after review the panel says what became of each name typed in the note',async()=>{
-  const f=await fixture(undefined,{note:{frontmatter:{reviewed:true}},named_in_note:[{label:'Unknown voice 2',name:'Tom'},{label:'Unknown voice 3',name:'Dana Lee'}],speaker_naming:[{label:'Unknown voice 1',typed:'Scott Bowe',status:'named',name:'Scott Bowe',created:true},{label:'Unknown voice 2',typed:'Tom',status:'not-named',reason:'Tom could be Tom Reed, but a first name alone is not enough to say so. The note is already reviewed, so correcting the name here and saving the note is enough.'}]});
-  const text=f.view.contentEl.all().map(e=>e.text||'');
-  assert.ok(text.includes('Unknown voice 1 is now Scott Bowe (added to People).'));
-  assert.ok(text.some(t=>t.startsWith('Unknown voice 2 was not named as Tom: Tom could be Tom Reed')&&t.includes('saving the note is enough')));
-  assert.ok(text.some(t=>t.includes('The name you typed for Unknown voice 3 (Dana Lee) is applied about 30 seconds after')));
-});
-test('empty candidates permit searching People and choosing a result',async()=>{
-  const f=await fixture(undefined,{state:'failed',manual_speaker_review:{revision:1,speakers:['Speaker 1'],candidates:[]},peopleResults:{items:[{id:'b',name:'Blair',emails:[]}],next_cursor:null}});
-  assert.ok(f.view.contentEl.all().some(e=>e.text?.includes('No likely people found. Enter a name')));
-  const input=f.view.contentEl.all().find(e=>e.tag==='input');input.value='Blair';
-  await f.view.contentEl.all().find(e=>e.text==='Find a person').onclick();
-  const select=f.view.contentEl.all().find(e=>e.tag==='select');select.value='person:b';select.onchange();
-  assert.ok(f.view.contentEl.all().some(e=>e.text==='Speaker 1 → Blair'));
-});
-
-test('a key that cannot see people shows why speakers are missing',async()=>{
-  const f=await fixture(undefined,{state:'suggested',suggestions:[],manual_speaker_review:null,speakers_unavailable:'This key cannot read people, so speakers cannot be named with it. In Coppermind Admin, open Connected apps (API Keys) and create a new key with Read people and companies, then select that key in the companion settings.'});
-  assert.ok(f.view.contentEl.all().some(e=>e.text?.includes('cannot be named with it')));
-  assert.ok(!f.view.contentEl.all().some(e=>e.tag==='select'));
-});
-
-test('permission failures give plain recovery steps',async()=>{
-  const notice='This key cannot read people, so speakers cannot be named with it. In Coppermind Admin, open Connected apps and either pair this device with a code, or open the key and tick Read notes, Add and change notes, Hand in recordings and files, and Read and correct people and companies.';
-  const f=await fixture(undefined,{state:'failed',rejectPeople:true,rejectReview:true,people_access_notice:notice,manual_speaker_review:{revision:1,speakers:['Speaker 1'],candidates:[]}});
-  f.view.contentEl.all().find(e=>e.tag==='input').value='Alex';
-  await f.view.contentEl.all().find(e=>e.text==='Find a person').onclick();
-  assert.ok(f.notices.includes(notice));
-  await assert.rejects(f.plugin.call('/v1/notes/test-note/review','POST',{manual_speakers:{'Speaker 1':'person:a'}}),/or open the key and tick Read notes, Add and change notes, Hand in recordings and files, and Read and correct people and companies/);
-  assert.ok(f.notices.every(n=>!n.includes('entities:read')));
-});
-
-test('a server error during people search does not tell the owner to replace the key',async()=>{
-  const notice='This key cannot read people, so speakers cannot be named with it. Create a new key.';
-  const f=await fixture(undefined,{state:'failed',rejectPeople:500,people_access_notice:notice,manual_speaker_review:{revision:1,speakers:['Speaker 1'],candidates:[]}});
-  f.view.contentEl.all().find(e=>e.tag==='input').value='Alex';
-  await f.view.contentEl.all().find(e=>e.text==='Find a person').onclick();
-  assert.ok(!f.notices.includes(notice));
-  assert.ok(f.notices.some(n=>n.includes('Check your connection')));
-});
-
 test('companion settings offer pairing first and name the key-by-hand path',async()=>{
   const f=await fixture();f.plugin.settingTab.display();
   const text=f.plugin.settingTab.containerEl.all().map(e=>e.text||'').join(' ');
@@ -326,93 +135,6 @@ test('a successful pairing keeps the key in secret storage only and uses it for 
   assert.equal(f.requests[0].headers.Authorization,'Bearer '+credential);
 });
 
-const summaryProposal={summary:'Launch discussion.',decisions:'- Ship Friday.',action_items:'- Casey: send the plan.'};
-test('summary edits and dropped sections are sent only on review completion',async()=>{
-  const f=await fixture(undefined,{meeting_summary:summaryProposal,job_id:'job'});
-  const inputs=f.view.contentEl.all().filter(e=>e.tag==='textarea');
-  assert.equal(inputs.length,3);assert.equal(inputs[0].value,'Launch discussion.');
-  inputs[0].value='Owner corrected summary.';inputs[0].oninput();
-  await f.view.contentEl.all().find(e=>e.text==='Drop decisions').onclick();
-  assert.equal(f.requests.filter(r=>r.method==='POST').length,0);
-  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed').onclick();
-  const body=JSON.parse(f.requests.find(r=>r.method==='POST').body);
-  assert.deepEqual(body.meeting_summary,{summary:'Owner corrected summary.',decisions:'',action_items:'- Casey: send the plan.'});
-});
-for(const state of ['failed','running'])test(state+' summary cannot be applied',async()=>{
-  const f=await fixture(undefined,{state,meeting_summary:summaryProposal});
-  assert.ok(f.view.contentEl.all().filter(e=>e.tag==='textarea').every(e=>e.disabled));
-  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed').onclick();
-  assert.equal(JSON.parse(f.requests.find(r=>r.method==='POST').body).meeting_summary,null);
-});
-
-const pendingSummaryNotice='The summary is still being written. Marking reviewed now files the note without it.';
-for(const state of ['queued','running'])test(state+' recording warns beside completion before filing without a summary',async()=>{
-  const f=await fixture(undefined,{state,manual_speaker_review:{source_id:'source',revision:1,speakers:[],candidates:[]}});
-  const children=f.view.contentEl.children;
-  const action=children.findIndex(e=>e.text==='Mark reviewed');
-  assert.equal(children[action-1].text,pendingSummaryNotice);
-  assert.equal(children[action].disabled,false);
-  await children[action].onclick();
-  const writes=f.requests.filter(r=>r.method==='POST');
-  assert.equal(writes.length,1);
-  assert.equal(JSON.parse(writes[0].body).meeting_summary,null);
-});
-for(const overrides of [{state:'running'},{state:'suggested',meeting_summary:summaryProposal},{state:'failed',meeting_summary:summaryProposal}])test('no pending-summary warning for '+JSON.stringify(overrides),async()=>{
-  const f=await fixture(undefined,overrides);
-  assert.ok(!f.view.contentEl.all().some(e=>e.text===pendingSummaryNotice));
-});
-test('voice and maybe names require a deliberate choice',async()=>{
-  const f=await fixture(undefined,{state:'failed',manual_speaker_review:{source_id:'source',revision:1,speakers:['Speaker 1'],candidates:[],voice_matches:{'Speaker 1':[{id:'person:a',name:'Alex',strength:'maybe'}]}}});
-  const select=f.view.contentEl.all().find(e=>e.tag==='select');
-  assert.equal(select.value,'');
-  const button=f.view.contentEl.all().find(e=>e.text==='Maybe: Alex');assert.ok(button);
-  button.onclick();
-  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed').onclick();
-  assert.equal(JSON.parse(f.requests.find(r=>r.method==='POST').body).manual_speakers['Speaker 1'],'person:a');
-});
-
-const voiceManual=matches=>({source_id:'source',revision:1,speakers:['Speaker 1'],candidates:[],voice_matches:{'Speaker 1':matches}});
-const match=(id,name,strength='strong')=>({id:'person:'+id,name,strength});
-test('a single strong voice suggestion is included in one completion',async()=>{
-  const f=await fixture(undefined,{manual_speaker_review:voiceManual([match('a','Alex')])});
-  const text=f.view.contentEl.all().map(e=>e.text||'').join(' ');
-  assert.match(text,/Speaker 1 → Alex/);assert.match(text,/Source: Voice/);assert.doesNotMatch(text,/No people suggested/);
-  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed').onclick();
-  assert.equal(JSON.parse(f.requests.find(r=>r.method==='POST').body).manual_speakers['Speaker 1'],'person:a');
-});
-test('agreeing model and voice show both sources with one selection',async()=>{
-  const s=proposal(0,.9,'contact:a');s.candidates=[{id:'contact:a',person_id:'a',name:'Alex'}];
-  const f=await fixture(undefined,{suggestions:[s],job_id:'job',manual_speaker_review:voiceManual([match('a','Alex')])});
-  assert.ok(f.view.contentEl.all().some(e=>e.text==='Sources: Model and Voice'));
-  assert.ok(!f.view.contentEl.all().some(e=>e.text==='Voice: Alex'));
-  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed').onclick();
-  assert.equal(JSON.parse(f.requests.find(r=>r.method==='POST').body).speaker_choices['0'],'contact:a');
-});
-for(const [name,suggestions,matches,says] of [
-  ['two voices',[],[match('a','Alex'),match('b','Blair')],'More than one saved voice matches. Choose a person.'],
-  ['model and voice',[proposal(0,.9,'person:a')],[match('b','Blair')],'The voice and the conversation point to different people. Choose a person.'],
-])test(name+' conflict selects no one',async()=>{
-  const f=await fixture(undefined,{suggestions,job_id:'job',manual_speaker_review:voiceManual(matches)});
-  assert.ok(f.view.contentEl.all().some(e=>e.text===says));
-  assert.equal(f.view.contentEl.all().find(e=>e.tag==='select').value,'');
-  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed').onclick();
-  const body=JSON.parse(f.requests.find(r=>r.method==='POST').body);
-  assert.deepEqual(body.selected,[]);assert.deepEqual(body.manual_speakers,{});
-});
-test('correcting a selected voice match sends only the corrected person',async()=>{
-  const review=voiceManual([match('a','Alex')]);review.candidates=[{id:'person:b',name:'Blair'}];
-  const f=await fixture(undefined,{manual_speaker_review:review});
-  const select=f.view.contentEl.all().find(e=>e.tag==='select');select.value='person:b';select.onchange();
-  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed').onclick();
-  assert.equal(JSON.parse(f.requests.find(r=>r.method==='POST').body).manual_speakers['Speaker 1'],'person:b');
-});
-
-test('a speaker without enough speech is explained in review',async()=>{
-  const manual={speakers:['Speaker 2'],candidates:[],voice_matches:{},voice_unavailable:['Speaker 2']};
-  const f=await fixture(undefined,{manual_speaker_review:manual});
-  assert.ok(f.view.contentEl.all().some(e=>e.text?.includes('too little speech to recognise this voice')));
-});
-
 const personVoice=(signatures)=>({enabled:true,signatures});
 const sig=(id)=>({note_id:id,created_at:'2026-01-02T00:00:00Z'});
 async function peopleFixture(signatures){
@@ -441,32 +163,6 @@ test('deleting a person voice requires confirmation',async()=>{
   assert.equal(f.requests.filter(r=>r.method==='DELETE').length,1);
 });
 
-test('summary edits and strong voice are submitted together',async()=>{
-  const f=await fixture(undefined,{meeting_summary:summaryProposal,job_id:'job',manual_speaker_review:voiceManual([match('a','Alex')])});
-  const input=f.view.contentEl.all().find(e=>e.tag==='textarea');input.value='Corrected summary.';input.oninput();
-  assert.ok(f.view.contentEl.all().some(e=>e.text==='Speaker 1 → Alex'));
-  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed').onclick();
-  const body=JSON.parse(f.requests.find(r=>r.method==='POST').body);
-  assert.equal(body.meeting_summary.summary,'Corrected summary.');
-  assert.equal(body.manual_speakers['Speaker 1'],'person:a');
-});
-
-
-test('voice selection does not show an empty model suggestion as a 0% voice match',async()=>{
-  const s={...proposal(0,0,null),display_value:'No person suggested',reason:'No confident match was suggested.',candidates:[]};
-  const f=await fixture(undefined,{suggestions:[s],job_id:'job',manual_speaker_review:voiceManual([match('a','Alex')])});
-  const text=f.view.contentEl.all().map(e=>e.text||'').join(' ');
-  assert.match(text,/Source: Voice/);assert.match(text,/Speaker 1 → Alex/);
-  assert.doesNotMatch(text,/Model confidence: 0%/);assert.doesNotMatch(text,/No confident match was suggested/);
-  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed').onclick();
-  assert.equal(JSON.parse(f.requests.find(r=>r.method==='POST').body).speaker_choices['0'],'person:a');
-});
-test('useful model evidence stays attributed when voice supplies the name',async()=>{
-  const s={...proposal(0,0,null),reason:'Someone said hello.',quote:'Hello.',candidates:[]};
-  const f=await fixture(undefined,{suggestions:[s],job_id:'job',manual_speaker_review:voiceManual([match('a','Alex')])});
-  const text=f.view.contentEl.all().map(e=>e.text||'').join(' ');
-  assert.match(text,/Model: Someone said hello/);assert.match(text,/Model evidence/);
-});
 
 test('People shows saved people and confirms how many recordings a voice combines',async()=>{
   const unknownVoices={'unknown:12':{name:'Unknown voice 12',signatures:[sig('n1')],assignments:[{note_id:'n1',label:'Speaker 1'},{note_id:'n2',label:'Speaker 1'}]},'unknown:18':{name:'Unknown voice 18',signatures:[sig('n3')],assignments:[]}};
@@ -571,279 +267,6 @@ test('typing on while an earlier search is in flight never shows its results for
   assert.ok(!all().some(e=>e.tag==='option'&&e.text==='Sam Short'));
 });
 
-test('strong voice suggestion explains confirmation and earlier appearances',async()=>{
-  const manual={speakers:['Unknown voice 12'],candidates:[],voice_matches:{'Unknown voice 12':[match('a','Alex')]},voice_appearances:{'Unknown voice 12':3}};
-  const f=await fixture(undefined,{manual_speaker_review:manual});
-  const text=f.view.contentEl.all().map(e=>e.text||'').join(' ');
-  assert.match(text,/Check this name before you finish/);
-  assert.match(text,/remembered across recordings/);
-  assert.match(text,/2 earlier recordings/);
-});
-
-test('waiting view opens the note and handles a failed retry',async()=>{
-  const f=await fixture(undefined,{waiting:{meetings:[{title:'Planning',path:'Review/Planning.md',date:''}],failed:[{id:'abc',title:'Call',message:'Try again.',can_retry:true}]},retryFail:true});
-  const file={path:'Review/Planning.md'};let opened;
-  f.app.vault.getAbstractFileByPath=path=>path===file.path?file:null;
-  f.app.workspace.getLeaf=()=>({openFile:async value=>{opened=value;}});
-  f.plugin.open=async()=>{};
-  const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
-  assert.ok(view.contentEl.all().some(e=>e.text==='1 meeting to review · 1 recording failed'));
-  await view.contentEl.all().find(e=>e.text==='Planning').onclick();assert.equal(opened,file);
-  const retry=view.contentEl.all().find(e=>e.text==='Retry');await retry.onclick();
-  assert.equal(retry.disabled,false);
-  assert.ok(view.contentEl.all().some(e=>e.text?.includes('Could not queue retry')));
-  assert.ok(f.requests.some(r=>r.url.endsWith('/v1/recordings/abc/retry')&&r.method==='POST'));
-});
-
-test('dismissing a failed recording asks first, then refreshes the list',async()=>{
-  const f=await fixture(undefined,{waiting:{meetings:[],failed:[{id:'abc',title:'Call',message:'No speech was found.',can_retry:false,can_dismiss:true}]}});
-  const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
-  const texts=()=>view.contentEl.all().map(e=>e.text||'');
-  await view.contentEl.all().find(e=>e.text==='Dismiss').onclick();
-  assert.equal(f.requests.some(r=>r.url.endsWith('/dismiss')),false);
-  assert.ok(texts().includes('This only removes the entry from this list and deletes nothing.'));
-  const before=f.requests.filter(r=>r.url.endsWith('/v1/recordings/waiting')).length;
-  await view.contentEl.all().find(e=>e.text==='Dismiss entry').onclick();
-  assert.ok(f.requests.some(r=>r.url.endsWith('/v1/recordings/abc/dismiss')&&r.method==='POST'));
-  assert.equal(f.requests.filter(r=>r.url.endsWith('/v1/recordings/waiting')).length,before+1);
-});
-
-test('a failed dismiss keeps the entry and lets the user try again',async()=>{
-  const f=await fixture(undefined,{waiting:{meetings:[],failed:[{id:'abc',title:'Call',message:'No speech was found.',can_retry:false,can_dismiss:true}]},dismissFail:true});
-  const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
-  await view.contentEl.all().find(e=>e.text==='Dismiss').onclick();
-  const yes=view.contentEl.all().find(e=>e.text==='Dismiss entry');await yes.onclick();
-  assert.equal(yes.disabled,false);
-  assert.ok(view.contentEl.all().some(e=>e.text?.includes('Could not dismiss')));
-});
-
-test('a recording the app will retry by itself offers no Dismiss',async()=>{
-  const f=await fixture(undefined,{waiting:{meetings:[],failed:[{id:'abc',title:'Call',message:'The app will try again automatically.',can_retry:true,can_dismiss:false,retry_after:'2026-11-11T12:00:00Z'}]}});
-  const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
-  assert.equal(view.contentEl.all().some(e=>e.text==='Dismiss'),false);
-  assert.ok(view.contentEl.all().some(e=>e.text==='Retry'));
-});
-
-
-test('a queued retry refreshes the count and removes the failed row and Dismiss',async()=>{
-  const options={waiting:{meetings:[],failed:[{id:'abc',title:'Call',message:'Try again.',can_retry:true,can_dismiss:true}]}};
-  options.onRetry=()=>{options.waiting={meetings:[],failed:[]};};
-  const f=await fixture(undefined,options), view=f.factories['coppermind-waiting']({app:f.app});
-  await view.refresh();await view.contentEl.all().find(e=>e.text==='Retry').onclick();
-  const texts=view.contentEl.all().map(e=>e.text);
-  assert.ok(texts.includes('0 meetings to review · 0 recordings failed'));
-  assert.ok(texts.includes('You are all caught up. Nothing is waiting for you.'));
-  assert.ok(!texts.includes('Call'));assert.ok(!texts.includes('Dismiss'));
-});
-
-test('a credential forbidden to retry sees the required permissions',async()=>{
-  const f=await fixture(undefined,{waiting:{meetings:[],failed:[{id:'abc',title:'Call',message:'Try again.',can_retry:true}]},retryFail:403});
-  const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
-  const retry=view.contentEl.all().find(e=>e.text==='Retry');await retry.onclick();
-  const message=view.contentEl.all().map(e=>e.text||'').join(' ');
-  assert.match(message,/missing something the companion needs/);
-  assert.match(message,/either pair this device with a code, or make a key with: Read notes, Add and change notes, Hand in recordings and files, Search, and Read and correct people and companies/);
-  assert.match(message,/select it in the companion settings/);assert.equal(retry.disabled,false);
-  assert.doesNotMatch(message,/Check your connection/);
-});
-
-
-test('rejected note details show only the specific field problem',async()=>{
-  const f=await fixture(undefined,{waiting:{meetings:[],failed:[{id:'abc',title:'Call',message:'The meeting note fields were rejected.',field_problems:[{field:'account',reason:'should be a list'}]}]}});
-  const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
-  const text=view.contentEl.all().map(e=>e.text||'').join(' ');
-  assert.ok(text.includes('Details: the "account" field should be a list.'));
-  assert.doesNotMatch(text,/schema|external id/);
-});
-
-test('rejected note with unavailable field details explains the next step',async()=>{
-  const f=await fixture(undefined,{waiting:{meetings:[],failed:[{id:'abc',title:'Call',message:'The meeting note fields were rejected.',field_problems:[],field_problems_unavailable:true}]}});
-  const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
-  const text=view.contentEl.all().map(e=>e.text||'').join(' ');
-  assert.ok(text.includes('Details: the specific field was not recorded. Retry to check the note again.'));
-});
-
-const homeText=view=>view.contentEl.all().map(e=>e.text||'');
-async function home(overrides={}){
-  overrides.waiting??={meetings:[],failed:[],processing:[]};
-  const f=await fixture(undefined,overrides);
-  const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
-  return {...f,view};
-}
-const longName='Quarterly planning workshop recording with a very long descriptive name that would not fit in one line.m4a';
-
-test('Needs you is the front door, and the Imports panel, command and ribbon icon are gone',async()=>{
-  const f=await fixture();
-  assert.equal(f.factories['coppermind-imports'],undefined);
-  assert.equal(f.plugin.commands['show-imports'],undefined);
-  assert.equal(f.plugin.commands['meetings-to-review'].name,'Needs you');
-  assert.ok(f.plugin.ribbons.includes('Needs you'));
-  assert.ok(!f.plugin.ribbons.some(t=>/import/i.test(t)));
-  const view=f.factories['coppermind-waiting']({app:f.app});
-  assert.equal(view.getDisplayText(),'Needs you');
-});
-
-test('Needs you shows ready, failed and still-processing work apart, each with its next step',async()=>{
-  const f=await home({waiting:{
-    meetings:[{title:'Planning',path:'Review/Planning.md',date:''}],
-    failed:[{id:'abc',title:'Bad call',message:'Try the recording again.',can_retry:true,can_dismiss:false}],
-    processing:[{id:'p1',title:'Standup',state:'running',message:'Being transcribed. This can take a while for a long recording.',since:'2026-11-09T15:30:00Z'}],
-  },dropbox:{folder:'Dropbox',items:[{id:'i1',filename:'a.zip',state:'importing',parts:[{import_id:'x'}],error:''}]}});
-  const text=homeText(f.view);
-  assert.ok(text.includes('1 meeting to review · 1 recording failed · 2 in progress'));
-  assert.ok(text.includes('Ready to review (1)'));assert.ok(text.includes('Recordings needing attention (1)'));
-  assert.ok(text.includes('Still processing (2)'));
-  assert.ok(text.includes('Being transcribed. This can take a while for a long recording.'));
-  assert.ok(text.includes('Importing now.'));
-  assert.ok(text.some(t=>t.startsWith('Last updated ')));
-  const order=['Ready to review (1)','Recordings needing attention (1)','Still processing (2)'].map(t=>text.indexOf(t));
-  assert.deepEqual(order,[...order].sort((a,b)=>a-b));
-  assert.ok(!text.includes('You are all caught up. Nothing is waiting for you.'));
-});
-
-test('Needs you says plainly when nothing is waiting',async()=>{
-  const f=await home();
-  const text=homeText(f.view);
-  assert.ok(text.includes('You are all caught up. Nothing is waiting for you.'));
-  assert.ok(!text.some(t=>t.startsWith('Ready to review')||t.startsWith('Recordings needing attention')||t.startsWith('No meetings')||t.startsWith('No recordings')));
-  assert.ok(!text.some(t=>t.startsWith('Still processing')||t.startsWith('Recently imported')));
-});
-
-test('Needs you says it is loading, and a request that never answers ends in a plain message',async()=>{
-  const f=await fixture(undefined,{waitingHang:true,dropbox:{items:[]}});
-  f.plugin.requestTimeoutMs=30;
-  const view=f.factories['coppermind-waiting']({app:f.app});
-  const pending=view.refresh();
-  assert.ok(homeText(view).includes('Loading what needs you…'));
-  await pending;
-  // The imports answered, so only the meetings part says it could not load.
-  const text=homeText(view);
-  assert.ok(!text.includes('Loading what needs you…'));
-  assert.ok(text.some(t=>t.startsWith('Could not load meetings and recordings.')));
-});
-
-test('Needs you says Coppermind is not answering when nothing loads, and recovers on Retry',async()=>{
-  const options={waitingFail:true,dropboxFail:true};
-  const f=await home(options);
-  assert.ok(homeText(f.view).includes('Coppermind is not answering. Check your connection and that this device is still paired, then try again.'));
-  assert.equal(homeText(f.view).some(t=>t==='Ready to review (0)'),false);
-  delete options.waitingFail;delete options.dropboxFail;
-  await f.view.contentEl.all().find(e=>e.text==='Retry').onclick();
-  assert.ok(homeText(f.view).includes('You are all caught up. Nothing is waiting for you.'));
-});
-
-test('Needs you with nothing answering ends in a message instead of waiting for ever',async()=>{
-  const f=await fixture(undefined,{waitingHang:true,dropbox:{items:[]}});
-  f.plugin.requestTimeoutMs=20;
-  const call=f.plugin.call.bind(f.plugin);
-  f.plugin.call=(path,...args)=>path==='/v1/dropbox'?Promise.reject(Object.assign(Error('x'),{timeout:true})):call(path,...args);
-  const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
-  assert.ok(homeText(view).some(t=>t.startsWith('Coppermind is not answering.')));
-  assert.ok(view.contentEl.all().some(e=>e.text==='Retry'));
-});
-
-test('a later failure keeps what was shown and says when it was last updated',async()=>{
-  const options={waiting:{meetings:[{title:'Planning',path:'x.md',date:''}],failed:[],processing:[]}};
-  const f=await home(options);
-  options.waitingFail=true;options.dropboxFail=true;
-  await f.view.refresh();
-  const text=homeText(f.view);
-  assert.ok(text.includes('Ready to review (1)'));
-  assert.ok(text.some(t=>t.startsWith('Coppermind is not answering.')&&/Last updated/.test(t)));
-});
-
-test('a timer refresh redraws nothing while a dismissal is being confirmed',async()=>{
-  const f=await home({waiting:{meetings:[],failed:[{id:'abc',title:'Call',message:'No speech.',can_retry:false,can_dismiss:true}],processing:[]}});
-  await f.view.contentEl.all().find(e=>e.text==='Dismiss').onclick();
-  const before=f.requests.length;
-  await f.view.refresh(true);
-  assert.equal(f.requests.length,before);
-  assert.ok(homeText(f.view).includes('Dismiss entry'));
-});
-
-test('a finished calendar import says how many events, wraps its long name, and offers no empty Open',async()=>{
-  const f=await home({dropbox:{folder:'Dropbox',items:[{id:'c1',filename:longName.replace('.m4a','.zip'),state:'succeeded',event_count:42,parts:[{import_id:'x'}],error:'',first_imported_at:'2026-11-09T15:30:00Z'}]}});
-  const text=homeText(f.view);
-  assert.ok(text.includes('Recently imported'));
-  const name=f.view.contentEl.all().find(e=>e.text===longName.replace('.m4a','.zip'));
-  assert.equal(name.cls,'coppermind-name');
-  assert.ok(text.includes('Calendar imported: 42 events.'));
-  assert.ok(!text.includes('Done'));assert.ok(!text.includes('Open'));
-  assert.ok(text.includes('Dismiss'));
-});
-
-test('a finished file offers Open only when it has reached this device',async()=>{
-  const items=[{id:'f1',filename:'report.pdf',state:'succeeded',parts:[{artifact_id:'a',path:'Artifacts/report.pdf'}],error:''},{id:'f2',filename:'late.pdf',state:'succeeded',parts:[{artifact_id:'b',path:'Artifacts/late.pdf'}],error:''},{id:'f3',filename:'hidden.pdf',state:'succeeded',parts:[{artifact:'stored'}],error:''}];
-  const f=await fixture(undefined,{waiting:{meetings:[],failed:[],processing:[]},dropbox:{items}});
-  let opened;f.app.vault.getAbstractFileByPath=path=>path==='Artifacts/report.pdf'?{path}:null;
-  f.app.workspace.getLeaf=()=>({openFile:async value=>{opened=value;}});
-  const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
-  const opens=view.contentEl.all().filter(e=>e.text==='Open');assert.equal(opens.length,1);
-  await opens[0].onclick();assert.equal(opened.path,'Artifacts/report.pdf');
-  const text=homeText(view);
-  assert.ok(text.includes('It has not reached this device yet. Wait for sync, then refresh.'));
-  assert.ok(text.includes('This device needs permission to read files before it can open it.'));
-});
-
-test('a recording that came in through the folder says it was sent to be transcribed',async()=>{
-  const f=await home({dropbox:{items:[{id:'r1',filename:'standup.m4a',state:'succeeded',intake:'recording',parts:[{artifact_id:'a',path:'Artifacts/standup.m4a'}],error:''}]}});
-  assert.ok(homeText(f.view).some(t=>t.startsWith('Saved, and sent to be transcribed.')));
-});
-
-test('dismissing a finished import calls the dismiss route and removes the card',async()=>{
-  const options={dropbox:{items:[{id:'c1',filename:'cal.zip',state:'succeeded',event_count:3,parts:[{import_id:'x'}],error:''}]}};
-  const f=await home(options);
-  await f.view.contentEl.all().find(e=>e.text==='Dismiss').onclick();
-  assert.ok(homeText(f.view).includes('This only removes the entry from this list. What was imported stays.'));
-  options.dropbox={items:[]};
-  await f.view.contentEl.all().find(e=>e.text==='Dismiss entry').onclick();
-  assert.ok(f.requests.some(r=>r.url.endsWith('/v1/dropbox/c1/dismiss')&&r.method==='POST'));
-  assert.ok(!homeText(f.view).includes('cal.zip'));
-});
-
-test('a failed dismissal of an import keeps the card and says so',async()=>{
-  const f=await home({dismissDropFail:true,dropbox:{items:[{id:'c1',filename:'cal.zip',state:'succeeded',parts:[],error:''}]}});
-  await f.view.contentEl.all().find(e=>e.text==='Dismiss').onclick();
-  await f.view.contentEl.all().find(e=>e.text==='Dismiss entry').onclick();
-  assert.ok(homeText(f.view).includes('Could not dismiss. Check your connection, then try again.'));
-  assert.ok(homeText(f.view).includes('cal.zip'));
-});
-
-test('failed and unsupported imports say what to do and can be dismissed',async()=>{
-  const f=await home({dropbox:{items:[
-    {id:'b1',filename:'broken.ics',state:'failed',parts:[],error:'The calendar file could not be read. Find the file in Dropbox/Failed, fix it and move it back to Dropbox to retry.'},
-    {id:'u1',filename:'notes.xyz',state:'unsupported',parts:[],error:'Add a marker so Coppermind knows what this file is.'},
-  ]}});
-  const text=homeText(f.view);
-  assert.ok(text.includes('Imports needing attention (2)'));
-  assert.ok(text.includes('This file could not be imported.'));assert.ok(text.includes('This kind of file cannot be imported.'));
-  assert.ok(text.some(t=>t.includes('move it back to Dropbox to retry')));
-  assert.ok(text.some(t=>t.includes('2 imports could not be stored')));
-  assert.equal(f.view.contentEl.all().filter(e=>e.text==='Dismiss').length,2);
-});
-
-test('only the five newest finished imports are listed, and the rest are counted',async()=>{
-  const items=Array.from({length:7},(_,i)=>({id:'i'+i,filename:'f'+i+'.zip',state:'succeeded',completed_at:1000+i,parts:[{import_id:'x'}],error:''}));
-  const f=await home({dropbox:{items}});
-  const names=homeText(f.view).filter(t=>/^f\d\.zip$/.test(t));
-  assert.deepEqual(names,['f6.zip','f5.zip','f4.zip','f3.zip','f2.zip']);
-  assert.ok(homeText(f.view).some(t=>t.startsWith('2 older imports are not shown.')));
-});
-
-test('imports still being copied or waiting are shown as processing, with no Dismiss',async()=>{
-  const f=await home({dropbox:{items:[{id:'',filename:'copying.zip',state:'stabilizing',parts:[],error:''},{id:'p',filename:'queued.zip',state:'pending',parts:[],error:''}]}});
-  const text=homeText(f.view);
-  assert.ok(text.includes('Still processing (2)'));
-  assert.ok(text.includes('Waiting for the file to finish syncing.'));assert.ok(text.includes('Waiting to be imported.'));
-  assert.ok(!text.includes('Dismiss'));
-});
-
-const SUMMARY={summary:'Launch plan.',decisions:'',action_items:''};
-test('a note with no recording and no summary has no Write the summary again',async()=>{
-  const f=await fixture(undefined,{state:'suggested'});
-  assert.ok(!f.view.contentEl.all().some(e=>e.text==='Write the summary again'));
-});
-
 test('a read the server never answers is cut off with a plain error',async()=>{
   const f=await fixture(undefined,{page:()=>new Promise(()=>{})});
   f.plugin.requestTimeoutMs=20;
@@ -855,321 +278,6 @@ test('a write that is slow to answer is waited for, not cut off',async()=>{
   f.plugin.requestTimeoutMs=20;
   assert.deepEqual(await f.plugin.call('/v1/anything','POST',{}),{done:true});
 });
-
-test('a refresh already in flight does not redraw over a Dismiss confirmation opened meanwhile',async()=>{
-  const first={waiting:{meetings:[],failed:[{id:'abc',title:'Call',message:'No speech.',can_retry:false,can_dismiss:true}],processing:[]},dropbox:{folder:'Dropbox',items:[]}};
-  const f=await home(first);
-  const call=f.plugin.call.bind(f.plugin);let release;
-  const gate=new Promise(resolve=>{release=resolve;});
-  f.plugin.call=async(path,...args)=>{await gate;return call(path,...args);};
-  const poll=f.view.refresh(true);
-  await f.view.contentEl.all().find(e=>e.text==='Dismiss').onclick();
-  assert.ok(homeText(f.view).includes('Dismiss entry'));
-  // The answer that arrives is different: a new import appeared.
-  f.plugin.call=call;
-  first.dropbox={folder:'Dropbox',items:[{id:'n1',filename:'new.zip',state:'importing',parts:[],error:''}]};
-  release();await poll;
-  assert.ok(homeText(f.view).includes('Dismiss entry'));
-  assert.ok(!homeText(f.view).includes('new.zip'));
-});
-
-test('a dismissal that is under way keeps its progress through a timer refresh',async()=>{
-  const f=await home({waiting:{meetings:[],failed:[{id:'abc',title:'Call',message:'No speech.',can_retry:false,can_dismiss:true}],processing:[]},dismissFail:true});
-  await f.view.contentEl.all().find(e=>e.text==='Dismiss').onclick();
-  await f.view.contentEl.all().find(e=>e.text==='Dismiss entry').onclick();
-  assert.ok(homeText(f.view).includes('Could not dismiss. Check your connection, then try again.'));
-  await f.view.refresh(true);
-  assert.ok(homeText(f.view).includes('Could not dismiss. Check your connection, then try again.'));
-});
-
-test('finished recording has no summary editor or pending warning during frontmatter review',async()=>{
-  const f=await fixture(undefined,{state:'running',recording_generation_mode:'markdown-v1',
-    manual_speaker_review:{source_id:'source',revision:1,speakers:[],candidates:[]}});
-  assert.ok(!f.view.contentEl.all().some(e=>e.text===pendingSummaryNotice));
-  assert.equal(f.view.contentEl.all().filter(e=>e.tag==='textarea').length,0);
-  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed').onclick();
-  assert.equal(JSON.parse(f.requests.find(r=>r.method==='POST').body).meeting_summary,null);
-});
-
-test('a note without a summary that cannot be retried offers no Retry',async()=>{
-  const f=await fixture(undefined,{waiting:{meetings:[],failed:[],processing:[],missing_summaries:[{id:'n1',title:'Planning',path:'Review/Planning.md',date:'',message:'Turn write-ups on first.',can_retry:false}]}});
-  const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
-  assert.ok(view.contentEl.all().some(e=>e.text?.includes('Turn write-ups on first.')));
-  assert.ok(!view.contentEl.all().some(e=>e.text==='Retry'));
-});
-
-// Notes in Review: the one place a recording's note is written up again.
-const step=(state,reason='',when='')=>({state,reason,when});
-const reviewNote=(id,title,over={})=>({id,title,path:'Review/'+title+'.md',date:'2026-11-02T10:00:00+00:00',from_recording:true,can_resummarize:true,writeup:step('written','','2026-11-02T11:00:00+00:00'),...over});
-async function notesScreen(notes,over={}){
-  const state={notes,writeup_on:true};
-  const f=await fixture(undefined,{reviewNotes:()=>state,...over});
-  const view=f.factories['coppermind-notes-in-review']({app:f.app});await view.refresh();
-  f.plugin.notesBusyPollMs=5;f.plugin.notesPollMs=5;
-  return {...f,view,state};
-}
-const textsOf=view=>view.contentEl.all().map(e=>e.text).filter(Boolean);
-const posts=f=>f.requests.filter(r=>r.method==='POST').map(r=>r.url.replace('https://coppermind.example',''));
-
-test('Notes in Review has its own command and lists every note with where it stands in plain words',async()=>{
-  const f=await notesScreen([
-    reviewNote('n1','Planning',{writeup:step('working','','2026-11-02T12:00:00+00:00')}),
-    reviewNote('n2','Budget',{writeup:step('missing')}),
-    reviewNote('n3','Notes from a friend',{from_recording:false,can_resummarize:false,writeup:step('none')}),
-  ]);
-  assert.equal(f.plugin.commands['notes-in-review'].name,'Notes in Review');
-  const texts=textsOf(f.view);
-  assert.ok(texts.includes('3 notes in Review · 1 without a write-up · 1 in progress.'));
-  for(const title of ['Planning','Budget','Notes from a friend'])assert.ok(texts.includes(title));
-  assert.ok(texts.some(t=>t.startsWith('Write-up: being written now, started ')));
-  assert.ok(texts.includes('Write-up: missing.'));
-  assert.ok(texts.includes('Write-up: this note is not from a recording.'));
-  assert.ok(!texts.some(t=>t.startsWith('Suggestions')));
-  const buttons=f.view.contentEl.all().filter(e=>e.tag==='button').map(b=>b.text);
-  assert.equal(buttons.filter(t=>t==='Resummarize').length,1);
-  assert.ok(buttons.includes('Resummarizing…'));
-  assert.ok(!buttons.includes('Retry'));
-});
-
-test('Resummarize starts at once, shows it is running, and the row says when it finished',async()=>{
-  const f=await notesScreen([reviewNote('n1','Planning',{writeup:step('missing')})],{resummarize:()=>{f.state.notes[0].writeup=step('working','',new Date().toISOString());return {status:200,json:{started:true,already:false}};}});
-  const button=f.view.contentEl.all().find(e=>e.text==='Resummarize');await button.onclick();
-  assert.deepEqual(posts(f),['/v1/notes/n1/resummarize']);
-  assert.equal(JSON.parse(f.requests.find(r=>r.url.endsWith('/resummarize')).body).replace,undefined);
-  let texts=textsOf(f.view);
-  assert.ok(texts.some(t=>t.startsWith('Write-up: being written now, started ')));
-  const busy=f.view.contentEl.all().find(e=>e.text==='Resummarizing…');assert.equal(busy.disabled,true);
-  f.state.notes[0].writeup=step('written','','2026-11-25T15:14:00+00:00');
-  await f.view.refresh(true);
-  texts=textsOf(f.view);
-  assert.ok(texts.some(t=>t.startsWith('Write-up: written, finished ')));
-  assert.ok(texts.includes('The write-up has finished.'));
-  assert.equal(f.view.contentEl.all().find(e=>e.text==='Resummarize').disabled,false);
-});
-
-test('a write-up that fails says why on its row and the note is unchanged',async()=>{
-  const f=await notesScreen([reviewNote('n1','Planning')],{resummarize:()=>{f.state.notes[0].writeup=step('failed','The writing service stopped before finishing the note. The note is unchanged.','2026-11-25T15:14:00+00:00');return {status:200,json:{started:true}};}});
-  await f.view.contentEl.all().find(e=>e.text==='Resummarize').onclick();
-  assert.ok(textsOf(f.view).some(t=>t.startsWith('Write-up: failed at ')&&t.includes('The writing service stopped before finishing the note. The note is unchanged.')));
-});
-
-test('a refused Resummarize shows the server words on the row and the button works again',async()=>{
-  const f=await notesScreen([reviewNote('n1','Planning')],{resummarize:()=>({status:422,json:{message:'Recordings are not set up to be written up.'}})});
-  const button=f.view.contentEl.all().find(e=>e.text==='Resummarize');await button.onclick();
-  assert.ok(textsOf(f.view).includes('Recordings are not set up to be written up.'));
-  assert.equal(button.disabled,false);assert.equal(button.text,'Resummarize');
-});
-
-test('Resummarize all missing writes up only the notes without a write-up',async()=>{
-  const f=await notesScreen([reviewNote('n1','Planning',{writeup:step('missing')}),reviewNote('n2','Budget'),reviewNote('n3','Review',{writeup:step('failed','It failed.')}),reviewNote('n4','Other',{from_recording:false,can_resummarize:false,writeup:step('none')})]);
-  const all=f.view.contentEl.all().find(e=>e.text==='Resummarize all missing (2)');
-  assert.ok(all);
-  await all.onclick();
-  assert.deepEqual(posts(f),['/v1/notes/n1/resummarize','/v1/notes/n3/resummarize']);
-  assert.ok(textsOf(f.view).some(t=>t.startsWith('Started 2 notes.')));
-});
-
-test('with nothing missing there is no bulk button, and an empty Review says so',async()=>{
-  const f=await notesScreen([reviewNote('n1','Planning')]);
-  assert.ok(!f.view.contentEl.all().some(e=>e.text?.startsWith('Resummarize all missing')));
-  const empty=await notesScreen([]);
-  assert.ok(textsOf(empty.view).includes('No notes are waiting in Review. Notes from new recordings appear here.'));
-});
-
-test('clicking a title opens the note, and a note not yet in the vault says so',async()=>{
-  const f=await notesScreen([reviewNote('n1','Planning')]);
-  const opened=[];f.app.workspace.getLeaf=()=>({openFile:async file=>opened.push(file.path)});
-  await f.view.contentEl.all().find(e=>e.text==='Planning'&&e.tag==='button').onclick();
-  assert.deepEqual(opened,['Review/Planning.md']);
-  f.app.vault.getAbstractFileByPath=()=>null;
-  await f.view.contentEl.all().find(e=>e.text==='Planning'&&e.tag==='button').onclick();
-  assert.ok(textsOf(f.view).includes('That note is not in this vault yet. Wait for sync, then refresh.'));
-});
-
-test('a rewrite held back because the note was edited is compared, and replaces only on request',async()=>{
-  const kept={when:'2026-11-25T15:14:00+00:00',if_match:'sha256:1',difference:['--- your note','+++ new write-up','-My own line','+Better body']};
-  const f=await notesScreen([reviewNote('n1','Planning',{kept})]);
-  assert.ok(textsOf(f.view).includes('Write-up: a new write-up is ready. Your note has not been changed yet.'));
-  assert.ok(!textsOf(f.view).some(t=>t.startsWith('Write-up: written')));
-  await f.view.contentEl.all().find(e=>e.text==='Compare with my note').onclick();
-  const modal=f.modals[0];
-  assert.ok(modal.contentEl.all().some(e=>e.text==='You edited this note. Red is yours, green is the new write-up.'));
-  assert.ok(!modal.contentEl.all().some(e=>/saved in Coppermind|swaps your text/.test(e.text||'')));
-  assert.ok(modal.contentEl.all().some(e=>e.text==='+Better body'&&e.cls==='coppermind-added'));
-  assert.ok(modal.contentEl.all().some(e=>e.text==='-My own line'&&e.cls==='coppermind-removed'));
-  modal.contentEl.all().find(e=>e.text==='Keep my note').onclick();
-  assert.deepEqual(posts(f),[]);
-  await f.view.contentEl.all().find(e=>e.text==='Compare with my note').onclick();
-  await f.modals[1].contentEl.all().find(e=>e.text==='Replace my note with the new write-up').onclick();
-  const request=f.requests.find(r=>r.url.endsWith('/resummarize'));
-  assert.deepEqual(JSON.parse(request.body),{replace:true,if_match:'sha256:1'});
-  assert.ok(textsOf(f.view).includes('Replaced with the new write-up.'));
-});
-
-test('a server that stops answering, or a key without permission, is said plainly',async()=>{
-  const down=await fixture(undefined,{reviewNotesFail:true});
-  const view=down.factories['coppermind-notes-in-review']({app:down.app});await view.refresh();
-  assert.ok(textsOf(view).includes('Coppermind is not answering. Check your connection and that this device is still paired, then try again.'));
-  const denied=await fixture(undefined,{reviewNotesFail:403});
-  const second=denied.factories['coppermind-notes-in-review']({app:denied.app});await second.refresh();
-  assert.ok(textsOf(second).some(t=>t.startsWith('This key is missing something the companion needs.')));
-});
-
-test('Needs you has no per-note Retry or bulk write-up, and points to Notes in Review',async()=>{
-  const missing=[{id:'n1',title:'Planning',path:'Review/Planning.md',date:'',message:'The AI service did not answer. Open Notes in Review and press Resummarize to write it again from the same transcript.',can_retry:true},{id:'n2',title:'Budget',path:'Review/Budget.md',date:'',message:'It failed.',can_retry:true}];
-  const f=await fixture(undefined,{waiting:{meetings:[],failed:[],processing:[],missing_summaries:missing}});
-  const view=f.factories['coppermind-waiting']({app:f.app});await view.refresh();
-  const texts=textsOf(view);
-  assert.ok(texts.includes('Notes without a summary (2)'));
-  assert.ok(!texts.includes('Retry')&&!texts.includes('Write up every note without a summary'));
-  assert.ok(texts.some(t=>t.includes('Notes in Review')&&t.includes('Resummarize')));
-  assert.ok(!texts.some(t=>/Enrich/.test(t)));
-  let opened=0;f.plugin.openNotesInReview=async()=>{opened++;};
-  await view.contentEl.all().find(e=>e.text==='Open Notes in Review').onclick();
-  assert.equal(opened,1);
-  assert.equal(f.requests.filter(r=>r.method==='POST').length,0);
-});
-
-test('the review panel no longer writes a summary again and points to Notes in Review',async()=>{
-  const f=await fixture(undefined,{recording_meeting:{candidates:[],calendar_hash:'c'},meeting_summary:{summary:'Launch plan.',decisions:'',action_items:''},job_id:'job-1',state:'suggested'});
-  const texts=textsOf(f.view);
-  assert.ok(!texts.includes('Write the summary again')&&!texts.includes('Write a summary'));
-  assert.ok(texts.includes('To write this note up again, use Resummarize in Notes in Review.'));
-  assert.ok(texts.includes('Open Notes in Review'));
-});
-
-test('more notes in Review than one page are all loaded, counted and offered to Resummarize all missing',async()=>{
-  const all=Array.from({length:5},(_,i)=>reviewNote('n'+i,'Note '+i,{writeup:step(i>=3?'missing':'written')}));
-  const asked=[];
-  const f=await fixture(undefined,{reviewNotes:req=>{
-    const cursor=new URL(req.url).searchParams.get('cursor')||'0';asked.push(cursor);
-    const from=Number(cursor);const next=from+2;
-    return {notes:all.slice(from,next),total:5,next_cursor:next<5?String(next):null,writeup_on:true};}});
-  const view=f.factories['coppermind-notes-in-review']({app:f.app});await view.refresh();
-  assert.deepEqual(asked,['0','2','4']);
-  const texts=textsOf(view);
-  assert.ok(texts.includes('5 notes in Review · 2 without a write-up.'));
-  for(let i=0;i<5;i++)assert.ok(texts.includes('Note '+i));
-  await view.contentEl.all().find(e=>e.text==='Resummarize all missing (2)').onclick();
-  assert.deepEqual(posts(f),['/v1/notes/n3/resummarize','/v1/notes/n4/resummarize']);
-});
-
-test('the review panel shows no field to accept, and warns when a rewrite would be discarded',async()=>{
-  const f=await fixture(undefined,{rewrite_running:true,suggestions:[{kind:'tags',field:'tags',value:['a'],confidence:1,reason:'',candidates:[],contact_ids:[]}]});
-  const texts=textsOf(f.view);
-  assert.ok(!f.view.contentEl.all().some(e=>e.tag==='toggle'));
-  assert.ok(!texts.includes('tags'));
-  assert.ok(texts.includes('A new write-up is being made for this note.'));
-  const calm=await fixture(undefined,{});
-  assert.ok(!textsOf(calm.view).includes('A new write-up is being made for this note.'));
-});
-
-test('rows keep their place while the screen is open and re-sort only on Refresh',async()=>{
-  const f=await notesScreen([reviewNote('n1','Alpha'),reviewNote('n2','Beta'),reviewNote('n3','Gamma',{writeup:step('missing')})]);
-  const titles=()=>f.view.contentEl.all().filter(e=>e.tag==='button'&&e.cls==='coppermind-title').map(b=>b.text);
-  assert.deepEqual(titles(),['Gamma','Alpha','Beta']);
-  f.state.notes[1].writeup=step('failed','It failed.');
-  await f.view.refresh(true);
-  assert.deepEqual(titles(),['Gamma','Alpha','Beta']);
-  assert.ok(textsOf(f.view).some(t=>t.startsWith('Write-up: failed at')||t.startsWith('Write-up: failed')));
-  await f.view.contentEl.all().find(e=>e.text==='Resummarize'&&true).onclick();
-  assert.deepEqual(titles(),['Gamma','Alpha','Beta']);
-  await f.view.contentEl.all().find(e=>e.text==='Refresh').onclick();
-  assert.deepEqual(titles(),['Beta','Gamma','Alpha']);
-});
-
-test('when write-ups are off, no button that cannot work is offered and it is said once',async()=>{
-  const f=await notesScreen([reviewNote('n1','Alpha',{can_resummarize:false,writeup:step('missing')}),reviewNote('n2','Beta',{can_resummarize:false,writeup:step('failed','x')})],{});
-  f.state.writeup_on=false;await f.view.refresh(false,true);
-  const texts=textsOf(f.view);
-  assert.equal(texts.filter(t=>t.startsWith('Write-ups are off')).length,1);
-  const buttons=f.view.contentEl.all().filter(e=>e.tag==='button').map(b=>b.text);
-  assert.ok(!buttons.includes('Resummarize')&&!buttons.some(t=>t.startsWith('Resummarize all')));
-});
-
-test('failures starting the bulk run are grouped by reason, not repeated per note',async()=>{
-  const why='Recordings are not set up to be written up.';
-  const f=await notesScreen([reviewNote('n1','Alpha',{writeup:step('missing')}),reviewNote('n2','Beta',{writeup:step('missing')}),reviewNote('n3','Gamma',{writeup:step('missing')})],{resummarize:()=>({status:422,json:{message:why}})});
-  await f.view.contentEl.all().find(e=>e.text?.startsWith('Resummarize all missing')).onclick();
-  const flash=textsOf(f.view).find(t=>t.startsWith('No note could be started.'));
-  assert.equal(flash.split(why).length-1,1);
-  assert.ok(flash.includes('3 notes not started (Alpha, Beta, Gamma)'));
-});
-
-test('a note that leaves Review while it was being written is said at the top',async()=>{
-  const f=await notesScreen([reviewNote('n1','Retro',{writeup:step('working','',new Date().toISOString())}),reviewNote('n2','Other')]);
-  f.state.notes=f.state.notes.filter(n=>n.id!=='n1');
-  await f.view.refresh(true);
-  assert.ok(textsOf(f.view).includes('"Retro" left Review while it was being written up.'));
-});
-
-test('a long list can be filtered as you type, and rows are compact',async()=>{
-  const many=Array.from({length:33},(_,i)=>reviewNote('n'+i,i===20?'Vendor call':'Meeting '+i));
-  const f=await notesScreen(many);
-  const find=f.view.contentEl.all().find(e=>e.tag==='input');
-  assert.equal(find.attr.placeholder,'Find a note by title');
-  find.value='vendor';find.oninput();
-  const titles=f.view.contentEl.all().filter(e=>e.tag==='button'&&e.cls==='coppermind-title').map(b=>b.text);
-  assert.deepEqual(titles,['Vendor call']);
-  assert.ok(textsOf(f.view).includes('Showing 1 of 33.'));
-  find.value='zzz';find.oninput();
-  assert.ok(textsOf(f.view).includes('No note in Review has "zzz" in its title.'));
-  // The box keeps what was typed when the list redraws.
-  f.state.notes[0].writeup=step('failed','x');await f.view.refresh(true);
-  assert.equal(f.view.contentEl.all().find(e=>e.tag==='input'),find);
-  find.value='';find.oninput();
-  const card=f.view.contentEl.all().find(e=>e.cls?.includes('coppermind-row'));
-  assert.ok(card.children.length<=5);
-});
-
-// A reviewed note that could not be filed is a row on Notes in Review: one sentence and Try again.
-test('a reviewed note that could not be filed is a row with one sentence and Try again',async()=>{
-  const sentence='This note could not be filed because its folder could not be written to.';
-  const f=await notesScreen([
-    reviewNote('n1','Planning'),
-    reviewNote('n2','Hallway chat',{from_recording:true,filing:{problem:sentence}}),
-  ]);
-  const texts=textsOf(f.view);
-  assert.ok(texts.includes(sentence));
-  assert.equal(texts.filter(t=>t==='Try again').length,1);
-  assert.ok(texts.indexOf('Hallway chat')<texts.indexOf('Planning'),'the row that could not be filed comes first');
-  assert.ok(!texts.some(t=>/needs attention|nothing needs you/i.test(t)));
-  assert.ok(!texts.slice(texts.indexOf('Hallway chat'),texts.indexOf('Planning')).some(t=>t.startsWith('Write-up')||t.startsWith('Suggestions')));
-});
-
-test('Try again files the note, and the row goes when it is filed',async()=>{
-  const sentence='This note could not be filed.';
-  const f=await notesScreen([reviewNote('n2','Hallway chat',{filing:{problem:sentence}})],{fileAgain:()=>{f.state.notes=[];return {status:200,json:{filed:true,problem:''}};}});
-  await f.view.contentEl.all().find(e=>e.text==='Try again').onclick();
-  assert.deepEqual(posts(f),['/v1/notes/n2/file-again']);
-  assert.ok(!textsOf(f.view).includes(sentence));
-  assert.ok(!textsOf(f.view).includes('Try again'));
-});
-
-test('Try again that fails says why on the row and offers it again',async()=>{
-  const first='This note could not be filed.',second='This note could not be filed because its folder could not be written to.';
-  const f=await notesScreen([reviewNote('n2','Hallway chat',{filing:{problem:first}})],{fileAgain:()=>{f.state.notes[0].filing={problem:second};return {status:200,json:{filed:false,problem:second}};}});
-  await f.view.contentEl.all().find(e=>e.text==='Try again').onclick();
-  const texts=textsOf(f.view);
-  assert.equal(texts.filter(t=>t===second).length,1,'the reason is said once, on the row');
-  assert.ok(texts.includes('Tried again just now.'));
-  assert.ok(texts.includes('Try again'));
-});
-
-test('a reviewed note that has not failed shows no filing row',async()=>{
-  const f=await notesScreen([reviewNote('n1','Planning')]);
-  assert.ok(!textsOf(f.view).includes('Try again'));
-});
-
-test('a note dated with a day only shows that day, not the one before',async()=>{
-  const was=process.env.TZ;process.env.TZ='America/Chicago';
-  try{
-    const f=await notesScreen([reviewNote('n1','Hallway chat',{date:'2026-11-26'})]);
-    const day=f.view.contentEl.all().find(e=>e.cls==='coppermind-hint'&&/^[A-Z][a-z]{2} \d+$/.test(e.text||''));
-    assert.equal(day.text,'Nov 26');
-  }finally{if(was===undefined)delete process.env.TZ;else process.env.TZ=was;}
-});
-
 test('the pairing dialog points to the page that shows the code',async()=>{
   const f=await fixture();
   f.plugin.commands['pair-device'].callback();
@@ -1178,53 +286,326 @@ test('the pairing dialog points to the page that shows the code',async()=>{
   assert.doesNotMatch(text,/Obsidian Sync|Pair companion/);
 });
 
-// Notes arrive filled in: nothing is proposed, so nothing is offered to accept.
-const proposalWords=/enrich|suggestion|earlier version/i;
-const wordsOf=view=>view.contentEl.all().flatMap(e=>[e.text,e.title,e.attr?.placeholder]).filter(Boolean);
-const oldServerFields=[{kind:'type',field:'type',index:0,value:'personal',confidence:1,reason:'',candidates:[],contact_ids:[]},{kind:'filename',field:'',index:1,value:'New title',confidence:1,reason:'',candidates:[],contact_ids:[]},{kind:'event',field:'event',index:2,value:'x',confidence:1,reason:'',candidates:[],contact_ids:[]}];
-test('the review panel never speaks of enrichment, suggestions or an earlier version',async()=>{
-  const cases=[
-    {},
-    {stale:true,suggestions:[...oldServerFields,proposal(3,.9)],job_id:'job',meeting_summary:summaryProposal,recording_meeting:{calendar_hash:'c',candidates:[]}},
-    {state:'failed',suggestion_error:'The model timed out.',suggestions_enabled:false,manual_speaker_review:voiceManual([match('a','Alex'),match('b','Blair')])},
-    {state:'running',manual_speaker_review:voiceManual([match('a','Alex')])},
-    {suggestions:[proposal(0,.9,'person:a')],manual_speaker_review:voiceManual([match('b','Blair')])},
-  ];
-  for(const over of cases){
-    const f=await fixture(undefined,over);
-    const bad=wordsOf(f.view).filter(t=>proposalWords.test(t));
-    assert.deepEqual(bad,[],JSON.stringify(over));
-  }
+
+// ---- the Review screen ----------------------------------------------------------------
+const BASE='https://coppermind.example';
+const CHOICES={keys:{type:'type',account:'account',tags:'tags',reviewed:'reviewed',meeting:'calendar_event',attendees:'attendees'},types:['work','personal','reference'],accounts:['Acme','Contoso'],tags:['vsphere','vsan'],tags_closed:false};
+const MEETINGS=[{event_id:'a',title:'Acme architecture review',start:'2026-11-26T10:00:00-06:00',end:'2026-11-26T11:00:00-06:00'},{event_id:'b',title:'Pipeline review',start:'2026-11-26T11:30:00-06:00',end:'2026-11-26T12:00:00-06:00'}];
+const written={state:'written',reason:'',when:''};
+const note=(id,title,over={})=>({id,title,path:'Review/'+title+'.md',date:'2026-11-26T10:02:00-06:00',from_recording:true,can_resummarize:true,writeup:written,edited:false,meeting:{selected:'a',candidates:MEETINGS},...over});
+const frontmatter=(over={})=>({type:'reference',account:[],tags:[],calendar_event:'a',attendees:[],reviewed:false,...over});
+const ok=json=>({status:200,json});
+// A server that answers the three reads the screen makes, from state the test can change.
+async function review(state={}){
+  const s={notes:[],failed:[],processing:[],models:{default:'gpt-default',models:['gpt-default','claude-opus-5-5'],problem:''},files:{},...state};
+  for(const n of s.notes)s.files[n.path]??=frontmatter();
+  const calls=[];
+  const f=await fixture(undefined,{files:s.files,routes:async(req,url)=>{
+    const p=url.pathname;
+    if(s.respond){const answered=await s.respond(req,p);if(answered)return answered;}
+    if(p==='/v1/recordings/waiting')return ok({meetings:[],failed:s.failed,processing:s.processing,missing_summaries:[]});
+    if(p==='/v1/review/notes')return ok({notes:s.notes,total:s.notes.length,next_cursor:null,writeup_on:true,choices:CHOICES});
+    if(p==='/v1/review/models')return s.models===false?{status:500,json:{message:'down'}}:ok(s.models);
+    if(req.method==='POST'){calls.push({path:p,body:req.body?JSON.parse(req.body):null});return ok({started:true,already:false,filed:true,reopened:true,meeting:'x'});}
+    if(p.startsWith('/v1/notes/')&&req.method==='GET')return ok({path:s.filedPath||'work/2026/2026-11/Note.md'});
+    return null;}});
+  f.plugin.pollMs=1e9;f.plugin.busyPollMs=1e9;
+  const view=f.factories['coppermind-review']({app:f.app});await view.onOpen();
+  const texts=()=>view.contentEl.all().map(e=>e.text).filter(Boolean);
+  const button=text=>view.contentEl.all().find(e=>e.tag==='button'&&e.text===text);
+  const buttons=text=>view.contentEl.all().filter(e=>e.tag==='button'&&e.text===text);
+  return {...f,s,view,calls,texts,button,buttons};
+}
+const plain=x=>JSON.parse(JSON.stringify(x));
+const posted=f=>f.calls.map(c=>c.path);
+const BANNED=/needs you|needs attention|enrich|suggestion|stale|notes in review|last updated|compare with|resummarize all|earlier version/i;
+
+test('one command and one ribbon icon open Review, and the older screens are let go',async()=>{
+  const f=await fixture(undefined,{});
+  assert.deepEqual(Object.keys(f.plugin.commands).sort(),['manage-people','pair-device','review']);
+  assert.equal(f.plugin.commands.review.name,'Review');
+  assert.deepEqual(f.plugin.ribbons,['Review']);
+  assert.deepEqual(Object.keys(f.factories).sort(),['coppermind-people','coppermind-review']);
+  assert.deepEqual(f.detached,['coppermind-waiting','coppermind-notes-in-review','coppermind-imports']);
+  assert.equal(f.requests.length,0);
 });
-test('Notes in Review never speaks of enrichment or suggestions, even if an older server still sends them',async()=>{
-  const f=await notesScreen([reviewNote('n1','Planning',{can_enrich:true,suggestions:step('failed','x')}),reviewNote('n2','Budget',{writeup:step('missing'),suggestions:step('working')})]);
-  f.state.suggestions_on=false;await f.view.refresh(false,true);
-  assert.deepEqual(wordsOf(f.view).filter(t=>proposalWords.test(t)),[]);
-  const needs=await home({waiting:{meetings:[],failed:[],processing:[],missing_summaries:[{id:'n1',title:'Planning',path:'Review/Planning.md',date:'',message:'It failed.'}]}});
-  assert.deepEqual(wordsOf(needs.view).filter(t=>/enrich/i.test(t)),[]);
+
+test('the command opens the screen and it reads what is waiting, what failed and what is under way',async()=>{
+  const f=await review({notes:[note('n1','Acme call')]});
+  await f.plugin.commands.review.callback();
+  await new Promise(r=>setTimeout(r,20));
+  const paths=f.requests.map(r=>new URL(r.url).pathname);
+  for(const wanted of ['/v1/recordings/waiting','/v1/review/notes','/v1/review/models'])assert.ok(paths.includes(wanted),wanted);
+  assert.ok(!paths.some(p=>p.includes('dropbox')),'imports are not read');
 });
-test('there is exactly one finishing button, Mark reviewed',async()=>{
-  for(const over of [{},{meeting_summary:summaryProposal,job_id:'job'},{state:'suggested',speakers_in_note:true,named_in_note:[{label:'Unknown voice 7',name:'Tom Reed'}]},{suggestions:[...oldServerFields,proposal(3,.4)]}]){
-    const f=await fixture(undefined,over);
-    const finishing=f.view.contentEl.all().filter(e=>e.tag==='button'&&/mark reviewed|apply/i.test(e.text||''));
-    assert.deepEqual(finishing.map(b=>b.text),['Mark reviewed'],JSON.stringify(over));
-    assert.equal(finishing[0].cls,'mod-cta');
-    assert.ok(!f.view.contentEl.all().some(e=>/select all/i.test(e.text||'')));
-  }
+
+test('trouble comes first, then work under way, then a card for each waiting note, newest first',async()=>{
+  const f=await review({
+    notes:[note('n2','Newest call'),note('n1','Older call')],
+    failed:[{id:'r1',title:'Fabrikam outage review',message:'The summary did not finish. The recording and transcript are safe.',can_retry:true,can_dismiss:true}],
+    processing:[{id:'r2',title:'Hallway chat',message:'Being transcribed. This can take a while for a long recording.',since:'2026-11-26T12:31:00-06:00'}]});
+  const titles=view=>view.contentEl.children.map(c=>c.all().find(e=>['strong','button'].includes(e.tag)&&e.cls?.match(/name|title/))?.text).filter(Boolean);
+  assert.deepEqual(titles(f.view),['Fabrikam outage review','Hallway chat','Newest call','Older call']);
+  assert.ok(f.texts().includes('2 waiting'));
+  assert.ok(f.texts().includes('The summary did not finish. The recording and transcript are safe.'));
+  assert.ok(f.texts().includes('Being transcribed. This can take a while for a long recording.'));
+  assert.ok(f.texts().every(t=>!BANNED.test(t)),f.texts().filter(t=>BANNED.test(t)).join('|'));
 });
-test('marking reviewed sends no filename link risk, even when an older server proposes a new title',async()=>{
-  const f=await fixture(undefined,{suggestions:oldServerFields,job_id:'job'});
-  assert.ok(!f.view.contentEl.all().some(e=>/filename/i.test(e.text||'')));
-  await f.view.contentEl.all().find(e=>e.text==='Mark reviewed').onclick();
-  const body=JSON.parse(f.requests.find(r=>r.method==='POST'&&r.url.endsWith('/review')).body);
-  assert.ok(!('accept_link_risk' in body));
-  assert.deepEqual(body.selected,[]);
-  assert.equal(body.confirmation,'Complete review');
+
+test('with nothing to do the screen says so in plain words',async()=>{
+  const f=await review();
+  assert.ok(f.texts().includes('Nothing to review.'));
+  assert.ok(f.texts().every(t=>!BANNED.test(t)));
 });
-test('a note that arrived with its type, account and tags filled in shows no switches',async()=>{
-  const fields=[{kind:'account',field:'account',index:0,value:['Acme'],confidence:.9,reason:'',candidates:[],contact_ids:[]},{kind:'tags',field:'tags',index:1,value:['planning'],confidence:.9,reason:'',candidates:[],contact_ids:[]},{kind:'type',field:'type',index:2,value:'personal',confidence:.9,reason:'',candidates:[],contact_ids:[]}];
-  for(const suggestions of [[],fields]){
-    const f=await fixture(undefined,{note:{frontmatter:{reviewed:false,type:'personal',account:['Acme'],tags:['planning']}},suggestions});
-    assert.equal(f.view.contentEl.all().filter(e=>e.tag==='toggle').length,0);
-  }
+
+test('the title opens the note, and a note that has not reached this device says so',async()=>{
+  const f=await review({notes:[note('n1','Acme call'),note('n2','Late call')]});
+  delete f.files['Review/Late call.md'];
+  f.view.data.notes=f.s.notes;f.view.render();
+  await f.button('Acme call').onclick();
+  assert.deepEqual(f.opened,['Review/Acme call.md']);
+  await f.button('Late call').onclick();
+  assert.deepEqual(f.opened,['Review/Acme call.md']);
+  assert.ok(f.notices.includes('This note has not reached this device yet.'));
+});
+
+test('a card shows the time, and a note dated with a day only shows that day, not the one before',async()=>{
+  const f=await review({notes:[note('n1','Hallway chat',{date:'2026-11-26'})]});
+  assert.ok(f.texts().includes(new Date(2026,10,26).toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'})));
+  assert.ok(!f.texts().some(t=>/Nov 25/.test(t)));
+});
+
+test('the card is filled in from the note, and choosing a type writes straight to its properties',async()=>{
+  const f=await review({notes:[note('n1','Acme call')],files:{'Review/Acme call.md':frontmatter({type:'reference',account:['Acme'],tags:['vsphere']})}});
+  assert.ok(f.texts().includes('vsphere')&&f.texts().includes('Acme'));
+  assert.match(f.button('Reference').cls,/chosen/);
+  await f.button('Work').onclick();
+  assert.equal(f.files['Review/Acme call.md'].type,'work');
+  assert.deepEqual(plain(f.writes.at(-1).fm.account),['Acme']);
+  assert.match(f.button('Work').cls,/chosen/);
+  assert.doesNotMatch(f.button('Reference').cls,/chosen/);
+  assert.deepEqual(posted(f),[]);
+});
+
+test('an account or a tag is added from what is known or new, removed with its ×, and a closed list refuses a stranger',async()=>{
+  const f=await review({notes:[note('n1','Acme call')],files:{'Review/Acme call.md':frontmatter({account:['Acme'],tags:['vsphere']})}});
+  const add=label=>f.view.contentEl.all().find(e=>e.tag==='input'&&e.attr?.list?.startsWith('coppermind-'+label));
+  add('account').value='contoso';await add('account').onchange();
+  assert.deepEqual(plain(f.files['Review/Acme call.md'].account),['Acme','Contoso']);
+  add('tags').value='brand-new';await add('tags').onchange();
+  assert.deepEqual(plain(f.files['Review/Acme call.md'].tags),['vsphere','brand-new']);
+  await f.view.contentEl.all().find(e=>e.attr?.['aria-label']==='Remove vsphere').onclick();
+  assert.deepEqual(plain(f.files['Review/Acme call.md'].tags),['brand-new']);
+  const closed=await review({notes:[note('n1','Acme call')]});
+  closed.view.data.page.choices.tags_closed=true;closed.view.render();
+  const tag=closed.view.contentEl.all().find(e=>e.tag==='input'&&e.attr?.list?.startsWith('coppermind-tags'));
+  tag.value='stranger';await tag.onchange();
+  assert.deepEqual(plain(closed.files['Review/Acme call.md'].tags),[]);
+  assert.ok(closed.texts().includes('“stranger” is not one of your tags.'));
+});
+
+test('the meeting is a dropdown of the day, and choosing one tells Coppermind',async()=>{
+  const f=await review({notes:[note('n1','Acme call')]});
+  const select=f.view.contentEl.all().find(e=>e.tag==='select'&&e.children.some(o=>o.value==='b'));
+  assert.equal(select.value,'a');
+  assert.deepEqual(select.children.map(o=>o.value),['','a','b']);
+  select.value='b';await select.onchange();
+  assert.deepEqual(f.calls,[{path:'/v1/notes/n1/meeting',body:{event_id:'b'}}]);
+});
+
+test('a meeting that could not be changed says so in one sentence and the card stays usable',async()=>{
+  const f=await review({notes:[note('n1','Acme call')],respond:(req,p)=>p.endsWith('/meeting')?{status:422,json:{message:'That meeting is not on the calendar for this day.'}}:null});
+  const select=f.view.contentEl.all().find(e=>e.tag==='select'&&e.children.some(o=>o.value==='b'));
+  select.value='b';await select.onchange();
+  assert.ok(f.texts().includes('That meeting is not on the calendar for this day.'));
+  assert.ok(f.button('Reviewed'));
+});
+
+test('Who spoke has its place on the card and shows who was matched',async()=>{
+  const f=await review({notes:[note('n1','Acme call')],files:{'Review/Acme call.md':frontmatter({attendees:['[[People/Dana Whitfield]]','Priya Raman','Dana Whitfield'],type:'work'})}});
+  assert.ok(f.view.contentEl.all().some(e=>e.cls==='coppermind-who'));
+  assert.ok(f.texts().includes('Who spoke'));
+  assert.ok(f.texts().includes('Dana Whitfield, Priya Raman'));
+});
+
+test('Reviewed sets the property, then the card says Filed with where, and Undo brings it back',async()=>{
+  const f=await review({notes:[note('n1','Acme call')],filedPath:'work/2026/2026-11/Acme call.md'});
+  await f.button('Reviewed').onclick();
+  assert.equal(f.files['Review/Acme call.md'].reviewed,true);
+  assert.ok(f.texts().includes('Reviewed. Filing…'));
+  // The server files the note and it leaves Review.
+  await new Promise(r=>setTimeout(r,10));
+  f.s.notes=[];await f.view.refresh(true);await new Promise(r=>setTimeout(r,10));
+  assert.ok(f.texts().includes('Filed ✓ work › 2026 › 2026-11'),f.texts().join('|'));
+  assert.ok(f.texts().includes('Acme call'));
+  await f.button('Undo').onclick();
+  assert.deepEqual(posted(f),['/v1/notes/n1/reopen']);
+  assert.ok(!f.texts().some(t=>t.startsWith('Filed')));
+});
+
+test('Undo before the note is filed unticks Reviewed on the note itself',async()=>{
+  const f=await review({notes:[note('n1','Acme call')]});
+  await f.button('Reviewed').onclick();
+  await f.button('Undo').onclick();
+  assert.equal(f.files['Review/Acme call.md'].reviewed,false);
+  assert.deepEqual(posted(f),[]);
+  assert.ok(f.button('Reviewed'));
+});
+
+test('a note that has not reached this device shows its title and waits, with nothing to press',async()=>{
+  const f=await review({notes:[note('n1','Acme call')]});
+  delete f.files['Review/Acme call.md'];f.view.render();
+  assert.ok(f.texts().includes('Waiting to sync.'));
+  assert.ok(!f.button('Reviewed')&&!f.button('Resummarize'));
+  assert.equal(f.writes.length,0);
+  await f.button('Acme call').onclick();
+  assert.deepEqual(f.opened,[]);
+  assert.ok(f.notices.includes('This note has not reached this device yet.'));
+});
+
+test('the model choice lists what the connection reports, starts on the configured one, and applies to one run',async()=>{
+  const f=await review({notes:[note('n1','Acme call')]});
+  const select=f.view.contentEl.all().find(e=>e.attr?.['aria-label']==='Model');
+  assert.deepEqual(select.children.map(o=>o.value),['gpt-default','claude-opus-5-5']);
+  assert.equal(select.value,'gpt-default');
+  await f.button('Resummarize').onclick();
+  assert.deepEqual(f.calls.at(-1),{path:'/v1/notes/n1/resummarize',body:{}});
+  const again=f.view.contentEl.all().find(e=>e.attr?.['aria-label']==='Model');
+  again.value='claude-opus-5-5';again.onchange();
+  await f.button('Resummarize').onclick();
+  assert.deepEqual(f.calls.at(-1),{path:'/v1/notes/n1/resummarize',body:{model:'claude-opus-5-5'}});
+  assert.equal(f.requests.filter(r=>new URL(r.url).pathname==='/v1/review/models').length,1);
+});
+
+test('with only one model, or a server that will not list them, there is no choice to make',async()=>{
+  const one=await review({notes:[note('n1','Acme call')],models:{default:'gpt-default',models:['gpt-default'],problem:''}});
+  assert.ok(!one.view.contentEl.all().some(e=>e.attr?.['aria-label']==='Model'));
+  assert.ok(one.button('Resummarize'));
+  const down=await review({notes:[note('n1','Acme call')],models:false});
+  assert.ok(!down.view.contentEl.all().some(e=>e.attr?.['aria-label']==='Model'));
+  await down.button('Resummarize').onclick();
+  assert.deepEqual(down.calls.at(-1),{path:'/v1/notes/n1/resummarize',body:{}});
+});
+
+test('Resummarize shows it is running, and says what became of it',async()=>{
+  const f=await review({notes:[note('n1','Acme call')]});
+  await f.button('Resummarize').onclick();
+  f.s.notes=[note('n1','Acme call',{writeup:{state:'working',reason:'',when:'2026-11-26T12:31:00-06:00'}})];
+  await f.view.refresh();
+  assert.ok(f.texts().some(t=>t.startsWith('Summarizing, started')));
+  assert.equal(f.button('Resummarizing…').disabled,true);
+  f.s.notes=[note('n1','Acme call')];await f.view.refresh();
+  assert.ok(f.texts().includes('Summary rewritten.'));
+  assert.ok(f.button('Resummarize'));
+});
+
+test('a summary that failed says why on the card and Resummarize works again',async()=>{
+  const f=await review({notes:[note('n1','Acme call',{writeup:{state:'failed',reason:'The AI server is not answering.',when:''}})]});
+  assert.ok(f.texts().includes('The AI server is not answering.'));
+  await f.button('Resummarize').onclick();
+  assert.equal(posted(f).at(-1),'/v1/notes/n1/resummarize');
+});
+
+test('a refused Resummarize shows the server words and the button works again',async()=>{
+  const f=await review({notes:[note('n1','Acme call')],respond:(req,p)=>p.endsWith('/resummarize')?{status:422,json:{message:'Write-ups are not set up.'}}:null});
+  await f.button('Resummarize').onclick();
+  assert.ok(f.texts().includes('Write-ups are not set up.'));
+  assert.equal(f.button('Resummarize').disabled,false);
+});
+
+test('an edited note asks once, in one sentence with two buttons, before its body is replaced',async()=>{
+  const f=await review({notes:[note('n1','Acme call',{edited:true})]});
+  await f.button('Resummarize').onclick();
+  assert.deepEqual(posted(f),[]);
+  assert.ok(f.texts().includes('Replace your edited note with the new summary? Your version stays in history.'));
+  assert.equal(f.view.contentEl.all().filter(e=>e.cls==='coppermind-confirm')[0].children.filter(e=>e.tag==='button').length,2);
+  await f.button('Cancel').onclick();
+  assert.deepEqual(posted(f),[]);
+  await f.button('Resummarize').onclick();
+  await f.button('Replace').onclick();
+  assert.deepEqual(f.calls,[{path:'/v1/notes/n1/resummarize',body:{overwrite:true}}]);
+});
+
+test('an unedited note is written again with no question',async()=>{
+  const f=await review({notes:[note('n1','Acme call')]});
+  await f.button('Resummarize').onclick();
+  assert.deepEqual(f.calls,[{path:'/v1/notes/n1/resummarize',body:{}}]);
+});
+
+test('there is no diff dialog, no bulk write-up and no list of imports',async()=>{
+  const f=await review({notes:[note('n1','Acme call',{edited:true}),note('n2','Other call',{writeup:{state:'failed',reason:'Failed.',when:''}})]});
+  const words=f.view.contentEl.all().flatMap(e=>[e.text,e.title]).filter(Boolean);
+  assert.ok(words.every(w=>!BANNED.test(w)));
+  assert.equal(f.modals.length,0);
+  const source=fs.readFileSync(path.join(__dirname,'../coppermind_admin/obsidian_plugin/main.js'),'utf8');
+  for(const gone of ['KeptRewriteModal','coppermind-diff','summaries-again','/v1/dropbox','class HomeView','class NotesView','Needs you','Notes in Review','Enrich','Compare with'])assert.ok(!source.includes(gone),gone);
+});
+
+test('a recording that failed is a row with one sentence and Try again, and it can be dismissed without a question',async()=>{
+  const f=await review({failed:[{id:'r1',title:'Fabrikam outage review',message:'The summary did not finish. The recording and transcript are safe.',can_retry:true,can_dismiss:true}]});
+  await f.button('Try again').onclick();
+  assert.deepEqual(posted(f),['/v1/recordings/r1/retry']);
+  await f.button('Dismiss').onclick();
+  assert.deepEqual(posted(f),['/v1/recordings/r1/retry','/v1/recordings/r1/dismiss']);
+  assert.equal(f.modals.length,0);
+});
+
+test('a recording the app will try again by itself offers no Dismiss, and one that cannot be retried no Try again',async()=>{
+  const f=await review({failed:[{id:'r1',title:'A',message:'Sentence.',can_retry:true,can_dismiss:false},{id:'r2',title:'B',message:'Sentence.',can_retry:false,can_dismiss:true}]});
+  assert.equal(f.buttons('Dismiss').length,1);assert.equal(f.buttons('Try again').length,1);
+});
+
+test('a failed Try again says so and offers it again',async()=>{
+  const f=await review({failed:[{id:'r1',title:'A',message:'Sentence.',can_retry:true,can_dismiss:false}],respond:(req,p)=>p.endsWith('/retry')?{status:500,json:{}}:null});
+  await f.button('Try again').onclick();
+  assert.ok(f.texts().includes('Could not try again. Check your connection.'));
+  assert.equal(f.button('Try again').disabled,false);
+});
+
+test('a reviewed note that could not be filed is a card with one sentence and Try again',async()=>{
+  const f=await review({notes:[note('n1','Acme call',{filing:{problem:'This note could not be filed because it has no date Coppermind can read.'}})]});
+  assert.ok(f.texts().includes('This note could not be filed because it has no date Coppermind can read.'));
+  assert.ok(!f.button('Reviewed'));
+  await f.button('Try again').onclick();
+  assert.deepEqual(posted(f),['/v1/notes/n1/file-again']);
+});
+
+test('a server that stops answering is said in one sentence, and a key without permission says what to do',async()=>{
+  const down=await review({respond:()=>({status:500,json:{message:'down'}})});
+  assert.ok(down.texts().includes('Coppermind is not answering. Check your connection and that this device is still paired.'));
+  const forbidden=await review({respond:()=>({status:403,json:{message:'no'}})});
+  assert.ok(forbidden.texts().some(t=>/missing something the companion needs/.test(t)));
+});
+
+test('a later failure keeps what was shown',async()=>{
+  const f=await review({notes:[note('n1','Acme call')]});
+  f.s.respond=()=>({status:500,json:{message:'down'}});
+  await f.view.refresh();
+  assert.ok(f.texts().includes('Acme call'));
+  assert.ok(f.texts().some(t=>/not answering/.test(t)));
+});
+
+test('a change made to the note itself shows on its card',async()=>{
+  const f=await review({notes:[note('n1','Acme call')]});
+  f.files['Review/Acme call.md'].type='work';
+  f.changed[0]({path:'Review/Acme call.md'});
+  await new Promise(r=>setTimeout(r,350));
+  assert.match(f.button('Work').cls,/chosen/);
+});
+
+test('a refresh in flight does not redraw over the question about replacing an edited note',async()=>{
+  const f=await review({notes:[note('n1','Acme call',{edited:true})]});
+  await f.button('Resummarize').onclick();
+  const before=f.view.contentEl.all().length;
+  await f.view.refresh(true);
+  assert.equal(f.view.contentEl.all().length,before);
+  assert.ok(f.button('Replace'));
+});
+
+test('the order is the newest first and a card filed this session keeps its place',()=>{
+  return fixture(undefined,{}).then(f=>{
+    const n=id=>({id});
+    const out=f.rules.arrange([n('c'),n('a')],['b','a'],{b:{id:'b'}});
+    assert.deepEqual(JSON.parse(JSON.stringify(out.map(i=>i.note?.id||'filed:'+i.filed.id))),['c','filed:b','a']);
+  });
 });

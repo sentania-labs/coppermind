@@ -1088,9 +1088,17 @@ class ContextService:
         """File a reviewed note straight away."""
         return await self.review_notes.file_again(payload)
 
-    async def write_up_missing_summaries(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Write up every recording note that has no summary, in one step."""
-        return await self.alerts.write_up_missing(payload)
+    async def review_models(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """The models the write-up connection offers for one Resummarize."""
+        return await self.review_notes.models(payload)
+
+    async def note_set_meeting(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """The owner chose another meeting for a waiting note."""
+        return await self.review_notes.set_meeting(payload)
+
+    async def note_reopen(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Put a reviewed or filed note back in Review."""
+        return await self.review_notes.reopen(payload)
 
     async def save_transcription(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await self.recordings.save_assignment(payload)

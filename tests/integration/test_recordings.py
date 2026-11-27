@@ -1887,10 +1887,17 @@ async def test_companion_retry_permissions_and_waiting_count_through_real_store(
             )
             assert recognition.status_code != 403
             assert (await api.get("/v1/recordings/waiting", headers=headers)).status_code == 200
-            # Notes in Review needs nothing the companion preset does not already grant.
+            # The Review screen needs nothing the companion preset does not already grant.
             assert (await api.get("/v1/review/notes", headers=headers)).status_code == 200
             asked = await api.post(f"/v1/notes/{'0' * 26}/resummarize", headers=headers)
             assert asked.status_code not in {401, 403}, asked.text
+            assert (await api.get("/v1/review/models", headers=headers)).status_code != 403
+            meeting = await api.post(
+                f"/v1/notes/{'0' * 26}/meeting", headers=headers, json={"event_id": "x"}
+            )
+            assert meeting.status_code not in {401, 403}, meeting.text
+            undone = await api.post(f"/v1/notes/{'0' * 26}/reopen", headers=headers)
+            assert undone.status_code not in {401, 403}, undone.text
             accepted_retry = await api.post(f"/v1/recordings/{job.id}/retry", headers=headers)
             assert accepted_retry.status_code == 200
             after = await api.get("/v1/recordings/waiting", headers=reader_headers)

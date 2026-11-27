@@ -1,726 +1,395 @@
-/* Coppermind companion: Coppermind fills in a waiting note; the owner checks it, names its speakers and marks it reviewed. */
-const {Plugin, ItemView, PluginSettingTab, Setting, SecretComponent, Notice, requestUrl, MarkdownView, Modal} = require('obsidian');
-const SUMMARY_LABELS = {summary:['Summary','Summary'],decisions:['Decisions','Decisions'],action_items:['Action items and owners','Action items']};
-const summaryLabel = (key, long) => (SUMMARY_LABELS[key] || [])[long ? 0 : 1] || key.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase());
+/* Coppermind companion: one Review screen. A recording comes in, is summarized and filled in; the owner fixes what is wrong on its card and marks it Reviewed. */
+const {Plugin, ItemView, PluginSettingTab, Setting, SecretComponent, Notice, requestUrl, Modal} = require('obsidian');
 const VIEW = 'coppermind-review';
 const PEOPLE_VIEW = 'coppermind-people';
-const NOTES_VIEW = 'coppermind-notes-in-review';
-const WAITING_VIEW = 'coppermind-waiting';  // The id stays so saved layouts keep their place; the screen is now Needs you.
+// Earlier versions had three screens; a saved layout may still hold one.
+const RETIRED_VIEWS = ['coppermind-waiting', 'coppermind-notes-in-review'];
 const COMPANION_PERMISSIONS = 'Read notes, Add and change notes, Hand in recordings and files, Search, and Read and correct people and companies';
+const KEY_MISSING = 'This key is missing something the companion needs. In Coppermind Admin, open Advanced, then Connected apps, and either pair this device with a code, or make a key with: ' + COMPANION_PERMISSIONS + ', then select it in the companion settings.';
+const NOT_ANSWERING = 'Coppermind is not answering. Check your connection and that this device is still paired.';
+const NOT_SYNCED = 'This note has not reached this device yet.';
+const POLL_MS = 15000;
+const BUSY_POLL_MS = 3000;
+const FILED_SHOWN_MS = 60000;
+const MODELS_FRESH_MS = 300000;
+const REQUEST_TIMEOUT_MS = 30000;
+const DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
 // A date with no time ("2026-11-26") is that calendar day where the owner is; new Date() would read it as UTC midnight and show the day before.
-const parseDate=value=>{const day=/^(\d{4})-(\d{2})-(\d{2})$/.exec(typeof value==='string'?value.trim():'');return day?new Date(+day[1],+day[2]-1,+day[3]):new Date(value);};
-async function hash(text) {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
-  return 'sha256:' + [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2,'0')).join('');
-}
+const parseDate = value => {const day = DAY.exec(typeof value === 'string' ? value.trim() : ''); return day ? new Date(+day[1], +day[2] - 1, +day[3]) : new Date(value);};
+const settle = promise => promise.then(value => ({ok: true, value}), error => ({ok: false, error}));
+const plural = (n, one, many) => n + ' ' + (n === 1 ? one : many || one + 's');
+// A time as the owner reads it: just the time for today, the day for any other, the day alone when no time was kept.
+const when = value => {
+  const date = value && parseDate(value); if (!date || isNaN(date)) return '';
+  if (DAY.test(String(value).trim())) return date.toLocaleDateString([], {weekday: 'short', month: 'short', day: 'numeric'});
+  const today = date.toDateString() === new Date().toDateString();
+  return date.toLocaleString([], today ? {timeStyle: 'short'} : {weekday: 'short', hour: 'numeric', minute: '2-digit'});
+};
+const list = value => (Array.isArray(value) ? value : value ? [value] : []).map(String).filter(Boolean);
+const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+// "work/2026/2026-11/Call.md" is shown "work › 2026 › 2026-11".
+const where = path => String(path || '').split('/').slice(0, -1).join(' › ');
+const link = value => String(value).replace(/^\[\[|\]\]$/g, '').split('|').pop().split('/').pop().replace(/\.md$/, '');
+
+// What a card knows about one note, in one place so the screen and its tests read the same rules.
+const rules = {
+  // The newest first, as the server lists them; a card filed this session keeps its place until it goes.
+  arrange(notes, previous, filed) {
+    const byId = new Map(notes.map(n => [n.id, n]));
+    const out = [], seen = new Set();
+    for (const id of previous) {
+      if (byId.has(id)) {out.push({note: byId.get(id)}); seen.add(id);}
+      else if (filed[id]) {out.push({filed: filed[id]}); seen.add(id);}
+    }
+    const fresh = notes.filter(n => !seen.has(n.id));
+    return [...fresh.map(note => ({note})), ...out];
+  },
+  // The words for how a note's summary stands, or nothing when it is fine.
+  summaryLine(note) {
+    const step = note.writeup || {};
+    if (step.state === 'working') return {text: 'Summarizing' + (step.when ? ', started ' + when(step.when) : '') + '.', busy: true};
+    if (step.state === 'failed') return {text: step.reason || 'The summary did not finish.', problem: true};
+    if (step.state === 'missing' && note.can_resummarize) return {text: 'The summary did not finish.', problem: true};
+    return null;
+  },
+  // Where the owner's choice goes: one value for a single property, a list for the others.
+  withValue(values, value, add) {return add ? (values.includes(value) ? values : [...values, value]) : values.filter(v => v !== value);},
+};
+
 class ReviewView extends ItemView {
-  constructor(leaf, plugin) { super(leaf); this.plugin=plugin; this.generation=0; }
-  getViewType(){return VIEW;}
-  getDisplayText(){return 'Review note';}
-  getIcon(){return 'clipboard-check';}
-  async onOpen(){await this.refresh();}
-  async refresh(){
-    const generation=++this.generation;
-    const el=this.contentEl; el.empty(); el.createEl('h2',{text:'Review note'});
-    const file=this.plugin.noteFile || this.app.workspace.getActiveFile();
-    if(!file){el.createEl('p',{text:'Open a note, then refresh this panel.'});return;}
-    this.file=file;
+  constructor(leaf, plugin) {
+    super(leaf); this.plugin = plugin; this.generation = 0; this.order = []; this.local = {}; this.filed = {}; this.seen = {};
+  }
+  getViewType() {return VIEW;}
+  getDisplayText() {return 'Review';}
+  getIcon() {return 'clipboard-check';}
+  async onOpen() {
+    this.registerEvent?.(this.app.metadataCache?.on?.('changed', file => this.noteChanged(file)));
+    this.schedule(); await this.refresh();
+  }
+  async onClose() {clearTimeout(this.timer); clearTimeout(this.redrawTimer); this.generation++;}
+  schedule() {
+    clearTimeout(this.timer);
+    const busy = (this.data?.notes || []).some(n => n.writeup?.state === 'working') || Object.values(this.local).some(l => l.reviewing) || (this.data?.waiting?.processing || []).length > 0;
+    this.timer = setTimeout(async () => {await this.refresh(true); this.schedule();}, busy ? (this.plugin.busyPollMs || BUSY_POLL_MS) : (this.plugin.pollMs || POLL_MS));
+  }
+  fail(e, fallback) {return e.status === 403 ? KEY_MISSING : e.status === 422 || e.status === 404 ? e.message : fallback;}
+  // -- reading ------------------------------------------------------------------------
+  async loadNotes() {
+    let cursor = '', data = null; const notes = [];
+    for (let pages = 0; pages < 100; pages++) {
+      const page = await this.plugin.call('/v1/review/notes' + (cursor ? '?cursor=' + encodeURIComponent(cursor) : ''), 'GET', undefined, true);
+      data = page; notes.push(...(page.notes || [])); cursor = page.next_cursor || '';
+      if (!cursor) break;
+    }
+    return {...data, notes};
+  }
+  async refresh(quiet) {
+    if (quiet && (this.refreshing || this.busy)) return;
+    const generation = ++this.generation, el = this.contentEl; this.refreshing = true;
+    if (!this.loaded) {el.empty(); el.createEl('h2', {text: 'Review'}); el.createEl('p', {text: 'Loading…', cls: 'coppermind-hint'});}
     try {
-      const schema=await this.plugin.call('/v1/schema');
-      const fm=this.app.metadataCache.getFileCache(file)?.frontmatter;
-      const id=fm?.[schema.roles.id_key];
-      if(!id) throw Error('This note has not been adopted yet. Wait for sync and reconciliation.');
-      const data=await this.plugin.call('/v1/notes/'+encodeURIComponent(id)+'/review');
-      if(generation!==this.generation)return;
-      this.data=data;
-      if(data.completion?.state==='applying')this.plugin.pending={id,payload:data.completion.payload};
-      el.createEl('h3',{text:file.basename});
-      const local=await this.app.vault.read(file);
-      const synced=await hash(local)===data.note.content_hash;
-      if(!synced) el.createEl('p',{text:'Your latest edits have not reached Coppermind. Wait for sync, then refresh.',cls:'coppermind-notice'});
-      const reload=el.createEl('button',{text:'Refresh from Coppermind'});reload.onclick=()=>this.refresh();
-      if(this.plugin.pending?.id===id){const resume=el.createEl('button',{text:'Retry recorded completion'});resume.onclick=async()=>{
-        try{await this.plugin.call('/v1/notes/'+encodeURIComponent(id)+'/review','POST',this.plugin.pending.payload);this.plugin.pending=null;await this.refresh();}catch(e){new Notice(e.message);}
-      };}
-      if(data.note.frontmatter[data.roles.reviewed_key]===true){
-        el.createEl('p',{text:data.review_problem?'Review needs attention: '+data.review_problem:'Reviewed. Filing and indexing finish in the background.'});
-        // The note moves folders once filed, so say here what became of each name typed in it.
-        const outcomes=data.speaker_naming||[];
-        const waiting=(data.named_in_note||[]).filter(t=>!outcomes.some(o=>o.label===t.label));
-        if(outcomes.length||waiting.length){
-          const box=el.createDiv({cls:'coppermind-card'});box.createEl('h3',{text:'Speaker names'});
-          for(const o of outcomes)box.createEl('p',{text:o.status==='named'?o.label+' is now '+o.name+(o.created?' (added to People).':'.'):o.label+' was not named as '+o.typed+': '+o.reason});
-          for(const t of waiting)box.createEl('p',{text:'The name you typed for '+t.label+' ('+t.name+') is applied about 30 seconds after the note is marked reviewed. Refresh to see the result.'});
-        }
-        if(data.calendar_update){
-          const update=data.calendar_update;
-          el.createEl('p',{text:update.message});
-          let eventId='';
-          new Setting(el).setName('Calendar association').addDropdown(d=>{
-            d.addOption('','Keep existing decisions; dismiss update');
-            for(const c of update.candidates||[])d.addOption(c.event_id,c.title);
-            d.onChange(v=>eventId=v);
-          });
-          new Setting(el).addButton(b=>b.setButtonText('Confirm calendar decision').onClick(async()=>{
-            try{await this.plugin.call('/v1/notes/'+encodeURIComponent(id)+'/calendar-update','POST',{if_match:data.note.content_hash,calendar_hash:update.calendar_hash,event_id:eventId});await this.refresh();}catch(e){new Notice(e.message);}
-          }));
-        }
+      const [waiting, notes] = await Promise.all([settle(this.plugin.call('/v1/recordings/waiting', 'GET', undefined, true)), settle(this.loadNotes())]);
+      if (generation !== this.generation) return;
+      if (!waiting.ok && !notes.ok) {
+        const problem = waiting.error?.status === 403 ? KEY_MISSING : NOT_ANSWERING;
+        if (this.loaded) {this.problem = problem; this.render(); return;}
+        el.empty(); el.createEl('h2', {text: 'Review'});
+        el.createEl('p', {text: problem, cls: 'coppermind-notice'});
+        const retry = el.createEl('button', {text: 'Try again'}); retry.onclick = () => this.refresh();
         return;
       }
-      el.createEl('p',{text:'Edit the note and its properties as usual. Finish here when you are ready.'});
-      const meeting=data.recording_meeting;
-      const pickMeeting=!!meeting&&(meeting.candidates?.length>1||(meeting.candidates?.length===1&&![meeting.selected_event_id,meeting.matched_event_id].includes(meeting.candidates[0].event_id)));
-      if(pickMeeting){
-        const box=el.createDiv({cls:'coppermind-card'});box.createEl('h3',{text:'Which meeting was this?'});
-        box.createEl('p',{text:meeting.suggested_event_id?'Suggested from the conversation. Please check the choice.':meeting.candidates.length>1?'Several meetings could match. Choose one to use its context.':'Use this meeting if it is the one.'});
-        let choice=meeting.selected_event_id||meeting.suggested_event_id||'';
-        for(const event of meeting.candidates){
-          const row=box.createEl('label',{cls:'coppermind-meeting-option'});
-          const radio=row.createEl('input',{attr:{type:'radio',name:'coppermind-meeting-'+id},value:event.event_id});
-          radio.checked=choice===event.event_id;radio.onchange=()=>{if(radio.checked)choice=event.event_id;};
-          const people=(event.people||[]).map(p=>p.name).filter(Boolean).join(', ');
-          const when=event.start&&!Number.isNaN(Date.parse(event.start))?parseDate(event.start).toLocaleString([],{dateStyle:'medium',timeStyle:'short'}):'';
-          row.createEl('span',{text:event.title+(when?' · '+when:'')+(event.event_id===meeting.suggested_event_id?' · Suggested':'')+(people?' · '+people:'')});
-        }
-        new Setting(box).addButton(b=>b.setButtonText('Use selected meeting').setDisabled(!synced).onClick(async()=>{
-          if(!choice){new Notice('Choose a meeting first.');return;}
-          if(await hash(await this.app.vault.read(file))!==data.note.content_hash){new Notice('The note changed. Wait for sync, then refresh.');return;}
-          try{await this.plugin.call('/v1/notes/'+encodeURIComponent(id)+'/recording-meeting','POST',{if_match:data.note.content_hash,calendar_hash:meeting.calendar_hash,event_id:choice});new Notice('Meeting selected. Refresh after sync.');await this.refresh();}catch(e){new Notice(e.message);}
-        }));
-      }
-      const speakerChoices={}, manualSpeakers={}, cards=[];
-      const ready=data.state==='suggested'&&synced;
-      const summary=data.meeting_summary?{...data.meeting_summary}:null;
-      const merge=data.recording_merge;
-      if(['applying','attention'].includes(merge?.state)){
-        const box=el.createDiv({cls:'coppermind-card'});box.createEl('h3',{text:'Recording merge needs attention'});
-        box.createEl('p',{text:merge.error||'The recording is being added to your note. You can retry if it does not finish.',cls:'coppermind-notice'});
-        const retry=box.createEl('button',{text:'Retry merge'});retry.disabled=!synced;
-        retry.onclick=async()=>{try{
-          if(await hash(await this.app.vault.read(file))!==data.note.content_hash){new Notice('The note changed. Wait for sync, then refresh.');return;}
-          const result=await this.plugin.call('/v1/notes/'+encodeURIComponent(id)+'/recording-merge/retry','POST',{if_match:data.note.content_hash});
-          el.empty();el.createEl('h3',{text:'Recording added'});el.createEl('p',{text:'The recording is now part of '+result.target_title+'.'});
-          const open=el.createEl('button',{text:'Open '+result.target_title});open.onclick=()=>this.app.workspace.openLinkText(result.target_path,'',false);
-        }catch(e){new Notice(e.message);}};
-      }
-      if(merge?.state==='offered'&&(summary||data.recording_generation_mode==='markdown-v1')){
-        const box=el.createDiv({cls:'coppermind-card'});box.createEl('h3',{text:'You already have a note for this meeting'});
-        let destination=merge.candidates[0];
-        if(merge.candidates.length>1)new Setting(box).setName('Your note').addDropdown(d=>{
-          for(const candidate of merge.candidates)d.addOption(candidate.id,candidate.title);
-          d.setValue(destination.id).onChange(v=>destination=merge.candidates.find(c=>c.id===v));
-        });
-        const open=box.createEl('a',{text:'Open your note',href:'#'});open.onclick=e=>{e.preventDefault();this.app.workspace.openLinkText(destination.path,'',false);};
-        box.createEl('p',{text:'Your words stay as they are. The recording summary will be added below them with a transcript link. This separate recording note will be retired.'});
-        const review=box.createEl('button',{text:'Review merge'});review.disabled=data.recording_generation_mode==='markdown-v1'?!synced:!ready;
-        let merging=false;
-        review.onclick=()=>new MergeModal(this.app,destination,summary||merge.markdown,merge.transcript_path,async()=>{
-          if(merging)return;
-          merging=true;
-          for(const control of el.querySelectorAll('button, input, select, textarea'))control.disabled=true;
-          const progress=box.createEl('p',{text:'Adding the recording to your note…',cls:'coppermind-notice'});
-          try{
-            const targetFile=this.app.vault.getAbstractFileByPath(destination.path);
-            if(!targetFile||await hash(await this.app.vault.read(targetFile))!==destination.content_hash||await hash(await this.app.vault.read(file))!==data.note.content_hash)throw Error('A note changed. Wait for sync, then refresh.');
-            await this.plugin.call('/v1/notes/'+encodeURIComponent(id)+'/recording-merge','POST',{if_match:data.note.content_hash,target_id:destination.id,target_hash:destination.content_hash,job_id:data.job_id,meeting_summary:summary,confirmation:'Merge recording'});
-            el.empty();el.createEl('h3',{text:'Recording added'});el.createEl('p',{text:'The recording is now part of '+destination.title+'.'});
-            const openResult=el.createEl('button',{text:'Open '+destination.title});openResult.onclick=()=>this.app.workspace.openLinkText(destination.path,'',false);
-          }catch(e){
-            progress.setText('Could not confirm the merge: '+e.message+'. Refresh this panel to check its status before trying again.');
-            const refresh=box.createEl('button',{text:'Refresh merge status'});refresh.onclick=()=>this.refresh();
-          }
-        }).open();
-        const dismiss=box.createEl('button',{text:'Keep separate'});dismiss.disabled=!synced;
-        dismiss.onclick=async()=>{try{await this.plugin.call('/v1/notes/'+encodeURIComponent(id)+'/recording-merge/dismiss','POST',{if_match:data.note.content_hash});await this.refresh();}catch(e){new Notice(e.message);}};
-      }
-      if(data.speakers_unavailable)el.createEl('p',{text:data.speakers_unavailable,cls:'coppermind-notice'});
-      if(data.speaker_notice)el.createEl('p',{text:data.speaker_notice,cls:'coppermind-notice'});
-      const preview=el.createDiv({cls:'coppermind-card'});
-      const updatePreview=()=>{
-        preview.empty();preview.createEl('h3',{text:'What will change'});
-        if(summary&&ready)preview.createEl('p',{text:Object.values(summary).some(v=>v.trim())?'The kept summary sections will be appended to your note. Your existing text stays intact.':'All summary sections dropped. No summary text will be added.'});
-        const changes=cards.filter(c=>c.active()&&c.chooser.value);
-        const typed=Object.entries(typedNames);
-        if(!changes.length&&!typed.length)preview.createEl('p',{text:data.speakers_in_note?'No voice has been named in the note.':'No speaker names selected.'});
-        for(const [label,name] of typed)preview.createEl('p',{text:label+' → '+name+' (typed in the note)'});
-        if(typed.length)preview.createEl('p',{text:'Marking the note reviewed names these voices in this note, in other notes that used them, and in recordings to come.'});
-        for(const c of changes){const person=c.people.find(p=>p.id===c.chooser.value);if(person){preview.createEl('p',{text:c.label+' → '+person.name});const count=manual?.voice_appearances?.[c.label];if(count!==undefined)preview.createEl('p',{text:'Also name this voice in '+Math.max(0,count-1)+' earlier recordings. Transcripts and unchanged generated labels will change; your own writing in reviewed notes stays intact.'});}}
-        if(!data.speakers_in_note||changes.length||typed.length)preview.createEl('p',{text:'Marking reviewed updates transcript labels, note attendees and links to the people chosen. Unnamed speakers stay as they are.'});
+      if (notes.ok && notes.value.notes.some(n => n.can_resummarize) && (!this.models || Date.now() - this.modelsAt > MODELS_FRESH_MS)) await this.loadModels();
+      if (generation !== this.generation || (quiet && this.busy)) return;
+      this.problem = '';
+      const data = {
+        waiting: waiting.ok ? waiting.value : this.data?.waiting,
+        page: notes.ok ? notes.value : this.data?.page,
+        notesError: notes.ok ? '' : this.fail(notes.error, NOT_ANSWERING),
       };
-      const makeChooser=(card,label,people,initial,onSelect,disabled,voice=[])=>{
-        const chooser=card.createEl('select');
-        chooser.createEl('option',{text:'Leave as '+label,value:''});
-        const add=person=>{if(!people.some(p=>p.id===person.id)){people.push(person);chooser.createEl('option',{text:person.name+(person.email?' ('+person.email+')':'')+(person.from_possible_meeting?' · possible meeting':''),value:person.id});}};
-        const supplied=[...people];people.length=0;for(const person of supplied)add(person);
-        for(const match of voice)add(match);
-        chooser.value=initial||'';chooser.disabled=disabled;chooser.onchange=()=>{onSelect(chooser.value);updatePreview();};
-        for(const match of voice){
-          const choice=card.createEl('button',{text:(match.strength==='maybe'?'Maybe: ':'Voice: ')+match.name});
-          choice.disabled=disabled;choice.onclick=()=>{chooser.value=match.id;chooser.onchange();};
-        }
-        const search=card.createEl('input',{attr:{type:'search',placeholder:'Find a person'}});search.disabled=disabled;
-        const find=card.createEl('button',{text:'Find a person'});find.disabled=disabled;
-        let cursor='';
-        const lookup=async more=>{
-          try{
-            if(!search.value?.trim()){new Notice('Enter a name to find a person.');return;}
-            const page=await this.plugin.call('/v1/entities?kind=person&limit=50&q='+encodeURIComponent(search.value.trim())+(more&&cursor?'&cursor='+encodeURIComponent(cursor):''));
-            for(const person of page.items||[])add({id:'person:'+person.id,name:person.name,email:person.emails?.[0]||''});
-            cursor=page.next_cursor||'';moreButton.disabled=!cursor;
-            if(!(page.items||[]).length)new Notice('No matching people. Search for another name.');
-            else new Notice('Choose a person from the list.');
-          }catch(e){new Notice(e.status===403&&data.people_access_notice||'Could not find people. Check your connection and API credential, then refresh this panel.');}
-        };
-        find.onclick=()=>lookup(false);
-        const moreButton=card.createEl('button',{text:'More people'});moreButton.disabled=true;moreButton.onclick=()=>lookup(true);
-        return chooser;
-      };
-      if(summary){
-        const box=el.createDiv({cls:'coppermind-card'});box.createEl('h3',{text:'Meeting summary'});
-        box.createEl('p',{text:'Edit these sections, or clear one to drop it. Marking reviewed adds what you keep to the note. Action items are recorded only; nothing is carried out.'});
-        for(const key of Object.keys(summary)){const label=summaryLabel(key,true);
-          const field=box.createEl('label',{text:label});
-          const input=field.createEl('textarea');input.value=summary[key];input.rows=6;input.maxLength=12000;input.style.width='100%';input.disabled=!ready;
-          input.oninput=()=>{summary[key]=input.value;updatePreview();};
-          const drop=box.createEl('button',{text:'Drop '+label.toLowerCase()});drop.disabled=!ready;
-          drop.onclick=()=>{summary[key]='';input.value='';updatePreview();};
-        }
-        this.writeUpElsewhere(box);
-      } else if(data.recording_meeting)this.writeUpElsewhere(el.createDiv({cls:'coppermind-card'}));
-      const manual=data.manual_speaker_review;
-      // Contact candidates can refer to the same People entry as a voice match.
-      const personKey=(id,candidates)=>{
-        const person=candidates.find(c=>c.id===id);
-        return person?.person_id?'person:'+person.person_id:id;
-      };
-      const voicePlan=(label,proposed)=>{
-        const matches=manual?.voice_matches?.[label]||[];
-        const strong=matches.filter(m=>m.strength==='strong');
-        const candidates=proposed?.candidates||[];
-        const confident=!!proposed?.value&&proposed.confidence>=0.8;
-        const modelKey=proposed?.value?personKey(proposed.value,candidates):'';
-        const voiceKey=strong.length===1?personKey(strong[0].id,candidates):'';
-        const conflict=strong.length>1||(voiceKey&&confident&&voiceKey!==modelKey);
-        const agreed=!!voiceKey&&voiceKey===modelKey;
-        return {matches,strong,conflict,agreed,initial:conflict?'':voiceKey?(agreed?proposed.value:strong[0].id):proposed?.value||''};
-      };
-      // Names typed in the note's Speakers section are applied when review finishes; do not ask twice.
-      const typedNames=Object.fromEntries((data.named_in_note||[]).map(t=>[t.label,t.name]));
-      if(data.speakers_in_note)el.createEl('p',{text:'Name a voice in the Speakers section at the top of the note: type the name after "Name this voice:", then mark the note reviewed here.',cls:'coppermind-notice'});
-      // Only speakers are still put to the owner; every other property arrives filled in the note.
-      // A person chosen in a speaker's dropdown is what gets applied; a likely name starts chosen only when it is sure.
-      const speakers=(data.suggestions||[]).filter(s=>s.kind==='speaker');
-      for(const s of speakers){
-        if(!ready||typedNames[s.field]||data.speakers_in_note)continue;
-        const card=el.createDiv({cls:'coppermind-card'});card.createEl('h3',{text:s.field});
-        const voice=voicePlan(s.field,s);
-        const sure=!voice.conflict&&!!voice.initial&&(voice.strong.length===1||s.confidence>=0.8);
-        const noModelCandidate=!s.value&&voice.matches.length>0;
-        const shown=s.display_value||String(s.value??'');
-        card.createEl('p',{text:voice.conflict&&s.value?'Model: '+shown:voice.strong.length===1&&!voice.conflict&&!voice.agreed?voice.strong[0].name:shown});
-        if(s.field.startsWith('Unknown voice '))card.createEl('p',{text:'This voice will be remembered across recordings.'});
-        if(voice.strong.length===1&&!voice.conflict)card.createEl('p',{text:'Check this name before you finish.'});
-        if(manual?.voice_unavailable?.includes(s.field))card.createEl('p',{text:'There was too little speech to recognise this voice in later recordings. A name chosen here applies only to this recording.'});
-        if(!noModelCandidate)card.createEl('p',{text:'Model confidence: '+Math.round(s.confidence*100)+'%'});
-        if(voice.agreed)card.createEl('p',{text:'Sources: Model and Voice'});
-        else if(voice.strong.length===1&&!voice.conflict)card.createEl('p',{text:'Source: Voice'});
-        if(voice.conflict)card.createEl('p',{text:'The voice and the conversation point to different people. Choose a person.'});
-        const candidates=s.candidates||[];
-        if(!candidates.length&&!voice.matches.length)card.createEl('p',{text:'No likely people found. Enter a name below, then choose Find a person.'});
-        const people=[...candidates];
-        if(voice.strong.length===1&&!voice.conflict&&!voice.agreed)people.push(voice.strong[0]);
-        const choices=voice.strong.length===1&&!voice.conflict?voice.matches.filter(m=>m!==voice.strong[0]):voice.matches;
-        const chooser=makeChooser(card,s.field,people,sure?voice.initial:'',value=>{speakerChoices[s.index]=value;},false,choices);
-        speakerChoices[s.index]=chooser.value;cards.push({label:s.field,chooser,people,active:()=>!!speakerChoices[s.index]});
-        if(s.reason&&(!noModelCandidate||!/^No (confident )?(match|person|speaker).*suggest/i.test(s.reason)))card.createEl('p',{text:'Model: '+s.reason});
-        if(s.quote){card.createEl('small',{text:'Model evidence'});card.createEl('blockquote',{text:s.quote});}
-        if(s.contact_ids?.length)card.createEl('small',{text:'Linked contact evidence is recorded with this name.'});
-      }
-      const proposed=new Set(speakers.filter(()=>ready).map(s=>s.field));
-      for(const label of manual?.speakers||[]){
-        if(proposed.has(label)||typedNames[label]||data.speakers_in_note)continue;
-        const card=el.createDiv({cls:'coppermind-card'});card.createEl('h3',{text:label});
-        if(label.startsWith('Unknown voice '))card.createEl('p',{text:'This voice will be remembered across recordings.'});
-        if(manual?.voice_unavailable?.includes(label))card.createEl('p',{text:'There was too little speech to recognise this voice in later recordings. A name chosen here applies only to this recording.'});
-        card.createEl('p',{text:'Choose a person, or leave this speaker unnamed.'});
-        const people=[...(manual.candidates||[])];const voice=voicePlan(label,null);
-        if(!people.length&&!voice.matches.length)card.createEl('p',{text:'No likely people found. Enter a name below, then choose Find a person.'});
-        if(voice.conflict)card.createEl('p',{text:'More than one saved voice matches. Choose a person.'});
-        else if(voice.initial){card.createEl('p',{text:'Source: Voice'});card.createEl('p',{text:'Check this name before you finish.'});}
-        if(voice.initial)people.push(voice.strong[0]);
-        const choices=voice.initial?voice.matches.filter(m=>m!==voice.strong[0]):voice.matches;
-        const chooser=makeChooser(card,label,people,voice.initial,value=>{manualSpeakers[label]=value;},!synced,choices);
-        if(voice.initial&&synced)manualSpeakers[label]=voice.initial;
-        cards.push({label,chooser,people,active:()=>!!manualSpeakers[label]});
-      }
-      updatePreview();
-      for(const unresolved of data.unresolved||[])el.createEl('p',{text:unresolved,cls:'coppermind-notice'});
-      const finish=async()=>{
-        try{
-          // Save any active editor, then compare exact bytes again before approval.
-          const editor=this.app.workspace.getActiveViewOfType(MarkdownView);
-          if(editor?.file?.path===file.path)await editor.save();
-          if(await hash(await this.app.vault.read(file))!==data.note.content_hash)throw Error('The note changed. Refresh after sync before finishing.');
-          const chosen=Object.fromEntries(Object.entries(speakerChoices).filter(([,v])=>v));
-          const named=Object.fromEntries(Object.entries(manualSpeakers).filter(([,v])=>v));
-          const payload={if_match:data.note.content_hash,job_id:data.job_id,selected:Object.keys(chosen).map(Number),meeting_summary:ready?summary:null,speaker_choices:chosen,manual_speakers:named,manual_source_revision:manual?.revision??null,manual_source_id:manual?.source_id??null,confirmation:'Complete review'};
-          this.plugin.pending={id,payload};
-          await this.plugin.call('/v1/notes/'+encodeURIComponent(id)+'/review','POST',payload);
-          this.plugin.pending=null;
-          new Notice('Review recorded. Changes and filing will sync back to Obsidian.');await this.refresh();
-        }catch(e){new Notice(e.message);}
-      };
-      if(data.recording_generation_mode!=='markdown-v1'&&(manual||summary)&&['queued','running'].includes(data.state))el.createEl('p',{text:'The summary is still being written. Marking reviewed now files the note without it.',cls:'coppermind-notice'});
-      if(data.rewrite_running)el.createEl('p',{text:'A new write-up is being made for this note.',cls:'coppermind-notice'});
-      const done=el.createEl('button',{text:'Mark reviewed',cls:'mod-cta'});done.disabled=!synced;done.onclick=()=>finish();
-    }catch(e){el.createEl('p',{text:e.message,cls:'coppermind-notice'});const retry=el.createEl('button',{text:'Retry'});retry.onclick=()=>this.refresh();}
+      await this.afterRead(data);
+      if (generation !== this.generation) return;
+      const fingerprint = JSON.stringify(data) + JSON.stringify(this.local) + JSON.stringify(this.filed) + JSON.stringify(this.models);
+      if (quiet && this.loaded && fingerprint === this.fingerprint) return;
+      this.fingerprint = fingerprint;
+      this.data = {...data, notes: data.page?.notes || []};
+      this.loaded = true; this.render();
+    } finally {if (generation === this.generation) this.refreshing = false;}
   }
-}
-// Writing a recording's note up again has one home.
-ReviewView.prototype.writeUpElsewhere=function(box){
-  box.createEl('p',{text:'To write this note up again, use Resummarize in Notes in Review.'});
-  const open=box.createEl('button',{text:'Open Notes in Review'});open.onclick=()=>this.plugin.openNotesInReview();
-};
-const KEY_MISSING='This key is missing something the companion needs. In Coppermind Admin, open Connected apps and either pair this device with a code, or make a key with: '+COMPANION_PERMISSIONS+', then select it in the companion settings.';
-const NOT_ANSWERING='Coppermind is not answering. Check your connection and that this device is still paired, then try again.';
-const HOME_POLL_MS=15000;
-const REQUEST_TIMEOUT_MS=30000;
-const IMPORT_ACTIVE=new Set(['stabilizing','pending','importing']);
-const IMPORT_FINISHED=new Set(['succeeded','already_imported']);
-const IMPORT_SHOWN=5;
-const settle=promise=>promise.then(value=>({ok:true,value}),error=>({ok:false,error}));
-const plural=(n,one,many)=>n+' '+(n===1?one:many||one+'s');
-class HomeView extends ItemView {
-  constructor(leaf,plugin){super(leaf);this.plugin=plugin;this.generation=0;}
-  getViewType(){return WAITING_VIEW;}
-  getDisplayText(){return 'Needs you';}
-  getIcon(){return 'list-checks';}
-  async onOpen(){this.timer=setInterval(()=>this.refresh(true),HOME_POLL_MS);await this.refresh();}
-  async onClose(){clearInterval(this.timer);this.generation++;}
-  async refresh(quiet,keep){
-    // A quiet refresh is the timer: it never interrupts an open confirmation and redraws only when something changed.
-    if(quiet&&(this.refreshing||this.busy))return;
-    const generation=++this.generation, el=this.contentEl;this.refreshing=true;if(!quiet&&!keep)this.flash='';
-    if(!this.loaded){el.empty();el.createEl('h2',{text:'Needs you'});el.createEl('p',{text:'Loading what needs you…'});}
-    else if(!quiet&&this.stamp)this.stamp.setText('Refreshing…');
-    try{
-      const [waiting,drop]=await Promise.all([settle(this.plugin.call('/v1/recordings/waiting','GET',undefined,true)),settle(this.plugin.call('/v1/dropbox','GET',undefined,true))]);
-      if(generation!==this.generation)return;
-      // A confirmation opened while these reads were in flight must not be redrawn away.
-      if(quiet&&this.busy)return;
-      if(!waiting.ok&&!drop.ok){
-        if(this.loaded){this.problem=NOT_ANSWERING+' This is what Coppermind last said.';this.showStale();return;}
-        el.empty();el.createEl('h2',{text:'Needs you'});
-        el.createEl('p',{text:waiting.error?.status===403?KEY_MISSING:NOT_ANSWERING,cls:'coppermind-notice'});
-        const retry=el.createEl('button',{text:'Retry'});retry.onclick=()=>this.refresh();return;
-      }
-      this.problem='';
-      const next={waiting:waiting.ok?waiting.value:this.data?.waiting,drop:drop.ok?drop.value:this.data?.drop,waitingError:waiting.ok?'':this.sectionError('meetings and recordings',waiting.error),dropError:drop.ok?'':this.sectionError('imports',drop.error)};
-      const fingerprint=JSON.stringify(next);
-      this.updated=new Date();
-      if(quiet&&this.loaded&&fingerprint===this.fingerprint){this.showStale();return;}
-      this.fingerprint=fingerprint;this.data=next;this.loaded=true;this.render();
-    }finally{if(generation===this.generation)this.refreshing=false;}
+  // What changed since the last read: a summary that finished, a note that has been filed.
+  async afterRead(data) {
+    const notes = data.page?.notes || [], present = new Set(notes.map(n => n.id));
+    for (const n of notes) {
+      const before = this.seen[n.id], now = n.writeup?.state;
+      if (before === 'working' && now === 'written') this.say(n.id, 'Summary rewritten.');
+      this.seen[n.id] = now;
+    }
+    if (!data.page) return;
+    await Promise.all(Object.entries(this.local).filter(([id, mine]) => mine.reviewing && !present.has(id)).map(([id]) => this.markFiled(id)));
   }
-  sectionError(what,error){return error?.status===403?KEY_MISSING:'Could not load '+what+'. Press Refresh to try again.';}
-  showStale(){
-    if(!this.stamp)return;
-    this.stamp.setText((this.problem?this.problem+' ':'')+'Last updated '+this.updated.toLocaleTimeString([],{timeStyle:'short'})+'.');
+  async markFiled(id) {
+    const mine = this.local[id]; if (!mine || mine.filing) return; mine.filing = true;
+    let path = '';
+    try {path = (await this.plugin.call('/v1/notes/' + encodeURIComponent(id))).path || '';} catch {}
+    mine.reviewing = false; mine.filing = false;
+    this.filed[id] = {id, title: mine.title, folder: where(path)};
+    setTimeout(() => {delete this.filed[id]; this.render();}, this.plugin.filedShownMs || FILED_SHOWN_MS);
   }
-  render(){
-    const el=this.contentEl, {waiting,drop}=this.data;el.empty();this.busy=false;el.createEl('h2',{text:'Needs you'});
-    const meetings=waiting?.meetings||[], failed=waiting?.failed||[], processing=waiting?.processing||[], missing=waiting?.missing_summaries||[];
-    const imports=drop?.items||[];
-    const failedImports=imports.filter(i=>['failed','unsupported'].includes(i.state));
-    const activeImports=imports.filter(i=>IMPORT_ACTIVE.has(i.state));
-    const finishedImports=imports.filter(i=>IMPORT_FINISHED.has(i.state)).sort((a,b)=>(Number(b.completed_at)||0)-(Number(a.completed_at)||0));
-    const parts=[];
-    if(waiting)parts.push(`${plural(meetings.length,'meeting')} to review`,`${plural(failed.length,'recording')} failed`);
-    if(missing.length)parts.push(`${plural(missing.length,'note')} without a summary`);
-    const busy=processing.length+activeImports.length;
-    if(busy)parts.push(`${busy} in progress`);
-    if(failedImports.length)parts.push(`${plural(failedImports.length,'import')} could not be stored`);
-    el.createEl('p',{text:parts.join(' · ')||'Nothing to show yet.'});
-    const bar=el.createDiv();const refresh=bar.createEl('button',{text:'Refresh'});refresh.onclick=()=>this.refresh();
-    this.stamp=bar.createEl('span',{cls:'coppermind-stamp'});this.showStale();
-    if(this.flash)el.createEl('p',{text:this.flash,cls:'coppermind-notice'});
-    if(this.data.waitingError)el.createEl('p',{text:this.data.waitingError,cls:'coppermind-notice'});
-    if(this.data.dropError)el.createEl('p',{text:this.data.dropError,cls:'coppermind-notice'});
-    if(waiting){
-      if(!meetings.length&&!failed.length&&!missing.length&&!busy&&!failedImports.length&&!this.data.dropError)el.createEl('p',{text:'You are all caught up. Nothing is waiting for you.'});
-      else{
-        if(meetings.length){el.createEl('h3',{text:`Ready to review (${meetings.length})`});for(const meeting of meetings)this.meetingCard(meeting);}
-        if(failed.length){el.createEl('h3',{text:`Recordings needing attention (${failed.length})`});for(const recording of failed)this.failedCard(recording);}
-        if(missing.length){
-          el.createEl('h3',{text:`Notes without a summary (${missing.length})`});
-          this.pointToNotes(missing.length);
-          for(const note of missing)this.missingCard(note);
-        }
-      }
-    }
-    if(processing.length||activeImports.length){
-      el.createEl('h3',{text:`Still processing (${busy})`});
-      for(const item of processing){
-        const card=el.createDiv({cls:'coppermind-card'});card.createEl('h4',{text:item.title,cls:'coppermind-name'});
-        card.createEl('p',{text:item.message});
-        const since=item.since&&parseDate(item.since);if(since&&!isNaN(since))card.createEl('p',{text:'Since '+since.toLocaleString([],{dateStyle:'medium',timeStyle:'short'})+'.'});
-      }
-      for(const item of activeImports){
-        const card=el.createDiv({cls:'coppermind-card'});card.createEl('h4',{text:item.filename,cls:'coppermind-name'});
-        card.createEl('p',{text:{stabilizing:'Waiting for the file to finish syncing.',pending:'Waiting to be imported.'}[item.state]||'Importing now.'});
-      }
-    }
-    if(failedImports.length){
-      el.createEl('h3',{text:`Imports needing attention (${failedImports.length})`});
-      for(const item of failedImports)this.importCard(item);
-    }
-    if(finishedImports.length){
-      el.createEl('h3',{text:'Recently imported'});
-      for(const item of finishedImports.slice(0,IMPORT_SHOWN))this.importCard(item);
-      if(finishedImports.length>IMPORT_SHOWN)el.createEl('p',{text:`${finishedImports.length-IMPORT_SHOWN} older imports are not shown. They disappear from Coppermind by themselves after a week.`});
-    }
+  noteChanged(file) {
+    if (!this.loaded || !(this.data?.notes || []).some(n => n.path === file.path)) return;
+    clearTimeout(this.redrawTimer);
+    this.redrawTimer = setTimeout(() => {if (!this.typing) this.render();}, 300);
   }
-  meetingCard(meeting){
-    const card=this.contentEl.createDiv({cls:'coppermind-card'});
-    const open=card.createEl('button',{text:meeting.title});
-    if(meeting.date){const date=parseDate(meeting.date);if(!isNaN(date))card.createEl('p',{text:date.toLocaleDateString()});}
-    card.createEl('p',{text:'Open note and review'});
-    open.onclick=async()=>{
-      const file=this.app.vault.getAbstractFileByPath(meeting.path);
-      if(!file){let notice=card.querySelector('.coppermind-notice');if(!notice)notice=card.createEl('p',{cls:'coppermind-notice'});notice.setText('That note is not in this vault yet. Wait for sync, then refresh.');return;}
-      await this.app.workspace.getLeaf(false).openFile(file);this.plugin.noteFile=file;await this.plugin.open();
+  // -- the note's properties, straight from the vault ----------------------------------
+  keys() {return this.data?.page?.choices?.keys || {};}
+  choices() {return this.data?.page?.choices || {};}
+  fileOf(note) {return this.app.vault.getAbstractFileByPath(note.path);}
+  props(note) {
+    const keys = this.keys(), file = this.fileOf(note);
+    const cache = (file && this.app.metadataCache.getFileCache(file)?.frontmatter) || {};
+    const mine = this.local[note.id] ??= {};
+    mine.props ??= {};
+    for (const [key, value] of Object.entries(mine.props)) if (file && same(cache[key], value)) delete mine.props[key];
+    const get = name => name in mine.props ? mine.props[name] : cache[name];
+    return {
+      synced: !!file,
+      type: get(keys.type) ?? '',
+      account: list(get(keys.account)),
+      tags: list(get(keys.tags)),
+      meeting: get(keys.meeting) ?? note.meeting?.selected ?? '',
+      who: [...new Set(list(get(keys.attendees)).map(link))],
+      reviewed: get(keys.reviewed) === true,
     };
   }
-  missingCard(note){
-    const card=this.contentEl.createDiv({cls:'coppermind-card'});
-    const open=card.createEl('button',{text:note.title});
-    if(note.date){const date=parseDate(note.date);if(!isNaN(date))card.createEl('p',{text:date.toLocaleDateString()});}
-    card.createEl('p',{text:'The summary of this note could not be written. '+note.message});
-    open.onclick=async()=>{
-      const file=this.app.vault.getAbstractFileByPath(note.path);
-      if(!file){let notice=card.querySelector('.coppermind-notice');if(!notice)notice=card.createEl('p',{cls:'coppermind-notice'});notice.setText('That note is not in this vault yet. Wait for sync, then refresh.');return;}
+  async writeProp(note, key, value) {
+    const file = this.fileOf(note);
+    if (!file) {this.say(note.id, NOT_SYNCED, true); this.redraw(); return false;}
+    try {
+      await this.app.fileManager.processFrontMatter(file, fm => {fm[key] = value;});
+    } catch (e) {this.say(note.id, 'Could not change this note. Try again.', true); this.redraw(); return false;}
+    ((this.local[note.id] ??= {}).props ??= {})[key] = value;
+    this.say(note.id, '');
+    this.redraw();
+    return true;
+  }
+  say(id, text, problem) {this.local[id] = {...this.local[id], message: text, problem: !!problem};}
+  // -- drawing ------------------------------------------------------------------------
+  render() {
+    const el = this.contentEl, data = this.data; if (!data) return;
+    el.empty(); this.busy = false;
+    const waiting = data.waiting || {}, failed = waiting.failed || [], processing = waiting.processing || [];
+    const items = rules.arrange(data.notes, this.order, this.filed);
+    this.order = items.map(i => i.note?.id || i.filed.id);
+    const count = items.filter(i => i.note).length;
+    el.createEl('h2', {text: 'Review'});
+    if (count) el.createEl('p', {text: count + ' waiting', cls: 'coppermind-count'});
+    if (this.problem) this.trouble(this.problem);
+    if (data.notesError) this.trouble(data.notesError);
+    for (const recording of failed) this.failedRow(recording);
+    for (const item of processing) this.progressRow(item);
+    if (!items.length && !failed.length && !processing.length && !this.problem && !data.notesError) el.createEl('p', {text: 'Nothing to review.', cls: 'coppermind-empty'});
+    for (const item of items) item.note ? this.card(item.note) : this.filedRow(item.filed);
+    this.schedule();
+  }
+  trouble(text) {
+    const row = this.contentEl.createDiv({cls: 'coppermind-card coppermind-trouble'});
+    row.createEl('p', {text});
+    const again = row.createEl('button', {text: 'Try again'}); again.onclick = () => this.refresh();
+  }
+  failedRow(recording) {
+    const row = this.contentEl.createDiv({cls: 'coppermind-card coppermind-trouble'});
+    const head = row.createDiv({cls: 'coppermind-head'}); head.createEl('strong', {text: recording.title, cls: 'coppermind-name'});
+    row.createEl('p', {text: recording.message});
+    const bar = row.createDiv({cls: 'coppermind-actions'}), line = row.createEl('p', {cls: 'coppermind-notice'});
+    if (recording.can_retry) {
+      const again = bar.createEl('button', {text: 'Try again'});
+      again.onclick = async () => {again.disabled = true; line.setText('Trying again…');
+        try {await this.plugin.call('/v1/recordings/' + encodeURIComponent(recording.id) + '/retry', 'POST', {}); await this.refresh();}
+        catch (e) {line.setText(this.fail(e, 'Could not try again. Check your connection.')); again.disabled = false;}
+      };
+    }
+    if (recording.can_dismiss) {
+      const dismiss = bar.createEl('button', {text: 'Dismiss'});
+      dismiss.onclick = async () => {dismiss.disabled = true;
+        try {await this.plugin.call('/v1/recordings/' + encodeURIComponent(recording.id) + '/dismiss', 'POST', {}); await this.refresh();}
+        catch (e) {line.setText(this.fail(e, 'Could not dismiss this. Check your connection.')); dismiss.disabled = false;}
+      };
+    }
+  }
+  progressRow(item) {
+    const row = this.contentEl.createDiv({cls: 'coppermind-card coppermind-quiet'});
+    const head = row.createDiv({cls: 'coppermind-head'}); head.createEl('strong', {text: item.title, cls: 'coppermind-name'});
+    row.createEl('p', {text: item.message, cls: 'coppermind-hint'});
+  }
+  filedRow(filed) {
+    const row = this.contentEl.createDiv({cls: 'coppermind-card coppermind-filed'});
+    const head = row.createDiv({cls: 'coppermind-head'});
+    head.createEl('strong', {text: filed.title, cls: 'coppermind-name'});
+    row.createEl('p', {text: 'Filed ✓' + (filed.folder ? ' ' + filed.folder : ''), cls: 'coppermind-ok'});
+    const bar = row.createDiv({cls: 'coppermind-actions'}), line = row.createEl('p', {cls: 'coppermind-notice'});
+    const undo = bar.createEl('button', {text: 'Undo'});
+    undo.onclick = async () => {undo.disabled = true;
+      try {await this.plugin.call('/v1/notes/' + encodeURIComponent(filed.id) + '/reopen', 'POST', {}); delete this.filed[filed.id]; delete this.local[filed.id]; await this.refresh();}
+      catch (e) {line.setText(this.fail(e, 'Could not undo this. Check your connection.')); undo.disabled = false;}
+    };
+  }
+  redraw() {this.render();}
+  card(note) {
+    const card = this.contentEl.createDiv({cls: 'coppermind-card coppermind-note'});
+    const mine = this.local[note.id] ??= {}; mine.title = note.title;
+    const props = this.props(note);
+    const head = card.createDiv({cls: 'coppermind-head'});
+    const open = head.createEl('button', {text: note.title, cls: 'coppermind-title'});
+    open.onclick = async () => {
+      const file = this.fileOf(note);
+      if (!file) {new Notice(NOT_SYNCED); return;}
       await this.app.workspace.getLeaf(false).openFile(file);
     };
+    const shown = when(note.date); if (shown) head.createEl('span', {text: shown, cls: 'coppermind-hint'});
+    if (note.filing?.problem) {this.filingProblem(card, note); return;}
+    if (mine.reviewing) {this.reviewingLine(card, note, props); return;}
+    // The note is on the server and has not reached this device; its properties cannot be shown or changed yet.
+    if (!props.synced) {card.createEl('p', {text: 'Waiting to sync.', cls: 'coppermind-hint'}); return;}
+    const fields = card.createDiv({cls: 'coppermind-fields'});
+    if (note.meeting?.candidates?.length) this.meetingField(fields, note, props);
+    this.typeField(fields, note, props);
+    this.pillsField(fields, note, props, 'Account', this.keys().account, props.account, this.choices().accounts || [], false);
+    this.pillsField(fields, note, props, 'Tags', this.keys().tags, props.tags, this.choices().tags || [], this.choices().tags_closed);
+    // Piece 4 puts one voice picker per voice here. Until then voices are named in the note itself, and this shows who was matched.
+    const who = fields.createDiv({cls: 'coppermind-who'});
+    if (props.who.length) {who.createEl('label', {text: 'Who spoke'}); who.createSpan({text: props.who.join(', ')});}
+    const summary = rules.summaryLine(note);
+    if (summary) card.createEl('p', {text: summary.text, cls: summary.problem ? 'coppermind-notice coppermind-problem' : 'coppermind-hint'});
+    const message = mine.message;
+    const line = card.createEl('p', {text: message || '', cls: message ? (mine.problem ? 'coppermind-notice coppermind-problem' : 'coppermind-notice') : ''});
+    this.actions(card, note, props, summary, line);
   }
-  // Writing a note up again lives on one screen, so this one only points to it.
-  pointToNotes(count){
-    const el=this.contentEl;
-    el.createEl('p',{text:(count===1?'This note needs its summary written again.':'These notes need their summary written again.')+' Do it from Notes in Review with Resummarize.'});
-    const open=el.createEl('button',{text:'Open Notes in Review',cls:'mod-cta'});open.onclick=()=>this.plugin.openNotesInReview();
+  field(parent, label) {
+    const row = parent.createDiv({cls: 'coppermind-field'});
+    row.createEl('label', {text: label});
+    return row.createDiv({cls: 'coppermind-control'});
   }
-  failedCard(recording){
-    const card=this.contentEl.createDiv({cls:'coppermind-card'});card.createEl('h4',{text:recording.title,cls:'coppermind-name'});
-    card.createEl('p',{text:recording.message});
-    for(const problem of recording.field_problems||[])card.createEl('p',{text:'Details: the '+JSON.stringify(problem.field)+' field '+problem.reason+'.'});
-    if(recording.field_problems_unavailable)card.createEl('p',{text:'Details: the specific field was not recorded. Retry to check the note again.'});
-    if(recording.retry_after){const date=parseDate(recording.retry_after);if(!isNaN(date))card.createEl('p',{text:'Next attempt after '+date.toLocaleString()+'.'});}
-    if(recording.can_retry){
-      const button=card.createEl('button',{text:'Retry'}), feedback=card.createEl('p');
-      button.onclick=async()=>{button.disabled=true;feedback.setText('Queuing retry…');
-        try{await this.plugin.call('/v1/recordings/'+encodeURIComponent(recording.id)+'/retry','POST',{});await this.refresh();}
-        catch(e){feedback.setText(e.status===403?KEY_MISSING:'Could not queue retry. Check your connection and transcription settings, then try again.');button.disabled=false;}
-      };
+  meetingField(parent, note, props) {
+    const control = this.field(parent, 'Meeting');
+    const select = control.createEl('select');
+    select.createEl('option', {text: 'No meeting', value: ''});
+    for (const event of note.meeting.candidates) {
+      const at = when(event.start);
+      select.createEl('option', {text: event.title + (at ? ' · ' + at : ''), value: event.event_id});
     }
-    if(recording.can_dismiss)this.dismissControl(card,'This only removes the entry from this list and deletes nothing.','/v1/recordings/'+encodeURIComponent(recording.id)+'/dismiss');
-  }
-  // One pattern for every Dismiss: ask first, say what it does, and keep the entry when it fails.
-  dismissControl(card,warning,path){
-    const dismiss=card.createEl('button',{text:'Dismiss'}), confirm=card.createDiv();
-    dismiss.onclick=()=>{
-      dismiss.disabled=true;confirm.empty();this.busy=true;
-      confirm.createEl('p',{text:warning});
-      const yes=confirm.createEl('button',{text:'Dismiss entry'}), no=confirm.createEl('button',{text:'Cancel'}), note=confirm.createEl('p');
-      no.onclick=()=>{confirm.empty();dismiss.disabled=false;this.busy=false;};
-      yes.onclick=async()=>{yes.disabled=true;no.disabled=true;note.setText('Dismissing…');
-        try{await this.plugin.call(path,'POST',{});this.busy=false;await this.refresh();}
-        catch(e){note.setText(e.status===403?KEY_MISSING:'Could not dismiss. Check your connection, then try again.');yes.disabled=false;no.disabled=false;}
-      };
+    select.value = props.meeting;
+    select.onchange = async () => {
+      if (!select.value) return;
+      select.disabled = true;
+      try {
+        await this.plugin.call('/v1/notes/' + encodeURIComponent(note.id) + '/meeting', 'POST', {event_id: select.value});
+        ((this.local[note.id] ??= {}).props ??= {})[this.keys().meeting] = select.value; this.say(note.id, '');
+        await this.refresh();
+      } catch (e) {this.say(note.id, this.fail(e, 'Could not change the meeting. Check your connection.'), true); this.render();}
     };
   }
-  importCard(item){
-    const card=this.contentEl.createDiv({cls:'coppermind-card'});card.createEl('h4',{text:item.filename,cls:'coppermind-name'});
-    const failed=['failed','unsupported'].includes(item.state);
-    if(failed){
-      card.createEl('p',{text:item.state==='unsupported'?'This kind of file cannot be imported.':'This file could not be imported.'});
-      if(item.error)card.createEl('p',{text:item.error});
-    }else{
-      card.createEl('p',{text:(item.state==='already_imported'?'Already imported earlier. ':'')+this.importSummary(item)});
-      const part=(item.parts||[]).find(p=>p.artifact_id&&p.path);
-      const file=part&&this.app.vault.getAbstractFileByPath(part.path);
-      if(file){const open=card.createEl('button',{text:'Open'});open.onclick=async()=>{await this.app.workspace.getLeaf(false).openFile(file);};}
-      else if(part)card.createEl('p',{text:'It has not reached this device yet. Wait for sync, then refresh.'});
-      else if((item.parts||[]).some(p=>p.artifact))card.createEl('p',{text:'This device needs permission to read files before it can open it.'});
-    }
-    if(item.id)this.dismissControl(card,failed?'This only removes the entry from this list. Nothing is deleted.':'This only removes the entry from this list. What was imported stays.','/v1/dropbox/'+encodeURIComponent(item.id)+'/dismiss');
-  }
-  importSummary(item){
-    if((item.parts||[]).some(p=>p.import_id)){
-      const events=Number(item.event_count)||0;
-      return events?`Calendar imported: ${plural(events,'event')}.`:'Calendar imported.';
-    }
-    if(item.intake==='recording')return 'Saved, and sent to be transcribed. It will show up here when it is ready to review.';
-    if((item.parts||[]).some(p=>p.artifact_id||p.artifact))return 'Saved as a file in your vault.';
-    return 'Imported.';
-  }
-}
-const NOTES_POLL_MS=15000;
-const NOTES_BUSY_POLL_MS=4000;
-// A time as the owner reads it: just the time for today, with the day for any other.
-const when=value=>{
-  const date=value&&parseDate(value);if(!date||isNaN(date))return '';
-  const today=date.toDateString()===new Date().toDateString();
-  return date.toLocaleString([],today?{timeStyle:'short'}:{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
-};
-// How the write-up stands, in plain words.
-function stepText(label,step,unavailable){
-  const at=when(step.when);
-  switch(step.state){
-    case 'written':return label+': written'+(at?', finished '+at:'')+'.';
-    case 'working':return label+': being written now'+(at?', started '+at:'')+'.';
-    case 'failed':return label+': failed'+(at?' at '+at:'')+'. '+(step.reason||'No reason was given.');
-    case 'missing':return label+': missing.'+(step.reason?' '+step.reason:'');
-    case 'off':return label+': off.';
-    default:return label+': '+(unavailable||'not applicable')+'.';
-  }
-}
-// What needs the owner comes first: a held rewrite, a failure or a gap, then work in progress, then the rest.
-const attention=n=>n.kept||n.filing?.problem?0:n.writeup.state==='failed'||(n.can_resummarize&&n.writeup.state==='missing')?1:n.writeup.state==='working'?2:3;
-const WRITEUP_OFF='Write-ups are off, so notes cannot be written up again. Turn them on in Coppermind Admin, under How recordings are written up.';
-class NotesView extends ItemView {
-  constructor(leaf,plugin){super(leaf);this.plugin=plugin;this.generation=0;this.local={};this.seen={};this.order=[];this.filter='';}
-  getViewType(){return NOTES_VIEW;}
-  getDisplayText(){return 'Notes in Review';}
-  getIcon(){return 'file-text';}
-  async onOpen(){this.schedule();await this.refresh(false,true);}
-  async onClose(){clearTimeout(this.timer);this.generation++;}
-  schedule(){
-    // Look more often while something is being written, so a finish shows up without a click.
-    clearTimeout(this.timer);
-    const busy=(this.data?.notes||[]).some(n=>n.writeup.state==='working');
-    this.timer=setTimeout(async()=>{await this.refresh(true);this.schedule();},busy?(this.plugin.notesBusyPollMs||NOTES_BUSY_POLL_MS):(this.plugin.notesPollMs||NOTES_POLL_MS));
-  }
-  // Further per-note actions are added here: a label, when it is offered, its busy label, and what it does.
-  actions(){
-    return [
-      {label:'Resummarize',busy:'Resummarizing…',offered:n=>n.can_resummarize,working:n=>n.writeup.state==='working',
-        help:'Writes the note up again from the saved transcript. The recording is not transcribed again, and anything you edited by hand is kept.',
-        run:async n=>{const result=await this.plugin.call('/v1/notes/'+encodeURIComponent(n.id)+'/resummarize','POST',{});return result.already?'It is already being written up.':'Started. This can take a minute.';}},
-    ];
-  }
-  fail(e,fallback){return e.status===403?KEY_MISSING:e.status===422||e.status===404?e.message:fallback;}
-  // Every note in Review, a page at a time, so none is left out of the count, the failures or the bulk button.
-  async loadAll(){
-    let cursor='',data=null;const notes=[];
-    for(let pages=0;pages<100;pages++){
-      const page=await this.plugin.call('/v1/review/notes'+(cursor?'?cursor='+encodeURIComponent(cursor):''),'GET',undefined,true);
-      data=page;notes.push(...(page.notes||[]));cursor=page.next_cursor||'';
-      if(!cursor)break;
-    }
-    return {...data,notes};
-  }
-  // Rows keep their place while the screen is open. They are put in order again only when it is
-  // opened or Refresh is pressed; a note that arrives meanwhile goes to the end.
-  arrange(notes,resort){
-    if(resort||!this.order.length)this.order=[...notes].sort((x,y)=>attention(x)-attention(y)).map(n=>n.id);
-    const known=new Set(this.order);
-    for(const n of notes)if(!known.has(n.id))this.order.push(n.id);
-    const place=new Map(this.order.map((id,i)=>[id,i]));
-    return [...notes].sort((x,y)=>place.get(x.id)-place.get(y.id));
-  }
-  async refresh(quiet,resort){
-    if(quiet&&(this.refreshing||this.busy))return;
-    const generation=++this.generation, el=this.contentEl;this.refreshing=true;
-    if(!this.loaded){el.empty();this.shell=null;el.createEl('h2',{text:'Notes in Review'});el.createEl('p',{text:'Loading the notes in Review…'});}
-    else if(!quiet&&this.stamp)this.stamp.setText('Refreshing…');
-    try{
-      let data;
-      try{data=await this.loadAll();}
-      catch(e){
-        if(generation!==this.generation)return;
-        const problem=e.status===403?KEY_MISSING:NOT_ANSWERING;
-        if(this.loaded){this.problem=problem+' This is what Coppermind last said.';this.showStamp();return;}
-        el.empty();this.shell=null;el.createEl('h2',{text:'Notes in Review'});el.createEl('p',{text:problem,cls:'coppermind-notice'});
-        const retry=el.createEl('button',{text:'Retry'});retry.onclick=()=>this.refresh(false,true);return;
-      }
-      if(generation!==this.generation)return;
-      if(quiet&&this.busy)return;
-      this.problem='';this.updated=new Date();
-      const fingerprint=JSON.stringify(data)+JSON.stringify(this.local)+this.flash;
-      if(quiet&&this.loaded&&fingerprint===this.fingerprint){this.showStamp();return;}
-      if(resort)this.left=[];
-      this.noteFinished(data);
-      data.notes=this.arrange(data.notes||[],resort);
-      this.fingerprint=fingerprint;this.data=data;this.loaded=true;this.render();
-    }finally{if(generation===this.generation)this.refreshing=false;}
-  }
-  // A step that was being written and no longer is has just finished: say so on its row. A note that
-  // left Review while it was being written up is said so at the top.
-  noteFinished(data){
-    const present=new Set((data.notes||[]).map(n=>n.id));
-    for(const [id,title] of Object.entries(this.writing||{})){
-      if(!present.has(id)){this.left=[...(this.left||[]),title];delete this.writing[id];}
-    }
-    this.writing=this.writing||{};
-    for(const n of data.notes||[]){
-      if(n.writeup.state==='working')this.writing[n.id]=n.title;else delete this.writing[n.id];
-      for(const [key,step] of [['writeup',n.writeup]]){
-        const id=n.id+':'+key, before=this.seen[id];
-        if(before==='working'&&step.state!=='working')(this.local[n.id]??={}).finished=Object.assign(this.local[n.id].finished||{},{[key]:true});
-        this.seen[id]=step.state;
-      }
-      if(this.local[n.id]?.message&&!this.local[n.id].problem&&!this.local[n.id].keep&&n.writeup.state==='working')delete this.local[n.id].message;
-    }
-  }
-  showStamp(){
-    if(!this.stamp)return;
-    this.stamp.setText((this.problem?this.problem+' ':'')+'Last updated '+this.updated.toLocaleTimeString([],{timeStyle:'short'})+'.');
-  }
-  // The parts that stay put while typing in the filter box or while the list redraws.
-  build(){
-    const el=this.contentEl;el.empty();
-    const shell=this.shell={};
-    el.createEl('h2',{text:'Notes in Review'});
-    shell.summary=el.createEl('p');
-    const bar=el.createDiv();
-    const refresh=bar.createEl('button',{text:'Refresh'});refresh.onclick=()=>this.refresh(false,true);
-    shell.stamp=this.stamp=bar.createEl('span',{cls:'coppermind-stamp'});
-    shell.notices=el.createDiv();
-    shell.bulk=el.createDiv();
-    shell.flash=el.createDiv();
-    shell.find=el.createEl('input',{attr:{type:'search',placeholder:'Find a note by title'},cls:'coppermind-find'});
-    shell.find.value=this.filter;
-    shell.find.oninput=()=>{this.filter=shell.find.value;this.renderList();};
-    shell.list=el.createDiv();
-  }
-  render(){
-    const data=this.data, notes=data.notes;this.busy=false;
-    if(!this.shell)this.build();
-    const shell=this.shell;
-    const missing=notes.filter(n=>n.can_resummarize&&['missing','failed'].includes(n.writeup.state));
-    const working=notes.filter(n=>n.writeup.state==='working');
-    const parts=[plural(data.total??notes.length,'note')+' in Review'];
-    if(missing.length)parts.push(missing.length+' without a write-up');
-    if(working.length)parts.push(working.length+' in progress');
-    shell.summary.setText(parts.join(' · ')+'.');
-    this.showStamp();
-    shell.notices.empty();
-    if(data.writeup_on===false)shell.notices.createEl('p',{text:WRITEUP_OFF,cls:'coppermind-notice'});
-    for(const title of this.left||[])shell.notices.createEl('p',{text:'"'+title+'" left Review while it was being written up.',cls:'coppermind-notice'});
-    shell.bulk.empty();
-    if(missing.length){
-      const button=shell.bulk.createEl('button',{text:'Resummarize all missing ('+missing.length+')',cls:'mod-cta'});
-      button.onclick=()=>this.resummarizeAll(button,missing);
-    }
-    shell.flash.empty();if(this.flash)shell.flash.createEl('p',{text:this.flash,cls:'coppermind-notice'});
-    this.renderList();
-  }
-  renderList(){
-    const shell=this.shell, notes=this.data.notes, needle=this.filter.trim().toLowerCase();
-    shell.list.empty();this.feedback={};
-    const shown=notes.filter(n=>!needle||n.title.toLowerCase().includes(needle));
-    if(!notes.length){shell.list.createEl('p',{text:'No notes are waiting in Review. Notes from new recordings appear here.'});return;}
-    if(!shown.length){shell.list.createEl('p',{text:'No note in Review has "'+this.filter.trim()+'" in its title.'});return;}
-    if(needle)shell.list.createEl('p',{text:'Showing '+shown.length+' of '+notes.length+'.',cls:'coppermind-hint'});
-    for(const note of shown)this.row(note,shell.list);
-  }
-  async resummarizeAll(button,missing){
-    button.disabled=true;this.flash='Starting '+plural(missing.length,'note')+'…';this.shell.flash.empty();this.shell.flash.createEl('p',{text:this.flash,cls:'coppermind-notice'});
-    let started=0;const problems=new Map();
-    for(const n of missing){
-      try{await this.plugin.call('/v1/notes/'+encodeURIComponent(n.id)+'/resummarize','POST',{});started++;}
-      catch(e){const why=this.fail(e,'Could not start. Check your connection.');problems.set(why,[...(problems.get(why)||[]),n.title]);}
-    }
-    const failed=[...problems].map(([why,titles])=>plural(titles.length,'note')+' not started ('+titles.join(', ')+'): '+why);
-    this.flash=(started?'Started '+plural(started,'note')+'.':'No note could be started.')+(failed.length?' '+failed.join(' '):'');
-    await this.refresh();
-  }
-  row(note,list){
-    const card=list.createDiv({cls:'coppermind-card coppermind-row'});
-    const head=card.createDiv({cls:'coppermind-head'});
-    const open=head.createEl('button',{text:note.title,cls:'coppermind-title'});
-    open.onclick=async()=>{
-      const file=this.app.vault.getAbstractFileByPath(note.path);
-      if(!file){this.say(note.id,'That note is not in this vault yet. Wait for sync, then refresh.',true);return;}
-      await this.app.workspace.getLeaf(false).openFile(file);
-    };
-    const day=note.date&&parseDate(note.date);
-    if(day&&!isNaN(day))head.createEl('span',{text:day.toLocaleDateString([],{month:'short',day:'numeric'}),cls:'coppermind-hint'});
-    if(note.filing?.problem){
-      card.createEl('p',{text:note.filing.problem,cls:'coppermind-notice'});
-      const bar=card.createDiv({cls:'coppermind-actions'});
-      const again=bar.createEl('button',{text:'Try again'});
-      again.onclick=async()=>{
-        again.disabled=true;again.setText('Trying…');this.say(note.id,'Asking Coppermind…');
-        try{const result=await this.plugin.call('/v1/notes/'+encodeURIComponent(note.id)+'/file-again','POST',{});this.say(note.id,result.filed?'Filed.':'Tried again just now.',!result.filed);await this.refresh();}
-        catch(e){again.disabled=false;again.setText('Try again');this.say(note.id,this.fail(e,'Could not start. Check your connection, then try again.'),true);}
-      };
-      const message=this.local[note.id]?.message;
-      const line=card.createEl('p',{text:message||'',cls:message?'coppermind-notice':''});this.feedback[note.id]=line;
+  typeField(parent, note, props) {
+    const types = this.choices().types || [], key = this.keys().type;
+    if (!key || !types.length) return;
+    const control = this.field(parent, 'Type');
+    if (types.length > 4) {
+      const select = control.createEl('select');
+      for (const type of ['', ...types]) select.createEl('option', {text: type || 'None', value: type});
+      select.value = props.type; select.onchange = () => this.writeProp(note, key, select.value);
       return;
     }
-    // A rewrite held back for an edited note is one plain status, not "written" and "not changed" together.
-    const writeup=note.kept?'Write-up: a new write-up is ready. Your note has not been changed yet.':stepText('Write-up',note.writeup,'this note is not from a recording');
-    card.createEl('p',{text:writeup,cls:'coppermind-status'});
-    const done=this.local[note.id]?.finished||{};
-    if(!note.kept&&done.writeup&&note.writeup.state==='written')card.createEl('p',{text:'The write-up has finished.',cls:'coppermind-notice'});
-    const bar=card.createDiv({cls:'coppermind-actions'});
-    if(note.kept){
-      const compare=bar.createEl('button',{text:'Compare with my note',cls:'mod-cta'});
-      compare.onclick=()=>{this.busy=true;new KeptRewriteModal(this.app,this.plugin,note,async message=>{this.busy=false;this.local[note.id]={...this.local[note.id],message,keep:true};await this.refresh();},()=>{this.busy=false;}).open();};
+    const group = control.createDiv({cls: 'coppermind-choice'});
+    for (const type of types) {
+      const button = group.createEl('button', {text: type.charAt(0).toUpperCase() + type.slice(1), cls: type === props.type ? 'coppermind-chosen mod-cta' : ''});
+      button.onclick = () => this.writeProp(note, key, type);
     }
-    for(const action of this.actions()){
-      if(!action.offered(note))continue;
-      const working=action.working(note);
-      const button=bar.createEl('button',{text:working?action.busy:action.label});button.disabled=working;button.title=action.help;
-      button.onclick=async()=>{
-        button.disabled=true;button.setText(action.busy);this.say(note.id,'Asking Coppermind…');
-        try{const message=await action.run(note);this.say(note.id,message);await this.refresh();}
-        catch(e){button.disabled=false;button.setText(action.label);this.say(note.id,this.fail(e,'Could not start. Check your connection, then try again.'),true);}
+  }
+  pillsField(parent, note, props, label, key, values, options, closed) {
+    if (!key) return;
+    const control = this.field(parent, label);
+    const pills = control.createDiv({cls: 'coppermind-pills'});
+    for (const value of values) {
+      const pill = pills.createEl('span', {cls: 'coppermind-pill'}); pill.createSpan({text: value});
+      const remove = pill.createEl('button', {text: '×', cls: 'coppermind-remove', attr: {'aria-label': 'Remove ' + value}});
+      remove.onclick = () => this.writeProp(note, key, rules.withValue(values, value, false));
+    }
+    const id = 'coppermind-' + label.toLowerCase() + '-' + note.id;
+    const add = pills.createEl('input', {attr: {type: 'text', placeholder: '+ add', list: id}, cls: 'coppermind-add'});
+    const datalist = pills.createEl('datalist', {attr: {id}});
+    for (const option of options) if (!values.includes(option)) datalist.createEl('option', {value: option});
+    add.onfocus = () => {this.typing = true;}; add.onblur = () => {this.typing = false;};
+    add.onchange = async () => {
+      let value = add.value.trim(); this.typing = false; if (!value) return;
+      const known = options.find(o => o.toLowerCase() === value.toLowerCase());
+      if (known) value = known;
+      else if (closed) {this.say(note.id, '“' + value + '” is not one of your tags.', true); this.render(); return;}
+      await this.writeProp(note, key, rules.withValue(values, value, true));
+    };
+  }
+  filingProblem(card, note) {
+    card.createEl('p', {text: note.filing.problem, cls: 'coppermind-notice coppermind-problem'});
+    const bar = card.createDiv({cls: 'coppermind-actions'}), line = card.createEl('p', {cls: 'coppermind-notice'});
+    const again = bar.createEl('button', {text: 'Try again'});
+    again.onclick = async () => {
+      again.disabled = true; line.setText('Trying again…');
+      try {const result = await this.plugin.call('/v1/notes/' + encodeURIComponent(note.id) + '/file-again', 'POST', {}); line.setText(result.filed ? 'Filed.' : result.problem || ''); await this.refresh();}
+      catch (e) {again.disabled = false; line.setText(this.fail(e, 'Could not try again. Check your connection.'));}
+    };
+  }
+  reviewingLine(card, note, props) {
+    card.createEl('p', {text: 'Reviewed. Filing…', cls: 'coppermind-hint'});
+    const bar = card.createDiv({cls: 'coppermind-actions'});
+    const undo = bar.createEl('button', {text: 'Undo'});
+    undo.onclick = async () => {
+      undo.disabled = true;
+      if (await this.writeProp(note, this.keys().reviewed, false)) {this.local[note.id].reviewing = false; this.render();}
+      else undo.disabled = false;
+    };
+  }
+  // -- the two buttons ----------------------------------------------------------------
+  actions(card, note, props, summary, line) {
+    const bar = card.createDiv({cls: 'coppermind-actions'});
+    const confirm = card.createDiv({cls: 'coppermind-confirm'});
+    if (note.can_resummarize) {
+      const working = !!summary?.busy;
+      let model = '';
+      const models = this.models || [];
+      if (models.length > 1) {
+        const select = bar.createEl('select', {attr: {'aria-label': 'Model', title: 'The model for this one Resummarize'}, cls: 'coppermind-model'});
+        for (const name of models) select.createEl('option', {text: name, value: name});
+        select.value = this.defaultModel; model = select.value; select.onchange = () => {model = select.value;};
+      }
+      const button = bar.createEl('button', {text: working ? 'Resummarizing…' : 'Resummarize'}); button.disabled = working;
+      const start = async overwrite => {
+        button.disabled = true; button.setText('Resummarizing…'); line.setText('');
+        const body = {}; if (model && model !== this.defaultModel) body.model = model; if (overwrite) body.overwrite = true;
+        try {await this.plugin.call('/v1/notes/' + encodeURIComponent(note.id) + '/resummarize', 'POST', body); this.say(note.id, ''); await this.refresh();}
+        catch (e) {button.disabled = false; button.setText('Resummarize'); this.busy = false; this.say(note.id, this.fail(e, 'Could not start. Check your connection.'), true); this.render();}
+      };
+      button.onclick = () => {
+        if (!note.edited) return start(false);
+        this.busy = true; button.disabled = true; confirm.empty();
+        confirm.createEl('p', {text: 'Replace your edited note with the new summary? Your version stays in history.'});
+        const yes = confirm.createEl('button', {text: 'Replace', cls: 'mod-warning'}), no = confirm.createEl('button', {text: 'Cancel'});
+        yes.onclick = () => {this.busy = false; confirm.empty(); return start(true);};
+        no.onclick = () => {this.busy = false; confirm.empty(); button.disabled = false;};
       };
     }
-    const message=this.local[note.id]?.message;
-    const line=card.createEl('p',{text:message||'',cls:message?'coppermind-notice':''});this.feedback[note.id]=line;
-  }
-  say(id,text,problem){
-    this.local[id]={...this.local[id],message:text,problem:!!problem};
-    const line=this.feedback?.[id];if(!line)return;line.setText(text);line.addClass?.('coppermind-notice');
-  }
-}
-// Shows what an edited note says against the new write-up, and replaces the note only on request.
-class KeptRewriteModal extends Modal {
-  constructor(app,plugin,note,done,closed){super(app);this.plugin=plugin;this.note=note;this.done=done;this.closed=closed;}
-  onOpen(){
-    const el=this.contentEl, kept=this.note.kept;el.empty();
-    el.createEl('h3',{text:this.note.title});
-    el.createEl('p',{text:'You edited this note. Red is yours, green is the new write-up.'});
-    const box=el.createEl('pre',{cls:'coppermind-diff'});
-    for(const line of (kept.difference||[]).filter(l=>!/^(---|\+\+\+|@@)/.test(l)))box.createEl('div',{text:line||' ',cls:line.startsWith('+')&&!line.startsWith('+++')?'coppermind-added':line.startsWith('-')&&!line.startsWith('---')?'coppermind-removed':''});
-    if(!(kept.difference||[]).length)box.createEl('div',{text:'The two are the same.'});
-    const status=el.createEl('p',{cls:'coppermind-notice'});
-    const replace=el.createEl('button',{text:'Replace my note with the new write-up',cls:'mod-warning'});
-    const keep=el.createEl('button',{text:'Keep my note'});
-    replace.onclick=async()=>{
-      replace.disabled=true;keep.disabled=true;status.setText('Replacing…');
-      try{await this.plugin.call('/v1/notes/'+encodeURIComponent(this.note.id)+'/resummarize','POST',{replace:true,if_match:kept.if_match});this.replaced=true;this.close();await this.done('Replaced with the new write-up.');}
-      catch(e){status.setText(e.status===403?KEY_MISSING:e.status===422||e.status===404?e.message:'Could not replace the note. Check your connection, then try again.');replace.disabled=false;keep.disabled=false;}
+    const done = bar.createEl('button', {text: 'Reviewed', cls: 'mod-cta'});
+    done.onclick = async () => {
+      done.disabled = true;
+      if (await this.writeProp(note, this.keys().reviewed, true)) {(this.local[note.id] ??= {}).reviewing = true; this.render(); this.refresh(true);}
+      else done.disabled = false;
     };
-    keep.onclick=()=>this.close();
   }
-  onClose(){this.contentEl.empty();if(!this.replaced)this.closed?.();}
-}
-class MergeModal extends Modal {
-  constructor(app,destination,summary,transcriptPath,confirm){super(app);this.destination=destination;this.summary=summary;this.transcriptPath=transcriptPath;this.confirm=confirm;}
-  onOpen(){
-    const el=this.contentEl;el.empty();el.createEl('h2',{text:'Add this recording to '+this.destination.title+'?'});
-    el.createEl('p',{text:'Your existing text stays word for word. The recording summary and a transcript link will be added below it.'});
-    if(typeof this.summary==='string')el.createEl('pre',{text:this.summary});
-    else for(const key of Object.keys(this.summary||{}))if(this.summary[key]?.trim()){el.createEl('h3',{text:summaryLabel(key,false)});el.createEl('p',{text:this.summary[key]});}
-    if(this.transcriptPath){const link=el.createEl('a',{text:'View transcript',href:'#'});link.onclick=e=>{e.preventDefault();this.app.workspace.openLinkText(this.transcriptPath,'',false);};}
-    el.createEl('p',{text:'The recording will belong to your existing note and this separate recording note will be retired.'});
-    const confirm=el.createEl('button',{text:'Confirm merge',cls:'mod-cta'});confirm.onclick=async()=>{this.close();await this.confirm();};
-    const back=el.createEl('button',{text:'Go back'});back.onclick=()=>this.close();
+  // The model choice is what the connection reports; the configured one starts selected.
+  async loadModels() {
+    try {
+      const result = await this.plugin.call('/v1/review/models', 'GET', undefined, true);
+      this.models = result.models || []; this.defaultModel = result.default || this.models[0] || '';
+    } catch {this.models = []; this.defaultModel = '';}
+    this.modelsAt = Date.now();
   }
-  onClose(){this.contentEl.empty();}
 }
 class DeleteVoiceModal extends Modal {
   constructor(app, person, confirm, options={}){super(app);this.person=person;this.confirm=confirm;this.options=options;this.done=false;}
@@ -801,6 +470,7 @@ class PeopleView extends ItemView {
     }catch(e){el.createEl('p',{text:e.message,cls:'coppermind-notice'});}
   }
 }
+
 const NOT_COPPERMIND='That address did not answer like Coppermind. Check the address and try again.';
 function readJson(result){try{const value=result.json;return value&&typeof value==='object'?value:null;}catch{return null;}}
 function withDetails(message,result,json){
@@ -846,23 +516,20 @@ class Settings extends PluginSettingTab {
     new Setting(el).setName('Use a key instead').setDesc('Only if you would rather paste a key than pair with a code. In Coppermind Admin, open Connected apps, choose Connect an app, then Something else, and create a new key with: '+COMPANION_PERMISSIONS+'. Select that key here. Only the name of the saved key is kept in these settings.').addComponent(container=>new SecretComponent(this.app,container).setValue(this.plugin.settings.secret).onChange(async v=>{this.plugin.settings.secret=v;await this.plugin.saveData(this.plugin.settings);}));
   }
 }
+
 module.exports=class CoppermindReview extends Plugin {
+  static get rules(){return rules;}
   async onload(){
     this.settings={url:'',secret:'',...await this.loadData()};
-    this.registerView(WAITING_VIEW,leaf=>new HomeView(leaf,this));
-    this.registerView(PEOPLE_VIEW,leaf=>new PeopleView(leaf,this));
-    this.registerView(NOTES_VIEW,leaf=>new NotesView(leaf,this));
     this.registerView(VIEW,leaf=>new ReviewView(leaf,this));
+    this.registerView(PEOPLE_VIEW,leaf=>new PeopleView(leaf,this));
     this.addSettingTab(new Settings(this.app,this));
-    // The Imports panel is gone: let go of any copy a saved layout still holds.
+    // Let go of any copy of a retired screen that a saved layout still holds.
+    for(const type of RETIRED_VIEWS)this.app.workspace.detachLeavesOfType?.(type);
     this.app.workspace.detachLeavesOfType?.('coppermind-imports');
-    this.addCommand({id:'meetings-to-review',name:'Needs you',callback:()=>this.openWaiting()});
-    this.addRibbonIcon('list-checks','Needs you',()=>this.openWaiting());
-    this.addCommand({id:'notes-in-review',name:'Notes in Review',callback:()=>this.openNotesInReview()});
+    this.addCommand({id:'review',name:'Review',callback:()=>this.openReview()});
+    this.addRibbonIcon('clipboard-check','Review',()=>this.openReview());
     this.addCommand({id:'manage-people',name:'Manage people and voice recognition',callback:()=>this.openPeople()});
-    this.addCommand({id:'review-current-note',name:'Review current note',callback:()=>this.open()});
-    this.addRibbonIcon('clipboard-check','Review with Coppermind',()=>this.open());
-    this.registerEvent(this.app.workspace.on('file-open',file=>{if(file)this.noteFile=file;}));
     this.addCommand({id:'pair-device',name:'Pair this device with Coppermind',callback:()=>new PairModal(this.app,this).open()});
     // A device that has the add-on but no key yet is asked for the pairing code once it is ready.
     this.app.workspace.onLayoutReady?.(()=>{if(!this.paired())new PairModal(this.app,this).open();});
@@ -888,13 +555,9 @@ module.exports=class CoppermindReview extends Plugin {
     this.settings.secret=PAIR_SECRET;await this.saveData(this.settings);
     return json.name;
   }
-  async openWaiting(){
-    let leaf=this.app.workspace.getLeavesOfType(WAITING_VIEW)[0]||this.app.workspace.getRightLeaf(false);
-    await leaf.setViewState({type:WAITING_VIEW,active:true});await this.app.workspace.revealLeaf(leaf);await leaf.view.refresh();
-  }
-  async openNotesInReview(){
-    let leaf=this.app.workspace.getLeavesOfType(NOTES_VIEW)[0]||this.app.workspace.getRightLeaf(false);
-    await leaf.setViewState({type:NOTES_VIEW,active:true});await this.app.workspace.revealLeaf(leaf);await leaf.view.refresh();
+  async openReview(){
+    let leaf=this.app.workspace.getLeavesOfType(VIEW)[0]||this.app.workspace.getRightLeaf(false);
+    await leaf.setViewState({type:VIEW,active:true});await this.app.workspace.revealLeaf(leaf);await leaf.view.refresh();
   }
   async openPeople(){
     const file=this.app.workspace.getActiveFile();
@@ -902,7 +565,6 @@ module.exports=class CoppermindReview extends Plugin {
     await leaf.setViewState({type:PEOPLE_VIEW,active:true});await this.app.workspace.revealLeaf(leaf);
     if(file){try{const result=await this.call('/v1/entities?kind=person&limit=50&q='+encodeURIComponent(file.basename));const person=result.items?.find(p=>p.path===file.path);if(person)await leaf.view.show(person);}catch{}}
   }
-  async open(){this.noteFile=this.app.workspace.getActiveFile()||this.noteFile;let leaf=this.app.workspace.getLeavesOfType(VIEW)[0]||this.app.workspace.getRightLeaf(false);await leaf.setViewState({type:VIEW,active:true});await this.app.workspace.revealLeaf(leaf);await leaf.view.refresh();}
   // Reads that a screen waits on give up on a silent server. Writes are never cut off, because the server may still be working on them.
   withTimeout(request){
     if(typeof setTimeout!=='function')return request;
@@ -915,8 +577,6 @@ module.exports=class CoppermindReview extends Plugin {
     const key=this.app.secretStorage?.getSecret(this.settings.secret);if(!key)throw Error('This device is not paired with Coppermind yet. '+PAIR_HELP);
     const request=requestUrl({url:this.settings.url+path,method,headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined,throw:false});
     const result=timed?await this.withTimeout(request):await request;
-    const namesSpeakers=Object.values(body?.manual_speakers||{}).some(Boolean)||(body?.selected||[]).some(i=>!!body?.speaker_choices?.[i]);
-    if(result.status===403&&method==='POST'&&path.endsWith('/review')&&namesSpeakers)throw Error('This key cannot read people, so speakers cannot be named with it. In Coppermind Admin, open Connected apps and either pair this device with a code, or open the key and tick Read notes, Add and change notes, Hand in recordings and files, and Read and correct people and companies.');
     const json=readJson(result);
     if(result.status>=400)throw Object.assign(withDetails(json?.message||'Coppermind could not complete the request. Check connectivity and permissions.',result,json),{status:result.status});
     if(json)return json;
