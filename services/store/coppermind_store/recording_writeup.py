@@ -400,7 +400,14 @@ def unresolved_reason(captured: bool, found: int, error: Exception | None) -> st
     return f"{found} calendar events overlap the recording's start and none stood out"
 
 
-async def resolve_title(context: Any, job: Any, transcript: str) -> tuple[str, dict[str, Any]]:
+async def resolve_title(
+    context: Any, job: Any, transcript: str, meeting: str | None = None
+) -> tuple[str, dict[str, Any]]:
+    """The note's title and the calendar evidence for it.
+
+    `meeting` is the owner's own choice when the note is written again: an event id is used
+    as it stands, even outside the recording's time, and an empty string means the owner
+    removed the match, so none is made. None leaves the choice to the recording."""
     zone = ZoneInfo(context.store.control.settings().general.timezone)
     fields = dict(job.frontmatter)
     date_key = context.store.control.schema().role("date_key")
@@ -416,12 +423,17 @@ async def resolve_title(context: Any, job: Any, transcript: str) -> tuple[str, d
     evidence: dict[str, Any] = {"matched": False}
     found, error = 0, None
     try:
-        events = await context.calendar_candidates(SimpleNamespace(frontmatter=fields))
-        events = meeting_match.overlapping(events, captured.isoformat()) if captured else []
+        day = await context.calendar_candidates(SimpleNamespace(frontmatter=fields))
+        events = meeting_match.overlapping(day, captured.isoformat()) if captured else []
         found = len(events)
         assignment = context.config().assignments["enrichment"]
         linked = fields.get(assignment.event_key(fields)) if assignment.event_field else None
         chosen = [event for event in events if event["event_id"] == linked] if linked else []
+        owner = [event for event in day if event["event_id"] == meeting] if meeting else []
+        if owner:
+            chosen = owner
+        if meeting == "":
+            chosen, events = [], []
         if not chosen:
             if len(events) == 1:
                 # Only meeting on at that time is not evidence: a call that is not on the
@@ -727,8 +739,10 @@ async def generate(
     transcript: dict[str, Any],
     voice_map: dict[str, str],
     model: str = "",
+    meeting: str | None = None,
 ) -> dict[str, Any]:
-    """Write a recording up. `model` stands in for the configured model for this run only."""
+    """Write a recording up. `model` stands in for the configured model for this run only.
+    `meeting` carries the owner's own choice of meeting (see `resolve_title`)."""
     from coppermind_store.recordings import render_transcript
 
     key = "recording-writeups/" + job.id
@@ -742,7 +756,7 @@ async def generate(
     if model:
         limits = limits.model_copy(update={"model": model})
     text = render_transcript(transcript)
-    title, calendar = await resolve_title(context, job, text)
+    title, calendar = await resolve_title(context, job, text, meeting)
     labels = sorted(
         {segment["speaker"] for segment in transcript["segments"] if segment.get("speaker")}
     )

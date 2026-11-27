@@ -39,10 +39,10 @@ async function fixture(local, overrides={}){
     metadataCache:{getFileCache:file=>files[file.path]?{frontmatter:files[file.path]}:null,on:(name,fn)=>{changed.push(fn);return {};}},
     fileManager:{async processFrontMatter(file,fn){if(overrides.processFails)throw Error('disk');const fm=files[file.path];fn(fm);writes.push({path:file.path,fm:JSON.parse(JSON.stringify(fm))});}},
     secretStorage:{getSecret:()=> 'synthetic-credential'},
-    vault:{getAbstractFileByPath:path=>files[path]?{path,basename:path.split('/').pop().replace(/\.md$/,'')}:null},
+    vault:{getAbstractFileByPath:path=>files[path]?{path,basename:path.split('/').pop().replace(/\.md$/,'')}:null,read:async file=>(overrides.texts||{})[file.path]??''},
     workspace:{getActiveFile:()=>null,on:()=>null,getLeavesOfType:()=>[],getRightLeaf:()=>leaf,revealLeaf:async()=>{},detachLeavesOfType:type=>detached.push(type),getLeaf:()=>({openFile:async file=>opened.push(file.path)})}};
   leaf.app=app;
-  const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,Modal:class{constructor(app){this.app=app;this.contentEl=new El();}open(){modals.push(this);this.onOpen();}close(){this.onClose();}},PluginSettingTab:class{constructor(){this.containerEl=new El();}},SecretComponent:class{setValue(){return this;}onChange(){return this;}},Notice:class{constructor(text){notices.push(text);}},requestUrl:async req=>{requests.push(req);const url=new URL(req.url);
+  const context={module:{exports:{}},require:()=>({Plugin,ItemView,Setting,Modal:class{constructor(app){this.app=app;this.contentEl=new El();}open(){modals.push(this);this.onOpen();}close(){this.onClose();}},PluginSettingTab:class{constructor(){this.containerEl=new El();}},MarkdownView:class{},SecretComponent:class{setValue(){return this;}onChange(){return this;}},Notice:class{constructor(text){notices.push(text);}},requestUrl:async req=>{requests.push(req);const url=new URL(req.url);
     const routed=overrides.routes&&await overrides.routes(req,url);if(routed)return routed;
     if(req.url.endsWith('/v1/pair')&&overrides.pair)return overrides.pair(req);
     if(req.url.endsWith('/v1/anything')&&overrides.page)return overrides.page(req);
@@ -300,7 +300,7 @@ async function review(state={}){
   const s={notes:[],failed:[],processing:[],models:{default:'gpt-default',models:['gpt-default','claude-opus-5-5'],problem:''},files:{},...state};
   for(const n of s.notes)s.files[n.path]??=frontmatter();
   const calls=[];
-  const f=await fixture(undefined,{files:s.files,routes:async(req,url)=>{
+  const f=await fixture(undefined,{files:s.files,texts:s.texts,routes:async(req,url)=>{
     const p=url.pathname;
     if(s.respond){const answered=await s.respond(req,p);if(answered)return answered;}
     if(p==='/v1/recordings/waiting')return ok({meetings:[],failed:s.failed,processing:s.processing,missing_summaries:[]});
@@ -636,4 +636,49 @@ test('the order is the newest first and a card filed this session keeps its plac
     const out=f.rules.arrange([n('c'),n('a')],['b','a'],{b:{id:'b'}});
     assert.deepEqual(JSON.parse(JSON.stringify(out.map(i=>i.note?.id||'filed:'+i.filed.id))),['c','filed:b','a']);
   });
+});
+
+const digest=async text=>'sha256:'+Buffer.from(await webcrypto.subtle.digest('SHA-256',Buffer.from(text))).toString('hex');
+const SUMMARY={summary:'Launch plan.',decisions:'- Ship Friday.',action_items:'- Casey: send the plan.'};
+const olderNote=over=>note('n1','Acme call',{takes_model:false,...over});
+
+test('an older recording marked Reviewed still lands its generated summary, decisions and action items',async()=>{
+  const text='---\nid: n1\n---\nBody.\n';
+  const hash=await digest(text);
+  const f=await review({notes:[olderNote()],texts:{'Review/Acme call.md':text},respond:(req,p)=>p==='/v1/notes/n1/review'&&req.method==='GET'?ok({state:'suggested',job_id:'job-1',meeting_summary:SUMMARY,note:{content_hash:hash}}):null});
+  await f.button('Reviewed').onclick();
+  assert.deepEqual(plain(f.calls),[{path:'/v1/notes/n1/review',body:{if_match:hash,job_id:'job-1',selected:[],meeting_summary:SUMMARY,confirmation:'Complete review'}}]);
+  assert.equal(f.writes.length,0,'the property alone would file the note without its summary');
+  assert.ok(f.texts().includes('Reviewed. Filing…'));
+  await f.button('Undo').onclick();
+  assert.deepEqual(posted(f),['/v1/notes/n1/review','/v1/notes/n1/reopen']);
+});
+
+test('an older recording with no summary waiting is marked reviewed on the note itself',async()=>{
+  const f=await review({notes:[olderNote()],respond:(req,p)=>p==='/v1/notes/n1/review'&&req.method==='GET'?ok({state:'failed',job_id:null,meeting_summary:null,note:{content_hash:'sha256:x'}}):null});
+  await f.button('Reviewed').onclick();
+  assert.equal(f.files['Review/Acme call.md'].reviewed,true);
+  assert.deepEqual(posted(f),[]);
+});
+
+test('an older recording whose latest edits have not reached the server waits instead of filing without them',async()=>{
+  const f=await review({notes:[olderNote()],texts:{'Review/Acme call.md':'edited here only'},respond:(req,p)=>p==='/v1/notes/n1/review'&&req.method==='GET'?ok({state:'suggested',job_id:'job-1',meeting_summary:SUMMARY,note:{content_hash:'sha256:server-copy'}}):null});
+  await f.button('Reviewed').onclick();
+  assert.deepEqual(posted(f),[]);
+  assert.equal(f.writes.length,0);
+  assert.ok(f.texts().includes('This note is still syncing. Try again in a moment.'));
+  assert.equal(f.button('Reviewed').disabled,false);
+});
+
+test('a refresh that finds something new leaves the screen alone while a property box is being typed in, and catches up after',async()=>{
+  const f=await review({notes:[note('n1','Acme call')]});
+  const box=f.view.contentEl.all().find(e=>e.tag==='input'&&e.attr?.list?.startsWith('coppermind-account'));
+  box.onfocus();box.value='Contoso, half typed';
+  f.s.processing=[{id:'r9',title:'New recording',message:'Waiting for its turn to be transcribed.'}];
+  await f.view.refresh(true);
+  assert.ok(f.view.contentEl.all().includes(box),'the box being typed in was redrawn away');
+  assert.equal(box.value,'Contoso, half typed');
+  assert.ok(!f.texts().includes('New recording'));
+  box.onblur();await new Promise(r=>setTimeout(r,20));
+  assert.ok(f.texts().includes('New recording'));
 });

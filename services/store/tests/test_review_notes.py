@@ -97,8 +97,8 @@ def build(tmp_path, *, body=OLD, baseline=OLD, mode="markdown-v1"):
 def fake_generate(monkeypatch, body="# New\n\nBetter body", fails=None, answers=()):
     calls: list[Any] = []
 
-    async def generate(context, job, transcript, voice_map, model=""):
-        calls.append((job.id, transcript, voice_map, model))
+    async def generate(context, job, transcript, voice_map, model="", meeting=None):
+        calls.append((job.id, transcript, voice_map, model, meeting))
         if fails:
             raise fails
         return {
@@ -195,7 +195,7 @@ async def test_resummarize_passes_the_chosen_model_and_the_confirm_to_the_rewrit
     await reviewer.resummarize({"id": NOTE, "model": " gpt-x ", "overwrite": True})
     await asyncio.gather(*reviewer.live.values())
     assert seen == [(NOTE, "gpt-x", True)]
-    with pytest.raises(ValueError, match="not a model"):
+    with pytest.raises(ValueError, match="model name"):
         await reviewer.resummarize({"id": NOTE, "model": "a" * 201})
 
 
@@ -274,7 +274,7 @@ async def test_rewrites_run_one_at_a_time(tmp_path, monkeypatch):
     running = 0
     peak = 0
 
-    async def slow(context, trial, transcript, voice_map, model=""):
+    async def slow(context, trial, transcript, voice_map, model="", meeting=None):
         nonlocal running, peak
         running += 1
         peak = max(peak, running)
@@ -497,6 +497,7 @@ def calendar(memory, note, patched, renamed):
         note.title = request.title
 
     memory.calendar_candidates = candidates
+    memory.lock = asyncio.Lock()
     memory.store.patch_frontmatter = patch
     memory.store.rename_note = rename
 
@@ -692,3 +693,35 @@ async def test_a_card_from_a_recording_says_whether_the_body_was_edited_and_offe
     # A note that did not come from a recording has neither.
     plain = await reviewer.row(row, None, None, False, True)
     assert "edited" not in plain and "meeting" not in plain
+
+
+@pytest.mark.asyncio
+async def test_switching_meeting_links_the_note_to_the_new_one_only(tmp_path):
+    reviewer, memory, job, note, _ = build(tmp_path)
+    note.title = "2026-11-02 Pipeline review"
+    note.frontmatter = {"calendar_event": "a", "reviewed": False}
+    memory.data["associations"] = {NOTE: {"events": ["a"], "contacts": ["c"], "attendees": []}}
+    calendar(memory, note, [], [])
+    await reviewer.set_meeting({"id": NOTE, "event_id": "b"})
+    assert memory.data["associations"][NOTE]["events"] == ["b"]
+    assert memory.data["associations"][NOTE]["contacts"] == ["c"]
+
+
+@pytest.mark.asyncio
+async def test_the_meeting_the_owner_settled_on_is_what_a_new_write_up_is_given(
+    tmp_path, monkeypatch
+):
+    reviewer, memory, job, note, replaced = build(tmp_path)
+    calls = fake_generate(monkeypatch)
+    note.frontmatter = {"calendar_event": "b", "reviewed": False}
+    await reviewer.write_again(NOTE, JOB)
+    assert calls[-1][4] == "b"
+    # A meeting the owner removed after Coppermind filled it in stays removed.
+    note.frontmatter = {"reviewed": False}
+    memory.data["what-was-filled/" + NOTE] = {"calendar_event": "a", "meeting": "a"}
+    await reviewer.write_again(NOTE, JOB)
+    assert calls[-1][4] == ""
+    # A note that never had one is left to the recording.
+    memory.data["what-was-filled/" + NOTE] = {}
+    await reviewer.write_again(NOTE, JOB)
+    assert calls[-1][4] is None

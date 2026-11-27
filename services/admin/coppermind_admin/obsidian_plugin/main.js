@@ -1,5 +1,5 @@
 /* Coppermind companion: one Review screen. A recording comes in, is summarized and filled in; the owner fixes what is wrong on its card and marks it Reviewed. */
-const {Plugin, ItemView, PluginSettingTab, Setting, SecretComponent, Notice, requestUrl, Modal} = require('obsidian');
+const {Plugin, ItemView, PluginSettingTab, Setting, SecretComponent, Notice, requestUrl, Modal, MarkdownView} = require('obsidian');
 const VIEW = 'coppermind-review';
 const PEOPLE_VIEW = 'coppermind-people';
 // Earlier versions had three screens; a saved layout may still hold one.
@@ -16,6 +16,10 @@ const REQUEST_TIMEOUT_MS = 30000;
 const DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
 // A date with no time ("2026-11-26") is that calendar day where the owner is; new Date() would read it as UTC midnight and show the day before.
 const parseDate = value => {const day = DAY.exec(typeof value === 'string' ? value.trim() : ''); return day ? new Date(+day[1], +day[2] - 1, +day[3]) : new Date(value);};
+async function hash(text) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return 'sha256:' + [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
 const settle = promise => promise.then(value => ({ok: true, value}), error => ({ok: false, error}));
 const plural = (n, one, many) => n + ' ' + (n === 1 ? one : many || one + 's');
 // A time as the owner reads it: just the time for today, the day for any other, the day alone when no time was kept.
@@ -110,6 +114,8 @@ class ReviewView extends ItemView {
       };
       await this.afterRead(data);
       if (generation !== this.generation) return;
+      // Someone is typing in a property box: leave the screen alone and catch up when they leave it.
+      if (quiet && this.typing) {this.deferred = true; return;}
       const fingerprint = JSON.stringify(data) + JSON.stringify(this.local) + JSON.stringify(this.filed) + JSON.stringify(this.models);
       if (quiet && this.loaded && fingerprint === this.fingerprint) return;
       this.fingerprint = fingerprint;
@@ -134,7 +140,7 @@ class ReviewView extends ItemView {
     try {path = (await this.plugin.call('/v1/notes/' + encodeURIComponent(id))).path || '';} catch {}
     mine.reviewing = false; mine.filing = false;
     this.filed[id] = {id, title: mine.title, folder: where(path)};
-    setTimeout(() => {delete this.filed[id]; this.render();}, this.plugin.filedShownMs || FILED_SHOWN_MS);
+    setTimeout(() => {delete this.filed[id]; if (!this.typing) this.render();}, this.plugin.filedShownMs || FILED_SHOWN_MS);
   }
   noteChanged(file) {
     if (!this.loaded || !(this.data?.notes || []).some(n => n.path === file.path)) return;
@@ -317,7 +323,8 @@ class ReviewView extends ItemView {
     const add = pills.createEl('input', {attr: {type: 'text', placeholder: '+ add', list: id}, cls: 'coppermind-add'});
     const datalist = pills.createEl('datalist', {attr: {id}});
     for (const option of options) if (!values.includes(option)) datalist.createEl('option', {value: option});
-    add.onfocus = () => {this.typing = true;}; add.onblur = () => {this.typing = false;};
+    add.onfocus = () => {this.typing = true;};
+    add.onblur = () => {this.typing = false; if (this.deferred) {this.deferred = false; this.refresh(true);}};
     add.onchange = async () => {
       let value = add.value.trim(); this.typing = false; if (!value) return;
       const known = options.find(o => o.toLowerCase() === value.toLowerCase());
@@ -342,6 +349,11 @@ class ReviewView extends ItemView {
     const undo = bar.createEl('button', {text: 'Undo'});
     undo.onclick = async () => {
       undo.disabled = true;
+      if (this.local[note.id]?.viaServer) {
+        try {await this.plugin.call('/v1/notes/' + encodeURIComponent(note.id) + '/reopen', 'POST', {}); delete this.local[note.id]; await this.refresh();}
+        catch (e) {undo.disabled = false; this.say(note.id, this.fail(e, 'Could not undo this. Check your connection.'), true); this.render();}
+        return;
+      }
       if (await this.writeProp(note, this.keys().reviewed, false)) {this.local[note.id].reviewing = false; this.render();}
       else undo.disabled = false;
     };
@@ -378,9 +390,30 @@ class ReviewView extends ItemView {
     const done = bar.createEl('button', {text: 'Reviewed', cls: 'mod-cta'});
     done.onclick = async () => {
       done.disabled = true;
-      if (await this.writeProp(note, this.keys().reviewed, true)) {(this.local[note.id] ??= {}).reviewing = true; this.render(); this.refresh(true);}
+      // An older recording's generated summary joins the note only through the review request, so it goes that way.
+      const marked = note.takes_model === false ? await this.finishOlder(note) : await this.writeProp(note, this.keys().reviewed, true);
+      if (marked) {(this.local[note.id] ??= {}).reviewing = true; this.render(); this.refresh(true);}
       else done.disabled = false;
     };
+  }
+  // An older recording note waits with a generated summary, decisions and action items. Reviewing it through the
+  // review request is what puts them in the note; with nothing generated it is just the property.
+  async finishOlder(note) {
+    const file = this.fileOf(note), id = encodeURIComponent(note.id);
+    if (!file) {this.say(note.id, NOT_SYNCED, true); this.render(); return false;}
+    try {
+      const detail = await this.plugin.call('/v1/notes/' + id + '/review', 'GET', undefined, true);
+      const summary = detail.state === 'suggested' && detail.meeting_summary ? detail.meeting_summary : null;
+      if (!summary) return await this.writeProp(note, this.keys().reviewed, true);
+      const editor = this.app.workspace.getActiveViewOfType?.(MarkdownView);
+      if (editor?.file?.path === file.path) await editor.save();
+      if (await hash(await this.app.vault.read(file)) !== detail.note.content_hash) {
+        this.say(note.id, 'This note is still syncing. Try again in a moment.', true); this.render(); return false;
+      }
+      await this.plugin.call('/v1/notes/' + id + '/review', 'POST', {if_match: detail.note.content_hash, job_id: detail.job_id, selected: [], meeting_summary: summary, confirmation: 'Complete review'});
+      (this.local[note.id] ??= {}).viaServer = true;
+      return true;
+    } catch (e) {this.say(note.id, this.fail(e, 'Could not mark this reviewed. Check your connection.'), true); this.render(); return false;}
   }
   // The model choice is what the connection reports; the configured one starts selected.
   async loadModels() {

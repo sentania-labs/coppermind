@@ -77,12 +77,14 @@ always agree. Each card has two buttons:
   recording for transcription again. When the connection lists more than one model, a model choice
   sits beside it, starting on the configured model; a different choice applies to that one run only
   and nothing else changes. The properties are filled again only where you have not put your own
-  value. While the note's body is still what Coppermind wrote, the new summary replaces it and the
+  value, and clearing a property Coppermind filled counts as putting your own. The new summary
+  uses the meeting you chose for its title and invitees, or no meeting if you removed it. While the note's body is still what Coppermind wrote, the new summary replaces it and the
   earlier text is kept. If you edited the body, one question asks "Replace your edited note with the
   new summary? Your version stays in history." with **Replace** and **Cancel**. A summary that did
   not finish says why on the card and Resummarize starts it again; a recording whose summary keeps
   failing after Coppermind's own tries shows as a row with Try again.
-- **Reviewed** ticks `reviewed` on the note. The card says "Reviewed. Filing…" and, once the note
+- **Reviewed** ticks `reviewed` on the note (for an older recording note that is waiting with a generated
+  summary, decisions and action items, it completes the review so they are added to the note). The card says "Reviewed. Filing…" and, once the note
   has been filed, "Filed ✓" with the folder it went to and **Undo** for a minute. Undo puts the
   note back in Review, unreviewed, even after it was filed.
 

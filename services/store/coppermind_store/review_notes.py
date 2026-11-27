@@ -361,7 +361,7 @@ class ReviewNotes:
             )
         model = str(payload.get("model") or "").strip()
         if len(model) > 200 or any(c in model for c in "\r\n\0"):
-            raise ValueError("That is not a model this connection offers.")
+            raise ValueError("Use a model name of up to 200 characters, on one line.")
         record = self.context.read(STATE + note_id, {})
         if record.get("state") == "running" and note_id in self.live:
             return {"started": True, "already": True}
@@ -446,8 +446,11 @@ class ReviewNotes:
         # The write-up is made under its own name, so the one the note was filed from is
         # untouched unless the new one is good.
         trial = job.model_copy(update={"id": job.id + "-again"})
+        meeting = await self.chosen_meeting(note_id)
         try:
-            fresh = await generate(context, trial, transcript, voice_map, model=model)
+            fresh = await generate(
+                context, trial, transcript, voice_map, model=model, meeting=meeting
+            )
         finally:
             for name in ("recording-writeups/", "recording-writeup-parts/"):
                 (context.root / f"{name}{trial.id}.json").unlink(missing_ok=True)
@@ -474,6 +477,22 @@ class ReviewNotes:
             return {"state": "failed", "finished_at": finished, "error": EDITED}
         await self.put(note, job, saved, fresh, body)
         return {"state": "done", "finished_at": finished}
+
+    async def chosen_meeting(self, note_id: str) -> str | None:
+        """The meeting the owner settled on for this note: its id, "" when they removed the
+        match, None when the recording is left to find one."""
+        from coppermind_store import filled_in
+        from coppermind_store.dossier_context import blank
+
+        note = await self.context.store.get_note(note_id)
+        key = self.meeting_key(note.frontmatter)
+        named = note.frontmatter.get(key)
+        if isinstance(named, str) and named:
+            return named
+        filled = filled_in.recorded(self.context, note_id)
+        if blank(named) and not blank(filled.get(key, filled.get("meeting"))):
+            return ""
+        return None
 
     async def refill(self, note: Any, written: dict[str, Any]) -> Any:
         """Fill the note's properties from the new write-up where the owner has not put their
@@ -612,6 +631,15 @@ class ReviewNotes:
             if key != field:
                 after = await context.store.get_note(note_id)
                 filled_in.remember(context, note_id, after.frontmatter, [key])
+        # The note is linked to the meeting now chosen, and only to it, as choosing one at
+        # review has always done; speaker candidates and calendar matches read this list.
+        async with context.lock:
+            associations = context.read("associations", {})
+            record = associations.setdefault(
+                note_id, {"events": [], "contacts": [], "attendees": []}
+            )
+            record["events"] = [event_id]
+            context.write("associations", associations)
         # The title follows the meeting only while it is still the one Coppermind made.
         stamp = re.match(r"\d{4}-\d{2}-\d{2}(?= )", note.title)
         if stamp:
