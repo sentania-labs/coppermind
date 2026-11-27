@@ -199,6 +199,7 @@ class ContextService:
         # Reads every provider call's outcome, so health is observed and never assumed.
         self.services = AiServices(self)
         self.lock = asyncio.Lock()
+        self.naming_lock = asyncio.Lock()
         self.seen: dict[str, tuple[tuple[int, int, int, int], float]] = {}
         self.watch_status: dict[str, str] = {}
         self.worker_error = ""

@@ -482,7 +482,8 @@ async def name_voice(
     choice = payload.get("choice")
     if not isinstance(choice, dict):
         raise Refusal("Choose who this voice is.")
-    person = await person_for(context, note, meeting_key, choice)
+    async with context.naming_lock:
+        person = await person_for(context, note, meeting_key, choice)
     was = identify(
         context, VoiceStore(context).snapshot(), note_id, job, label, active_people(context)
     )

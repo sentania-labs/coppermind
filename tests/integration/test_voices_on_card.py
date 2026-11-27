@@ -8,6 +8,7 @@ owner wrote in the note is touched.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 
@@ -290,6 +291,25 @@ async def test_a_new_name_makes_one_person_and_the_same_name_again_finds_them(st
         assert set(people(store)) == {"Tom Reed"}
         assert [r["person"]["name"] for r in rows(context, note.id)] == ["Tom Reed", "Tom Reed"]
         assert "Unknown voice" not in await transcript_text(store, job)
+
+
+async def test_the_same_new_name_sent_twice_at_once_makes_one_person(store, monkeypatch):
+    async with Service(reply=reply(TOM)) as service:
+        context = await lifecycle(store, service)
+        _, note = await record(store, context, "plaud/rec-1", AUDIO)
+        made = store.entities.create
+
+        async def slow_create(*args, **kwargs):
+            await asyncio.sleep(0.05)
+            return await made(*args, **kwargs)
+
+        monkeypatch.setattr(store.entities, "create", slow_create)
+        await asyncio.gather(
+            choose(context, note.id, "Voice 2", new_name="Tom Reed"),
+            choose(context, note.id, "Voice 1", new_name="Tom Reed"),
+        )
+        assert [p for p in people(store) if p == "Tom Reed"] == ["Tom Reed"]
+        assert len([e for e in store.entities.load().entities.values() if e.name == "Tom Reed"]) == 1
 
 
 async def test_two_people_with_one_name_are_not_guessed_between(store):
