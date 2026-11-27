@@ -2317,7 +2317,7 @@ class ContextService:
             elif suggestion.kind == "event" and assignment.event_field:
                 if len(suggestion.event_ids) != 1:
                     raise ValueError("select one event for the mapped event field")
-                changes[assignment.event_field] = suggestion.event_ids[0]
+                changes[assignment.event_key(note.frontmatter)] = suggestion.event_ids[0]
                 schema = self.store.control.schema()
                 if note_start_time(note.frontmatter, schema) is None:
                     matched = next(
@@ -2371,17 +2371,9 @@ class ContextService:
                 ):
                     raise ValueError("suggestion is not eligible for automatic fill")
                 if suggestion.kind == "event":
-                    changes = {k: v for k, v in changes.items() if k == assignment.event_field}
-                if not changes or any(
-                    not blank(
-                        note.frontmatter.get(
-                            assignment.event_key(note.frontmatter)
-                            if k == assignment.event_field
-                            else k
-                        )
-                    )
-                    for k in changes
-                ):
+                    meeting = assignment.event_key(note.frontmatter)
+                    changes = {k: v for k, v in changes.items() if k == meeting}
+                if not changes or any(not blank(note.frontmatter.get(k)) for k in changes):
                     raise ValueError("field is not blank")
                 unset = []
             if suggestion.kind == "filename" and payload.get("accept_link_risk") is not True:

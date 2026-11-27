@@ -88,6 +88,22 @@ def dossier_parts(text: str, entity: Entity) -> tuple[str, str]:
     raise ValueError("dossier marker is missing; restore it to resume")
 
 
+def split_block(entity: Entity, block: str) -> tuple[str, str]:
+    """What Coppermind generated below the marker, and what the owner wrote after it.
+
+    A plain page generates nothing, so all of it is the owner's. A page that holds a message
+    (retired, merged) or an older facts block holds exactly what was written last, and anything
+    after that is the owner's. A block that no longer starts with what was written is an edit to
+    the generated part, which `observe` reads as corrections, and has no tail.
+    """
+    written = entity.generated
+    if written is None:
+        return block, ""
+    if block.startswith(written):
+        return written, block[len(written) :]
+    return block, ""
+
+
 def matches_identity(fields: dict[str, Any], entity: Entity, domains: list[str]) -> bool:
     """Exact identity of a page in a store-owned folder: email, or domains, or name with aliases."""
 
@@ -549,10 +565,13 @@ class EntityService:
                 self.receipt(ledger, entity, "page domains")
         # A plain page generates nothing, so whatever follows its marker is the owner's, kept as
         # it is: the end of the page is where anyone clicks to keep writing.
-        entity.personal = owner_wrote(head) or (entity.generated == "" and bool(block.strip()))
-        if block == entity.pending:
-            entity.generated, entity.pending = block, None
-        if entity.generated and block != entity.generated:
+        if entity.pending is not None and (
+            block == entity.pending or (entity.pending and block.startswith(entity.pending))
+        ):
+            entity.generated, entity.pending = entity.pending, None
+        written, tail = split_block(entity, block)
+        entity.personal = owner_wrote(head) or bool(tail.strip())
+        if entity.generated and written != entity.generated:
             old = {identity: text for text, identity in FACT_LINE.findall(entity.generated)}
             changed = {identity: text for text, identity in FACT_LINE.findall(block)}
             for fact in list(entity.facts):
@@ -657,8 +676,10 @@ class EntityService:
                 return
             block = render(entity, ledger)
             below = block
-            if raw is not None and entity.generated == "" and not block:
-                below = dossier_parts(raw.decode(), entity)[1]  # the owner's, below the marker
+            if raw is not None:
+                # Whatever the owner wrote after the marker stays, after what is generated:
+                # a retirement or a merge adds its message in front of it, never in its place.
+                below += split_block(entity, dossier_parts(raw.decode(), entity)[1])[1]
             wanted = (self.prefix(entity, raw, ledger, owners) + below).encode()
             if raw == wanted:
                 entity.problem = None
@@ -1285,14 +1306,18 @@ class EntityService:
                 ours = False
                 if text is not None:
                     head, block = dossier_parts(text, entity)
-                    fields, _ = fm.parse(head)
+                    fields, body = fm.parse(head)
+                    projected = entity.projection_fields
+                    # Provably nothing but what Coppermind wrote: every property is one it
+                    # projected and unchanged, no other property is there (whatever its name),
+                    # and every line of text is the title and the empty notes section. In doubt,
+                    # the page stays.
+                    title = label(str((projected or {}).get("name", "")))
                     ours = (
-                        block == entity.generated
-                        and not owner_wrote(head)
-                        and all(
-                            fields.get(key) == value
-                            for key, value in (entity.projection_fields or {}).items()
-                        )
+                        projected is not None
+                        and block == entity.generated
+                        and fields == projected
+                        and body == f"# {title}\n\n## Scott's Notes\n\n"
                     )
                 if ours:
                     path.unlink()
@@ -1459,7 +1484,7 @@ class EntityService:
                 return ""
             try:
                 head, block = dossier_parts(raw.decode(), entity)
-                return fm.parse(head)[1] + (block if entity.generated == "" else "")
+                return fm.parse(head)[1] + split_block(entity, block)[1]
             except (ValueError, UnicodeError, fm.FrontmatterError):
                 return ""
         try:
@@ -1468,7 +1493,7 @@ class EntityService:
             if fields.get("entity_id") not in (None, entity.id):
                 return ""
             head, block = dossier_parts(text, entity)
-            return fm.parse(head)[1] + (block if entity.generated == "" else "")
+            return fm.parse(head)[1] + split_block(entity, block)[1]
         except (OSError, ValueError, UnicodeError, fm.FrontmatterError):
             return ""
 
@@ -1823,9 +1848,10 @@ class EntityService:
                 try:
                     head, block = dossier_parts(text, entity)
                     wrote = owner_wrote(head)
+                    written, tail = split_block(entity, block)
                 except (ValueError, fm.FrontmatterError):
                     continue
-                if wrote or block not in {entity.generated, entity.pending}:
+                if wrote or tail.strip() or written not in {entity.generated, entity.pending}:
                     continue  # A fresh device edit is personal work, even before reconciliation.
             found.append(entity)
         return found

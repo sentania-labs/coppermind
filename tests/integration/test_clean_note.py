@@ -4,6 +4,7 @@ leaves alone, removes, or never touches on a vault that already holds the older 
 import base64
 import json
 
+import pytest
 import sqlalchemy as sa
 from coppermind_store import filing
 from coppermind_store.admin_features import Features
@@ -14,11 +15,12 @@ from coppermind_store.reconciler import reconcile_once
 from coppermind import frontmatter as fm
 from coppermind.context_config import FeatureAssignment
 from coppermind.db.models import Artifact, Note, SearchDocument
-from coppermind.entities import EntityInput, EntityQuery
+from coppermind.entities import EntityChange, EntityInput, EntityQuery
 from coppermind.store_protocol import (
     CreateArtifact,
     CreateNote,
     IngestArtifact,
+    PatchFrontmatter,
     ReplaceNote,
 )
 from tests.integration.test_review_filing import approve
@@ -509,3 +511,175 @@ async def test_an_old_company_link_on_a_persons_page_becomes_the_companys_name(s
 
     assert fm.parse(page.read_text())[0]["company"] == ["Acme"]
     assert not (store.notes_root / "Companies").exists()
+
+
+# --- what the owner wrote is never replaced -------------------------------------------------
+
+OWNER_TAIL = "Typed after the marker.\n"
+
+
+async def plain_page_with_owner_text(store, name="Casey", address="casey@example.test"):
+    created = await store.entities.create(EntityInput(kind="person", name=name, emails=[address]))
+    path = store.notes_root / created["path"]
+    text = path.read_text()
+    marker = dossier_marker(created["id"])
+    above = text.replace(marker, "Above the marker.\n\n" + marker)
+    path.write_text(above + OWNER_TAIL)
+    await store.entities.refresh()
+    assert path.read_text() == above + OWNER_TAIL
+    return created, path, marker
+
+
+async def test_retiring_a_person_keeps_everything_the_owner_wrote_on_the_page(store):
+    created, path, marker = await plain_page_with_owner_text(store)
+    await store.entities.change(
+        created["id"], EntityChange(version=created["version"], action="retire")
+    )
+    await store.entities.refresh()
+    retired = path.read_text()
+    assert "Above the marker." in retired and OWNER_TAIL in retired
+    assert "Retired dossier" in retired  # the message is added in front of their writing
+    assert retired.index("Retired dossier") < retired.index(OWNER_TAIL)
+    await store.entities.refresh()
+    assert path.read_text() == retired
+
+    current = await store.entities.get(created["id"])
+    await store.entities.change(
+        created["id"], EntityChange(version=current["version"], action="restore")
+    )
+    await store.entities.refresh()
+    restored = path.read_text()
+    assert "Retired dossier" not in restored
+    assert "Above the marker." in restored and restored.endswith(marker + OWNER_TAIL)
+
+
+async def test_merging_a_person_away_keeps_everything_the_owner_wrote_on_the_page(store):
+    keep = await store.entities.create(EntityInput(kind="person", name="Keep"))
+    created, path, marker = await plain_page_with_owner_text(store)
+    request = {"version": created["version"], "target": keep["id"]}
+    preview = await store.entities.change(
+        created["id"], EntityChange(action="merge-preview", **request)
+    )
+    await store.entities.change(
+        created["id"], EntityChange(action="merge", preview=preview["preview"], **request)
+    )
+    await store.entities.refresh()
+    merged = path.read_text()
+    assert "Above the marker." in merged and OWNER_TAIL in merged
+    assert "See [[" in merged and merged.index("See [[") < merged.index(OWNER_TAIL)
+    await store.entities.refresh()
+    assert path.read_text() == merged
+
+
+async def test_text_after_the_marker_of_an_older_facts_page_survives_the_upgrade(store):
+    created = await store.entities.create(
+        EntityInput(kind="person", name="Casey", emails=["casey@example.test"])
+    )
+    entity = store.entities.load().entities[created["id"]]
+    tail = "Added below the old facts.\n"
+    path = await pretend_it_was_written_by_an_earlier_release(
+        store, entity.id, old_page(entity, extra_front="email:\n  - casey@example.test\n") + tail
+    )
+    await store.entities.refresh()
+    assert path.read_text().endswith(dossier_marker(entity.id) + tail)
+    assert "Facts" not in path.read_text()
+
+
+OWNER_ADDED = [
+    pytest.param("email:\n  - sales@acme.com\n", id="email"),
+    pytest.param("company:\n  - Parent Co\n", id="company"),
+    pytest.param("nickname: Big A\n", id="own-property"),
+    pytest.param("domains:\n  - acme.com\n", id="domains-changed"),
+]
+
+
+@pytest.mark.parametrize("added", OWNER_ADDED)
+async def test_a_company_page_with_a_property_the_owner_added_is_never_removed(store, added):
+    """`email` and `company` are generated names, and are still the owner's when they added them."""
+    company_id = await make_company(store)
+    block = "\n## Coppermind's Notes\n\n### Facts\n\n- domain: acme.com <!-- fact:F2 -->\n"
+    projected = {"name": "Acme", "aliases": []}
+    if added.startswith("domains"):
+        projected = {**projected, "domains": ["acme.io"]}  # the page now says something else
+    front = "name: Acme\naliases: []\n" + added
+    text = f"---\n{front}---\n# Acme\n\n## Scott's Notes\n\n" + dossier_marker(company_id) + block
+    path = await pretend_it_was_written_by_an_earlier_release(store, company_id, text, block)
+    ledger = store.entities.load()
+    ledger.entities[company_id].projection_fields = projected
+    store.entities.save(ledger)
+
+    await store.entities.refresh()
+
+    assert path.read_text() == text
+    assert store.entities.load().entities[company_id].retired_at is None
+
+
+async def test_a_company_page_with_a_line_the_owner_added_is_never_removed(store):
+    company_id = await make_company(store)
+    block = "\n## Coppermind's Notes\n\n### Facts\n\n- domain: acme.com <!-- fact:F2 -->\n"
+    text = (
+        "---\nname: Acme\naliases: []\n---\n# Acme\n\n## Scott's Notes\n\nA line of mine.\n"
+        + dossier_marker(company_id)
+        + block
+    )
+    path = await pretend_it_was_written_by_an_earlier_release(store, company_id, text, block)
+    await store.entities.refresh()
+    assert path.read_text() == text
+
+
+# --- one meeting property per note --------------------------------------------------------
+
+
+async def test_a_note_with_the_old_meeting_property_keeps_one_property_and_a_removed_meeting_stays_removed(  # noqa: E501
+    store, monkeypatch
+):
+    from coppermind_store.association_corrections import correct
+    from coppermind_store.context_service import fingerprint
+
+    from tests.integration.test_recording_merge import prepare
+
+    context, recording, generated, target, payload = await prepare(store)
+    assert context.config().assignments["enrichment"].event_field == "meeting"
+    note = await store.get_note(generated.id)
+    old = note.frontmatter.get("calendar_event")
+    if not old:  # a note an earlier release wrote: only the old property
+        note = await store.patch_frontmatter(
+            note.id,
+            PatchFrontmatter(set={"calendar_event": "E1"}, unset=["meeting"]),
+            note.content_hash,
+        )
+        old = "E1"
+    assert "meeting" not in note.frontmatter
+    selected = {"event_id": "E2", "title": "Another meeting", "start": "2026-10-14T09:00:00"}
+
+    async def candidates_for_note(_):
+        return [selected]
+
+    monkeypatch.setattr(context, "recording_calendar_candidates", candidates_for_note)
+    context.write("recording-meetings", {recording.source_id: {"event_id": old, "title": "x"}})
+    await context.lifecycle.choose_recording_meeting(
+        {
+            "note_id": note.id,
+            "if_match": note.content_hash,
+            "calendar_hash": await context.calendar_evidence_hash(note),
+            "event_id": "E2",
+        }
+    )
+    chosen = (await store.get_note(note.id)).frontmatter
+    assert chosen["calendar_event"] == "E2" and "meeting" not in chosen
+
+    note = await store.get_note(note.id)
+    records = context.read("associations", {})
+    await correct(
+        context,
+        {
+            "confirmation": "Remove mistaken association",
+            "note_id": note.id,
+            "note_hash": note.content_hash,
+            "associations_hash": fingerprint(records[note.id]),
+            "kind": "events",
+            "target": "E2",
+        },
+    )
+    after = (await store.get_note(note.id)).frontmatter
+    assert "meeting" not in after and "calendar_event" not in after  # it does not come back

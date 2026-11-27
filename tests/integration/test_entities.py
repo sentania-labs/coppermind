@@ -1144,6 +1144,20 @@ async def test_removal_preserves_personal_writing_arriving_before_it(store):
     assert "Personal reminder" in (await store.entities.get(p["id"]))["personal_text"]
 
 
+async def test_removal_keeps_a_page_with_writing_after_the_marker(store):
+    note = await reviewed_note(store)
+    await store.entities.refresh()
+    p = (await store.entities.list(EntityQuery()))["items"][0]
+    git(store.notes_root, "init", "-q")
+    commit(store.notes_root)
+    (store.notes_root / note.path).unlink()
+    commit(store.notes_root)
+    path = store.notes_root / p["path"]
+    path.write_text(path.read_text() + "Typed at the end of the page.\n")
+    assert (await reconcile_once(store))["deleted"] == 1
+    assert "Typed at the end of the page." in path.read_text()
+
+
 async def test_note_linking_a_merged_page_contributes_to_the_target(store):
     keep = await store.entities.create(EntityInput(kind="person", name="Keep"))
     old = await store.entities.create(EntityInput(kind="person", name="Old"))

@@ -218,10 +218,10 @@ class NoteLifecycle:
                 if any(value not in {previous, event_id} for value in record.get("events", [])):
                     raise ValueError("the note already names a different meeting; edit it first")
                 assignment = self.context.config().assignments["enrichment"]
-                field = assignment.event_field
-                existing = (
-                    note.frontmatter.get(assignment.event_key(note.frontmatter)) if field else None
-                )
+                # The property the note actually has: a note that still carries the old name keeps
+                # one meeting property, read, written and removed under that name.
+                field = assignment.event_key(note.frontmatter) if assignment.event_field else ""
+                existing = note.frontmatter.get(field) if field else None
                 if existing and existing not in {previous, event_id}:
                     raise ValueError("the note already names a different meeting; edit it first")
                 title = str(selected_event.get("title", "")).strip()
