@@ -33,9 +33,12 @@ Pages an earlier release wrote are tidied, never rewritten in bulk. On the next 
 page loses the generated section below the marker (the Facts, Relationships, Interests and
 Supporting notes it held) and a `company` link Coppermind wrote becomes the company's name, and it
 keeps everything you wrote and every property you added or changed. Writing after the marker
-is writing like any other: a plain page has nothing generated there, so it is kept. A company page that is still exactly what
-Coppermind wrote is removed; one you wrote in, or edited a property or fact on, is left where it
-is as yours, Coppermind stops tending it, and deleting it later does not retire the company.
+is writing like any other: a plain page has nothing generated there, so it is kept, and retiring or
+merging the person puts its message in front of your writing, never in its place. A company page is
+removed only when it is provably nothing but what Coppermind wrote: every property is one it projected
+and unchanged, no other property is there (`email` and `company` count as yours when you added them),
+and the text is exactly the title and the empty notes section. Anything else is left where it is as
+yours, Coppermind stops tending it, and deleting it later does not retire the company.
 
 Reviewed metadata contributes exact attendee emails, explicit account companies,
 attendee-to-company associations and explicit dossier wikilinks in list fields.
