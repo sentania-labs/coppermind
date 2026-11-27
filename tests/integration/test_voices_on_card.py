@@ -624,3 +624,36 @@ async def test_the_person_joins_the_attendees_of_every_waiting_note_that_heard_t
         # A recording that comes after is recognised and has him once, not twice.
         _, third = await record(store, context, "plaud/rec-3", AUDIO + b"3")
         assert (await store.get_note(third.id)).frontmatter["attendees"] == [link]
+
+
+async def test_changing_a_voice_never_takes_off_an_attendee_the_owner_typed_by_hand(store):
+    async with Service(reply=reply(TOM)) as service:
+        context = await lifecycle(store, service)
+        reed = await store.entities.create(EntityInput(kind="person", name="Tom Reed"))
+        tom_link = f"[[{reed['path'].removesuffix('.md')}]]"
+        _, note = await record(store, context, "plaud/rec-1", AUDIO)
+        # The owner listed Tom themselves before any voice was named.
+        current = await store.get_note(note.id)
+        await store.patch_frontmatter(
+            note.id,
+            PatchFrontmatter(set={"attendees": ["Pat Kim", tom_link]}),
+            current.content_hash,
+        )
+        await choose(context, note.id, "Voice 2", person=reed["id"])
+        assert (await store.get_note(note.id)).frontmatter["attendees"] == ["Pat Kim", tom_link]
+        await choose(context, note.id, "Voice 2", new_name="Ann Cole")
+        found = people(store)
+        ann_link = f"[[{found['Ann Cole'].path.removesuffix('.md')}]]"
+        # Coppermind added Ann, so Ann can go; it never added Tom, so Tom stays.
+        assert (await store.get_note(note.id)).frontmatter["attendees"] == [
+            "Pat Kim",
+            tom_link,
+            ann_link,
+        ]
+        await choose(context, note.id, "Voice 2", new_name="Sam Lee")
+        sam_link = f"[[{people(store)['Sam Lee'].path.removesuffix('.md')}]]"
+        assert (await store.get_note(note.id)).frontmatter["attendees"] == [
+            "Pat Kim",
+            tom_link,
+            sam_link,
+        ]

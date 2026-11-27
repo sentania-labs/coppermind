@@ -26,6 +26,9 @@ from coppermind_store.speaker_facts import owner_person_id, quotes, talk_seconds
 # An invitation longer than this is a company-wide event, not who was in the room.
 MOST_INVITED = filled_in.MOST_INVITED
 LEDGER = "voice-card/"
+# What Coppermind itself wrote into a note's attendees while naming voices, so it only ever takes
+# off what it put there.
+ADDED = "voice-attendees/"
 _NUMBER = re.compile(r"(\d+)")
 
 
@@ -411,6 +414,18 @@ def _known(person: Any) -> frozenset[str]:
     return frozenset(known)
 
 
+def put_by_coppermind(context: Any, note_id: str, field: str) -> frozenset[str]:
+    """The attendee entries Coppermind wrote: what the write-up or the invitation filled in, and
+    what naming a voice added. Anything else in the list is the owner's."""
+    filled = filled_in.recorded(context, note_id).get(field)
+    added = context.read(ADDED + note_id, [])
+    return frozenset(
+        v.strip().casefold()
+        for v in [*(filled if isinstance(filled, list) else []), *added]
+        if isinstance(v, str)
+    )
+
+
 async def change_attendees(
     context: Any,
     note_id: str,
@@ -419,8 +434,9 @@ async def change_attendees(
     drop: frozenset[str] = frozenset(),
 ) -> None:
     """Put a person among the note's attendees, written as a link to their page like every other
-    attendee, and take one off who was only there because of a voice that is someone else now.
-    Anyone else listed stays. Read again once when the note was edited in between."""
+    attendee, and take one off who is there only because Coppermind put them there for a voice
+    that is someone else now. An attendee the owner listed or typed stays, whoever else is
+    named. Read again twice when the note was edited in between."""
     schema = context.store.control.schema()
     for attempt in range(3):
         note = await context.store.get_note(note_id)
@@ -428,8 +444,11 @@ async def change_attendees(
         current = [] if blank(listed) else listed
         if not isinstance(current, list):
             return
-        wanted = list(current)
-        wanted = [v for v in wanted if not (isinstance(v, str) and v.strip().casefold() in drop)]
+        ours = put_by_coppermind(context, note_id, field)
+        wanted = [
+            v for v in current if not (isinstance(v, str) and v.strip().casefold() in drop & ours)
+        ]
+        wrote = ""
         if add is not None:
             link = filled_in._link(add)
             known = _known(add)
@@ -443,9 +462,15 @@ async def change_attendees(
             )
             if at is None:
                 wanted.append(link)
-            elif wanted[at].strip().casefold() == add.name.strip().casefold() and link != add.name:
+                wrote = link
+            elif (
+                wanted[at].strip().casefold() == add.name.strip().casefold()
+                and link != add.name
+                and wanted[at].strip().casefold() in ours
+            ):
                 # The invitation wrote this person by a bare name; now there is a page to link.
                 wanted[at] = link
+                wrote = link
         if wanted == current:
             return
         if schema.validate_frontmatter({**note.frontmatter, field: wanted}):
@@ -458,6 +483,8 @@ async def change_attendees(
             if attempt == 2:
                 raise Refusal("The note was being changed. Try again.") from None
             continue
+        if wrote:
+            context.write(ADDED + note_id, [*context.read(ADDED + note_id, []), wrote])
         await filled_in.keep_job_current(context, note, after)
         return
 
